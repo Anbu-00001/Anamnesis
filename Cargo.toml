@@ -1,0 +1,24 @@
+[package]
+name = "anamnesis"
+version = "0.1.0"
+edition = "2021"
+description = "A local-first instrument against self-deception: log what you believe and how sure, then face the real shape of your mind."
+license = "MIT"
+readme = "README.md"
+
+[[bin]]
+name = "ana"
+path = "src/main.rs"
+
+[lib]
+name = "anamnesis"
+path = "src/lib.rs"
+
+[dependencies]
+clap = { version = "4", features = ["derive"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", features = ["serde", "clock"] }
+
+[profile.release]
+opt-level = 2
