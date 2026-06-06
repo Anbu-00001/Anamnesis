@@ -55,6 +55,11 @@ fn ymd(y: i32, m: u32, d: u32) -> NaiveDate {
     NaiveDate::from_ymd_opt(y, m, d).unwrap()
 }
 
+// The claims are pushed one-by-one, grouped under section comments, because the
+// `next()` id-salt generator is interleaved with each entry and the grouping
+// reads far better than a single 41-element `vec![]` literal would. This is demo
+// scaffolding, not a hot path, so the clarity wins.
+#[allow(clippy::vec_init_then_push)]
 fn main() {
     let path = std::env::args().nth(1).unwrap_or_else(|| "seed.json".to_string());
     let base = Utc.with_ymd_and_hms(2025, 1, 15, 10, 0, 0).unwrap();
