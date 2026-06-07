@@ -27,8 +27,13 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   missing file = empty ledger.
 - [src/report.rs](src/report.rs) — **compute once into `ReportData`, render twice**
   (`render` = text, `render_json` = JSON). Never compute metrics in a renderer.
-- [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/list/show/report`,
-  global `--data` and `--json`.
+- [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/list/show/report/mcp`,
+  global `--data` and `--json`. `list --tag` filters by tag; the agent ledger is
+  `~/.anamnesis/agent.json` (`ANAMNESIS_AGENT_DATA`).
+- [src/mcp.rs](src/mcp.rs) — `ana mcp`: a hand-rolled Model Context Protocol
+  server over newline-delimited JSON-RPC stdio (no new deps), exposing
+  predict/resolve/calibration/list as tools for any MCP agent. The cross-agent
+  reach surface; reuses scoring/report as the single source of truth.
 - [examples/seed.rs](examples/seed.rs) — backdated demo ledger generator.
 - [tests/cli.rs](tests/cli.rs) — drives the compiled binary end-to-end.
 

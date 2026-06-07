@@ -17,7 +17,7 @@ use anamnesis::model::{
     gen_id, normalize_tags, Claim, ClaimKind, Forecast, NumericForecast, Outcome, Resolution,
 };
 use anamnesis::scoring::{self, NumericSample};
-use anamnesis::{report, store};
+use anamnesis::{mcp, report, store};
 
 #[derive(Parser)]
 #[command(
@@ -102,6 +102,9 @@ enum Cmd {
         resolved: bool,
         #[arg(long)]
         due: bool,
+        /// Only claims carrying this exact tag (e.g. project:anamnesis)
+        #[arg(long)]
+        tag: Option<String>,
     },
     /// Show the full history of one belief — the palimpsest of your mind
     Show { id: String },
@@ -112,6 +115,9 @@ enum Cmd {
         #[arg(long, default_value_t = 10)]
         bins: usize,
     },
+    /// Serve as a Model Context Protocol server over stdio — exposes
+    /// predict/resolve/calibration/list as tools for any MCP-capable agent.
+    Mcp,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -157,6 +163,20 @@ fn data_path(cli: &Cli) -> PathBuf {
     PathBuf::from("anamnesis.json")
 }
 
+/// The global agent ledger driven by `ana mcp` and the Claude Code plugin — the
+/// cross-project calibration spine. `ANAMNESIS_AGENT_DATA` overrides it.
+fn agent_ledger_path() -> PathBuf {
+    if let Ok(p) = std::env::var("ANAMNESIS_AGENT_DATA") {
+        if !p.is_empty() {
+            return PathBuf::from(p);
+        }
+    }
+    if let Ok(home) = std::env::var("HOME") {
+        return PathBuf::from(home).join(".anamnesis").join("agent.json");
+    }
+    PathBuf::from("agent.json")
+}
+
 fn check_prob(p: f64) -> Result<(), String> {
     if (0.0..=1.0).contains(&p) {
         Ok(())
@@ -177,8 +197,14 @@ fn parse_interval(s: &str) -> Result<(f64, f64), String> {
     let (lo, hi) = s
         .split_once("..")
         .ok_or_else(|| format!("interval must look like LOW..HIGH, got '{s}'"))?;
-    let lo: f64 = lo.trim().parse().map_err(|_| format!("bad interval low '{lo}'"))?;
-    let hi: f64 = hi.trim().parse().map_err(|_| format!("bad interval high '{hi}'"))?;
+    let lo: f64 = lo
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad interval low '{lo}'"))?;
+    let hi: f64 = hi
+        .trim()
+        .parse()
+        .map_err(|_| format!("bad interval high '{hi}'"))?;
     if !lo.is_finite() || !hi.is_finite() {
         return Err("interval bounds must be finite".into());
     }
@@ -224,13 +250,20 @@ fn run(cli: Cli) -> Result<(), String> {
 
             let (kind, forecast) = match (prob, interval) {
                 (Some(_), Some(_)) => {
-                    return Err("give either --prob (binary) or --interval (numeric), not both".into())
+                    return Err(
+                        "give either --prob (binary) or --interval (numeric), not both".into(),
+                    )
                 }
                 (Some(p), None) => {
                     check_prob(*p)?;
                     (
                         ClaimKind::Binary,
-                        Forecast { at: now, prob: Some(*p), interval: None, because: because.clone() },
+                        Forecast {
+                            at: now,
+                            prob: Some(*p),
+                            interval: None,
+                            because: because.clone(),
+                        },
                     )
                 }
                 (None, Some(iv)) => {
@@ -241,7 +274,11 @@ fn run(cli: Cli) -> Result<(), String> {
                         Forecast {
                             at: now,
                             prob: None,
-                            interval: Some(NumericForecast { low, high, level: *level }),
+                            interval: Some(NumericForecast {
+                                low,
+                                high,
+                                level: *level,
+                            }),
                             because: because.clone(),
                         },
                     )
@@ -275,7 +312,9 @@ fn run(cli: Cli) -> Result<(), String> {
             store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;
 
             if cli.json {
-                out_json(json!({"id": id, "kind": kind, "prob": disp_prob, "interval": disp_iv, "statement": statement}));
+                out_json(
+                    json!({"id": id, "kind": kind, "prob": disp_prob, "interval": disp_iv, "statement": statement}),
+                );
             } else {
                 match kind {
                     ClaimKind::Binary => {
@@ -303,7 +342,10 @@ fn run(cli: Cli) -> Result<(), String> {
         } => {
             let idx = ledger.index_of(id)?;
             if ledger.claims[idx].is_resolved() {
-                return Err(format!("[{}] is already resolved; its history is final", ledger.claims[idx].id));
+                return Err(format!(
+                    "[{}] is already resolved; its history is final",
+                    ledger.claims[idx].id
+                ));
             }
             let kind = ledger.claims[idx].kind;
             let now = Utc::now();
@@ -317,7 +359,12 @@ fn run(cli: Cli) -> Result<(), String> {
                     check_prob(p)?;
                     let old = ledger.claims[idx].current_prob().unwrap_or(p);
                     (
-                        Forecast { at: now, prob: Some(p), interval: None, because: because.clone() },
+                        Forecast {
+                            at: now,
+                            prob: Some(p),
+                            interval: None,
+                            because: because.clone(),
+                        },
                         format!("{} → {}", pct(old), pct(p)),
                     )
                 }
@@ -337,7 +384,11 @@ fn run(cli: Cli) -> Result<(), String> {
                         Forecast {
                             at: now,
                             prob: None,
-                            interval: Some(NumericForecast { low, high, level: lvl }),
+                            interval: Some(NumericForecast {
+                                low,
+                                high,
+                                level: lvl,
+                            }),
                             because: because.clone(),
                         },
                         format!("[{low}, {high}] @ {:.0}%", lvl * 100.0),
@@ -374,9 +425,14 @@ fn run(cli: Cli) -> Result<(), String> {
             match kind {
                 ClaimKind::Binary => {
                     if value.is_some() {
-                        return Err("this is a binary claim; resolve it with yes/no, not --value".into());
+                        return Err(
+                            "this is a binary claim; resolve it with yes/no, not --value".into(),
+                        );
                     }
-                    let o: Outcome = (*outcome.as_ref().ok_or("resolve a binary claim with yes or no")?).into();
+                    let o: Outcome = (*outcome
+                        .as_ref()
+                        .ok_or("resolve a binary claim with yes or no")?)
+                    .into();
                     let prob = ledger.claims[idx].current_prob().unwrap_or(0.5);
                     ledger.claims[idx].resolution = Some(Resolution {
                         at: now,
@@ -387,10 +443,16 @@ fn run(cli: Cli) -> Result<(), String> {
                     store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;
                     let brier = (prob - if o.happened() { 1.0 } else { 0.0 }).powi(2);
                     if cli.json {
-                        out_json(json!({"id": cid, "kind": kind, "outcome": o.happened(), "prob": prob, "brier": brier}));
+                        out_json(
+                            json!({"id": cid, "kind": kind, "outcome": o.happened(), "prob": prob, "brier": brier}),
+                        );
                     } else {
                         let truth = if o.happened() { "TRUE" } else { "FALSE" };
-                        println!("[{cid}] resolved {truth}.  you said {}  →  Brier {:.3} on this one", pct(prob), brier);
+                        println!(
+                            "[{cid}] resolved {truth}.  you said {}  →  Brier {:.3} on this one",
+                            pct(prob),
+                            brier
+                        );
                     }
                 }
                 ClaimKind::Numeric => {
@@ -408,11 +470,18 @@ fn run(cli: Cli) -> Result<(), String> {
                         note: note.clone(),
                     });
                     store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;
-                    let ns = NumericSample { low: iv.low, high: iv.high, level: iv.level, value: v };
+                    let ns = NumericSample {
+                        low: iv.low,
+                        high: iv.high,
+                        level: iv.level,
+                        value: v,
+                    };
                     let w = scoring::winkler(&ns);
                     let caught = ns.contains();
                     if cli.json {
-                        out_json(json!({"id": cid, "kind": kind, "value": v, "interval": iv, "inside": caught, "winkler": w}));
+                        out_json(
+                            json!({"id": cid, "kind": kind, "value": v, "interval": iv, "inside": caught, "winkler": w}),
+                        );
                     } else {
                         let verdict = if caught { "caught it" } else { "MISSED" };
                         println!(
@@ -424,9 +493,20 @@ fn run(cli: Cli) -> Result<(), String> {
             }
         }
 
-        Cmd::List { open, resolved, due } => {
+        Cmd::List {
+            open,
+            resolved,
+            due,
+            tag,
+        } => {
             let today = Utc::now().date_naive();
+            let tagf = tag.as_ref().map(|t| t.to_lowercase());
             let keep = |c: &Claim| {
+                if let Some(t) = &tagf {
+                    if !c.tags.iter().any(|x| x == t) {
+                        return false;
+                    }
+                }
                 if *due {
                     c.is_due(today)
                 } else if *open {
@@ -488,7 +568,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 } else {
                     format!(" [{}]", c.tags.join(","))
                 };
-                println!("{:<6}  {:>9}  {:<11}  {}{tags}", c.id, belief, status, truncate(&c.statement, 52));
+                println!(
+                    "{:<6}  {:>9}  {:<11}  {}{tags}",
+                    c.id,
+                    belief,
+                    status,
+                    truncate(&c.statement, 52)
+                );
             }
             if shown == 0 {
                 println!("(no matching claims)");
@@ -503,7 +589,13 @@ fn run(cli: Cli) -> Result<(), String> {
                 return Ok(());
             }
             println!("[{}]  {}", c.id, c.statement);
-            println!("  kind: {}", match c.kind { ClaimKind::Binary => "binary", ClaimKind::Numeric => "numeric" });
+            println!(
+                "  kind: {}",
+                match c.kind {
+                    ClaimKind::Binary => "binary",
+                    ClaimKind::Numeric => "numeric",
+                }
+            );
             println!("  created {}", c.created_at.date_naive());
             if let Some(d) = c.resolve_by {
                 println!("  resolve by {d}");
@@ -513,10 +605,16 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             println!("  forecasts:");
             for (i, f) in c.forecasts.iter().enumerate() {
-                let marker = if i + 1 == c.forecasts.len() { "→" } else { " " };
+                let marker = if i + 1 == c.forecasts.len() {
+                    "→"
+                } else {
+                    " "
+                };
                 let belief = match (f.prob, f.interval) {
                     (Some(p), _) => pct(p),
-                    (_, Some(iv)) => format!("[{}, {}] @ {:.0}%", iv.low, iv.high, iv.level * 100.0),
+                    (_, Some(iv)) => {
+                        format!("[{}, {}] @ {:.0}%", iv.low, iv.high, iv.level * 100.0)
+                    }
                     _ => "?".into(),
                 };
                 println!("    {marker} {}  {}", f.at.date_naive(), belief);
@@ -528,17 +626,31 @@ fn run(cli: Cli) -> Result<(), String> {
                 Some(r) => {
                     match c.kind {
                         ClaimKind::Binary => {
-                            let truth = if c.outcome().map(|o| o.happened()).unwrap_or(false) { "TRUE" } else { "FALSE" };
+                            let truth = if c.outcome().map(|o| o.happened()).unwrap_or(false) {
+                                "TRUE"
+                            } else {
+                                "FALSE"
+                            };
                             println!("  resolved {truth} on {}", r.at.date_naive());
                             if let Some(s) = c.sample() {
-                                println!("    Brier on final forecast: {:.3}", (s.prob - s.outcome).powi(2));
+                                println!(
+                                    "    Brier on final forecast: {:.3}",
+                                    (s.prob - s.outcome).powi(2)
+                                );
                             }
                         }
                         ClaimKind::Numeric => {
                             if let Some(ns) = c.numeric_sample() {
                                 let verdict = if ns.contains() { "inside" } else { "OUTSIDE" };
-                                println!("  resolved value {} on {} ({verdict} the interval)", ns.value, r.at.date_naive());
-                                println!("    Winkler on final interval: {:.3}", scoring::winkler(&ns));
+                                println!(
+                                    "  resolved value {} on {} ({verdict} the interval)",
+                                    ns.value,
+                                    r.at.date_naive()
+                                );
+                                println!(
+                                    "    Winkler on final interval: {:.3}",
+                                    scoring::winkler(&ns)
+                                );
                             }
                         }
                     }
@@ -556,6 +668,12 @@ fn run(cli: Cli) -> Result<(), String> {
             } else {
                 print!("{}", report::render(&ledger, tag.as_deref(), *bins));
             }
+        }
+
+        Cmd::Mcp => {
+            // The MCP surface defaults to the global AGENT ledger, not the human one.
+            let ledger_path = cli.data.clone().unwrap_or_else(agent_ledger_path);
+            return mcp::serve(ledger_path).map_err(|e| format!("mcp: {e}"));
         }
     }
     Ok(())

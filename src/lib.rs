@@ -12,12 +12,11 @@
 //! network, no model. The rest is storage ([`store`]), the domain model
 //! ([`model`]), and human-readable reporting ([`report`]).
 
+pub mod mcp;
 pub mod model;
 pub mod report;
 pub mod scoring;
 pub mod store;
 
-pub use model::{
-    gen_id, Claim, ClaimKind, Forecast, Ledger, NumericForecast, Outcome, Resolution,
-};
+pub use model::{gen_id, Claim, ClaimKind, Forecast, Ledger, NumericForecast, Outcome, Resolution};
 pub use scoring::{NumericSample, Sample};

@@ -83,6 +83,9 @@ pub struct ReportData {
     pub log_score: Option<f64>,
     pub brier_skill: Option<f64>,
     pub base_rate: Option<f64>,
+    /// 95% Wilson interval on the base rate — how firmly this many resolutions
+    /// pin the rate down (a wide interval means too few samples to trust).
+    pub base_rate_ci: Option<(f64, f64)>,
     pub reliability: Option<f64>,
     pub resolution: Option<f64>,
     pub uncertainty: Option<f64>,
@@ -93,6 +96,9 @@ pub struct ReportData {
     pub directional_bias: Option<f64>,
     pub calibration: Vec<BinData>,
     pub by_tag: Vec<TagStat>,
+    /// Per-`kind:` breakdown — calibration by *type* of prediction
+    /// (estimate / tests-pass / bug-hypothesis …): the agent-facing view.
+    pub by_kind: Vec<TagStat>,
     pub mind_changing: Option<MindChange>,
     pub numeric: Option<NumericData>,
 }
@@ -114,12 +120,22 @@ impl ReportData {
             .filter(matches_tag)
             .collect();
         let samples: Vec<Sample> = resolved_claims.iter().filter_map(|c| c.sample()).collect();
-        let numeric_samples: Vec<NumericSample> =
-            resolved_claims.iter().filter_map(|c| c.numeric_sample()).collect();
-        let open = ledger.claims.iter().filter(|c| c.is_open()).filter(matches_tag).count();
+        let numeric_samples: Vec<NumericSample> = resolved_claims
+            .iter()
+            .filter_map(|c| c.numeric_sample())
+            .collect();
+        let open = ledger
+            .claims
+            .iter()
+            .filter(|c| c.is_open())
+            .filter(matches_tag)
+            .count();
 
         let (first_recorded, last_recorded) = {
-            let dates: Vec<_> = resolved_claims.iter().map(|c| c.created_at.date_naive()).collect();
+            let dates: Vec<_> = resolved_claims
+                .iter()
+                .map(|c| c.created_at.date_naive())
+                .collect();
             (
                 dates.iter().min().map(|d| d.to_string()),
                 dates.iter().max().map(|d| d.to_string()),
@@ -148,6 +164,9 @@ impl ReportData {
             for c in &resolved_claims {
                 if let Some(s) = c.sample() {
                     for t in &c.tags {
+                        if t.contains(':') {
+                            continue; // structural tags (kind:/project:/who:/session:) live elsewhere
+                        }
                         map.entry(t.as_str()).or_default().push(s);
                     }
                 }
@@ -165,9 +184,44 @@ impl ReportData {
             rows
         };
 
+        // By prediction kind (the `kind:` tag namespace) — shown regardless of any
+        // project/tag filter, because calibration-per-type is the agent's lever.
+        let by_kind = {
+            let mut map: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
+            for c in &resolved_claims {
+                if let Some(s) = c.sample() {
+                    for t in &c.tags {
+                        if let Some(k) = t.strip_prefix("kind:") {
+                            map.entry(k).or_default().push(s);
+                        }
+                    }
+                }
+            }
+            let mut rows: Vec<TagStat> = map
+                .into_iter()
+                .map(|(tag, s)| TagStat {
+                    tag: tag.to_string(),
+                    n: s.len(),
+                    brier: scoring::brier(&s),
+                    confidence_gap: scoring::overconfidence(&s).map(|o| o.gap),
+                })
+                .collect();
+            rows.sort_by(|a, b| b.n.cmp(&a.n).then(a.tag.cmp(&b.tag)));
+            rows
+        };
+
+        // 95% Wilson interval on the base rate — surfaces small-n uncertainty.
+        let base_rate_ci = {
+            let k: f64 = samples.iter().map(|s| s.outcome).sum();
+            scoring::wilson_interval(k, samples.len(), 1.96)
+        };
+
         // Mind-changing (revised, resolved binary claims).
-        let revised: Vec<&crate::model::Claim> =
-            resolved_claims.iter().copied().filter(|c| c.was_revised() && c.sample().is_some()).collect();
+        let revised: Vec<&crate::model::Claim> = resolved_claims
+            .iter()
+            .copied()
+            .filter(|c| c.was_revised() && c.sample().is_some())
+            .collect();
         let mind_changing = if revised.is_empty() {
             None
         } else {
@@ -193,8 +247,7 @@ impl ReportData {
             None
         } else {
             let n = numeric_samples.len() as f64;
-            let mean_winkler =
-                numeric_samples.iter().map(scoring::winkler).sum::<f64>() / n;
+            let mean_winkler = numeric_samples.iter().map(scoring::winkler).sum::<f64>() / n;
             let nominal = numeric_samples.iter().map(|s| s.level).sum::<f64>() / n;
             let cov = scoring::coverage(&numeric_samples).unwrap_or(f64::NAN);
             let width = numeric_samples.iter().map(|s| s.width()).sum::<f64>() / n;
@@ -218,6 +271,7 @@ impl ReportData {
             log_score: scoring::log_score(&samples, 1e-6),
             brier_skill: scoring::skill_score(&samples),
             base_rate: scoring::base_rate(&samples),
+            base_rate_ci,
             reliability: decomp.map(|d| d.reliability),
             resolution: decomp.map(|d| d.resolution),
             uncertainty: decomp.map(|d| d.uncertainty),
@@ -228,6 +282,7 @@ impl ReportData {
             directional_bias: scoring::directional_bias(&samples),
             calibration,
             by_tag,
+            by_kind,
             mind_changing,
             numeric,
         }
@@ -294,7 +349,11 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
     let _ = writeln!(out, "{}", "=".repeat(title.len()));
 
     if d.is_empty() {
-        let scope = d.tag.as_ref().map(|t| format!(" tagged '{t}'")).unwrap_or_default();
+        let scope = d
+            .tag
+            .as_ref()
+            .map(|t| format!(" tagged '{t}'"))
+            .unwrap_or_default();
         let _ = writeln!(
             out,
             "\nNo resolved claims yet{scope}. {} still open.\n\nRecord beliefs with `ana add`, and `ana resolve` them once reality speaks.\nThe mirror needs something to reflect.",
@@ -316,7 +375,10 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
     if d.resolved > 0 {
         if let (Some(brier), Some(logs), Some(base)) = (d.brier, d.log_score, d.base_rate) {
             let _ = writeln!(out, "\n  Brier score      {brier:.3}   (0 = perfect · 0.25 = always 50/50 · lower better)");
-            let _ = writeln!(out, "  Log score        {logs:.3}   (lower better; punishes confident misses)");
+            let _ = writeln!(
+                out,
+                "  Log score        {logs:.3}   (lower better; punishes confident misses)"
+            );
             if let Some(bss) = d.brier_skill {
                 let tail = if bss > 0.0 {
                     "you beat always-guess-the-base-rate"
@@ -327,14 +389,33 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                 };
                 let _ = writeln!(out, "  Brier skill      {bss:+.3}   ({tail})");
             }
-            let _ = writeln!(out, "  Base rate        {base:.3}   (fraction of your claims that came true)");
+            let ci = d
+                .base_rate_ci
+                .map(|(lo, hi)| format!("   95% CI {lo:.2}–{hi:.2}"))
+                .unwrap_or_default();
+            let _ = writeln!(
+                out,
+                "  Base rate        {base:.3}   (fraction of your claims that came true){ci}"
+            );
         }
 
         if let (Some(rel), Some(res), Some(unc)) = (d.reliability, d.resolution, d.uncertainty) {
-            let _ = writeln!(out, "\n  Decomposition  (Brier = Reliability − Resolution + Uncertainty)");
-            let _ = writeln!(out, "    reliability    {rel:.3}   calibration error      ↓ lower is better");
-            let _ = writeln!(out, "    resolution     {res:.3}   discrimination power   ↑ higher is better");
-            let _ = writeln!(out, "    uncertainty    {unc:.3}   irreducible difficulty of your questions");
+            let _ = writeln!(
+                out,
+                "\n  Decomposition  (Brier = Reliability − Resolution + Uncertainty)"
+            );
+            let _ = writeln!(
+                out,
+                "    reliability    {rel:.3}   calibration error      ↓ lower is better"
+            );
+            let _ = writeln!(
+                out,
+                "    resolution     {res:.3}   discrimination power   ↑ higher is better"
+            );
+            let _ = writeln!(
+                out,
+                "    uncertainty    {unc:.3}   irreducible difficulty of your questions"
+            );
             let _ = writeln!(out, "    check          {rel:.3} − {res:.3} + {unc:.3} = {:.3}  (= Brier, to f64 precision)", rel - res + unc);
         }
 
@@ -343,21 +424,43 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                 let _ = writeln!(out, "\n  Discrimination   AUC {a:.3}   (0.5 = can't tell true from false · 1.0 = perfect)");
             }
             None => {
-                let _ = writeln!(out, "\n  Discrimination   n/a   (every claim resolved the same way)");
+                let _ = writeln!(
+                    out,
+                    "\n  Discrimination   n/a   (every claim resolved the same way)"
+                );
             }
         }
 
-        if let (Some(gap), Some(conf), Some(acc)) = (d.confidence_gap, d.mean_confidence, d.accuracy) {
+        if let (Some(gap), Some(conf), Some(acc)) =
+            (d.confidence_gap, d.mean_confidence, d.accuracy)
+        {
             let _ = writeln!(out, "\n  Confidence gap   {gap:+.3}   {}", verdict(gap));
-            let _ = writeln!(out, "                   mean boldness {conf:.3}  vs  accuracy {acc:.3}");
+            let _ = writeln!(
+                out,
+                "                   mean boldness {conf:.3}  vs  accuracy {acc:.3}"
+            );
             if let Some(bias) = d.directional_bias {
-                let dir = if bias > 0.0 { "toward YES" } else { "toward NO" };
-                let _ = writeln!(out, "                   directional bias {bias:+.3} ({dir})");
+                let dir = if bias > 0.0 {
+                    "toward YES"
+                } else {
+                    "toward NO"
+                };
+                let _ = writeln!(
+                    out,
+                    "                   directional bias {bias:+.3} ({dir})"
+                );
             }
         }
 
-        let _ = writeln!(out, "\n  Reliability diagram   P = your avg forecast · O = what actually happened");
-        let _ = writeln!(out, "    range        n    0{}1", " ".repeat(LANE_W.saturating_sub(2)));
+        let _ = writeln!(
+            out,
+            "\n  Reliability diagram   P = your avg forecast · O = what actually happened"
+        );
+        let _ = writeln!(
+            out,
+            "    range        n    0{}1",
+            " ".repeat(LANE_W.saturating_sub(2))
+        );
         for b in &d.calibration {
             if b.count == 0 {
                 continue;
@@ -367,26 +470,81 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                 None => String::new(),
                 Some(obs) => {
                     let gap = mean_pred - obs;
-                    let mark = if gap.abs() < 0.05 { "ok" } else if gap > 0.0 { "over" } else { "under" };
+                    let mark = if gap.abs() < 0.05 {
+                        "ok"
+                    } else if gap > 0.0 {
+                        "over"
+                    } else {
+                        "under"
+                    };
                     format!("  pred {mean_pred:.2} → obs {obs:.2}  {mark}")
                 }
             };
-            let _ = writeln!(out, "    {:.2}-{:.2}  {:>4}   |{}|{}", b.lo, b.hi, b.count, lane(mean_pred, b.observed), tail);
+            let _ = writeln!(
+                out,
+                "    {:.2}-{:.2}  {:>4}   |{}|{}",
+                b.lo,
+                b.hi,
+                b.count,
+                lane(mean_pred, b.observed),
+                tail
+            );
         }
 
         if !d.by_tag.is_empty() {
             let _ = writeln!(out, "\n  By domain");
-            let _ = writeln!(out, "    {:<14} {:>4}  {:>7}  {:>9}", "tag", "n", "brier", "conf-gap");
+            let _ = writeln!(
+                out,
+                "    {:<14} {:>4}  {:>7}  {:>9}",
+                "tag", "n", "brier", "conf-gap"
+            );
             for t in &d.by_tag {
-                let br = t.brier.map(|x| format!("{x:.3}")).unwrap_or_else(|| "  —".into());
-                let g = t.confidence_gap.map(|x| format!("{x:+.3}")).unwrap_or_else(|| "   —".into());
+                let br = t
+                    .brier
+                    .map(|x| format!("{x:.3}"))
+                    .unwrap_or_else(|| "  —".into());
+                let g = t
+                    .confidence_gap
+                    .map(|x| format!("{x:+.3}"))
+                    .unwrap_or_else(|| "   —".into());
                 let _ = writeln!(out, "    {:<14} {:>4}  {:>7}  {:>9}", t.tag, t.n, br, g);
             }
         }
 
+        if !d.by_kind.is_empty() {
+            let _ = writeln!(
+                out,
+                "\n  By prediction kind   (calibration per type of call)"
+            );
+            let _ = writeln!(
+                out,
+                "    {:<16} {:>4}  {:>7}  {:>9}",
+                "kind", "n", "brier", "conf-gap"
+            );
+            for t in &d.by_kind {
+                let br = t
+                    .brier
+                    .map(|x| format!("{x:.3}"))
+                    .unwrap_or_else(|| "  —".into());
+                let g = t
+                    .confidence_gap
+                    .map(|x| format!("{x:+.3}"))
+                    .unwrap_or_else(|| "   —".into());
+                let _ = writeln!(out, "    {:<16} {:>4}  {:>7}  {:>9}", t.tag, t.n, br, g);
+            }
+        }
+
         if let Some(mc) = &d.mind_changing {
-            let _ = writeln!(out, "\n  Mind-changing    {} claim(s) you revised", mc.revised);
-            let _ = writeln!(out, "    Brier of first guess {:.3}  →  Brier of final guess {:.3}   ({:+.3})", mc.brier_first, mc.brier_last, mc.improvement);
+            let _ = writeln!(
+                out,
+                "\n  Mind-changing    {} claim(s) you revised",
+                mc.revised
+            );
+            let _ = writeln!(
+                out,
+                "    Brier of first guess {:.3}  →  Brier of final guess {:.3}   ({:+.3})",
+                mc.brier_first, mc.brier_last, mc.improvement
+            );
             let line = if mc.improvement > 0.005 {
                 "    Your updates moved you TOWARD the truth. Good — you changed your mind well."
             } else if mc.improvement < -0.005 {
@@ -400,8 +558,16 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
 
     // Numeric section ------------------------------------------------------
     if let Some(num) = &d.numeric {
-        let _ = writeln!(out, "\n  Numeric forecasts   {} resolved interval(s)", num.count);
-        let _ = writeln!(out, "    mean Winkler score   {:.3}   (lower better; width + miscoverage penalty)", num.mean_winkler);
+        let _ = writeln!(
+            out,
+            "\n  Numeric forecasts   {} resolved interval(s)",
+            num.count
+        );
+        let _ = writeln!(
+            out,
+            "    mean Winkler score   {:.3}   (lower better; width + miscoverage penalty)",
+            num.mean_winkler
+        );
         let _ = writeln!(out, "    mean interval width  {:.3}", num.mean_width);
         let _ = writeln!(
             out,
@@ -445,8 +611,22 @@ mod tests {
             resolve_by: None,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             kind: crate::model::ClaimKind::Binary,
-            forecasts: vec![Forecast { at: now(), prob: Some(prob), interval: None, because: None }],
-            resolution: Some(Resolution { at: now(), outcome: Some(if happened { Outcome::True } else { Outcome::False }), value: None, note: None }),
+            forecasts: vec![Forecast {
+                at: now(),
+                prob: Some(prob),
+                interval: None,
+                because: None,
+            }],
+            resolution: Some(Resolution {
+                at: now(),
+                outcome: Some(if happened {
+                    Outcome::True
+                } else {
+                    Outcome::False
+                }),
+                value: None,
+                note: None,
+            }),
         }
     }
 
@@ -464,7 +644,12 @@ mod tests {
                 interval: Some(NumericForecast { low, high, level }),
                 because: None,
             }],
-            resolution: Some(Resolution { at: now(), outcome: None, value: Some(value), note: None }),
+            resolution: Some(Resolution {
+                at: now(),
+                outcome: None,
+                value: Some(value),
+                note: None,
+            }),
         }
     }
 
@@ -531,7 +716,10 @@ mod tests {
     #[test]
     fn tag_filter_limits_and_titles() {
         let ledger = Ledger {
-            claims: vec![binary("a", 0.9, true, &["tech"]), binary("b", 0.2, false, &["world"])],
+            claims: vec![
+                binary("a", 0.9, true, &["tech"]),
+                binary("b", 0.2, false, &["world"]),
+            ],
         };
         let r = render(&ledger, Some("tech"), 10);
         assert!(r.contains("[tag: tech]"));

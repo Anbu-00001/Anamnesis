@@ -37,36 +37,63 @@ fn full_lifecycle() {
     // add ----------------------------------------------------------------
     let (o, _, ok) = ana(
         data,
-        &["add", "It rains tomorrow", "-p", "0.3", "--tags", "weather", "--because", "dry front"],
+        &[
+            "add",
+            "It rains tomorrow",
+            "-p",
+            "0.3",
+            "--tags",
+            "weather",
+            "--because",
+            "dry front",
+        ],
     );
     assert!(ok, "add should succeed");
     let id = extract_id(&o);
     assert_eq!(id.len(), 6, "id should be 6 hex chars, got '{id}'");
 
     // update keeps history ----------------------------------------------
-    let (o, _, ok) = ana(data, &["update", &id, "-p", "0.6", "--because", "front stalled"]);
+    let (o, _, ok) = ana(
+        data,
+        &["update", &id, "-p", "0.6", "--because", "front stalled"],
+    );
     assert!(ok);
-    assert!(o.contains("30% → 60%"), "update should show the transition, got: {o}");
+    assert!(
+        o.contains("30% → 60%"),
+        "update should show the transition, got: {o}"
+    );
 
     // list --open shows it ----------------------------------------------
     let (o, _, ok) = ana(data, &["list", "--open"]);
     assert!(ok && o.contains(&id), "open list should contain the claim");
 
     // resolve ------------------------------------------------------------
-    let (o, _, ok) = ana(data, &["resolve", &id, "yes", "--note", "stalled as feared"]);
+    let (o, _, ok) = ana(
+        data,
+        &["resolve", &id, "yes", "--note", "stalled as feared"],
+    );
     assert!(ok && o.contains("resolved TRUE"), "resolve output: {o}");
 
     // resolved history is final -----------------------------------------
     let (_, e, ok) = ana(data, &["resolve", &id, "no"]);
-    assert!(!ok && e.contains("already resolved"), "double-resolve must fail: {e}");
+    assert!(
+        !ok && e.contains("already resolved"),
+        "double-resolve must fail: {e}"
+    );
     let (_, e, ok) = ana(data, &["update", &id, "-p", "0.9"]);
-    assert!(!ok && e.contains("already resolved"), "updating resolved must fail: {e}");
+    assert!(
+        !ok && e.contains("already resolved"),
+        "updating resolved must fail: {e}"
+    );
 
     // show renders the full palimpsest ----------------------------------
     let (o, _, ok) = ana(data, &["show", &id]);
     assert!(ok);
     assert!(o.contains("resolved TRUE"));
-    assert!(o.contains("dry front") && o.contains("front stalled"), "both reasons should survive");
+    assert!(
+        o.contains("dry front") && o.contains("front stalled"),
+        "both reasons should survive"
+    );
     assert!(o.contains("Brier on final forecast"));
 
     // report works on a real ledger -------------------------------------
@@ -75,7 +102,10 @@ fn full_lifecycle() {
 
     // input validation ---------------------------------------------------
     let (_, e, ok) = ana(data, &["add", "bad", "-p", "1.5"]);
-    assert!(!ok && e.contains("between 0 and 1"), "out-of-range prob must be rejected: {e}");
+    assert!(
+        !ok && e.contains("between 0 and 1"),
+        "out-of-range prob must be rejected: {e}"
+    );
 
     // ambiguous / missing ids are friendly errors -----------------------
     let (_, e, ok) = ana(data, &["show", "zzzzzz"]);

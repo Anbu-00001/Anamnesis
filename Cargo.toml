@@ -1,6 +1,6 @@
 [package]
 name = "anamnesis"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 description = "A local-first instrument against self-deception: log what you believe and how sure, then face the real shape of your mind."
 license = "MIT"

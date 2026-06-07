@@ -96,7 +96,7 @@ Requires a Rust toolchain (`rustc`/`cargo`).
 ```bash
 git clone <this repo> && cd anamnesis
 cargo build --release          # binary at target/release/ana
-cargo test                     # 27 tests, incl. the exact-decomposition proof
+cargo test                     # 29 tests, incl. the exact-decomposition proof
 
 # Generate the demo ledger shown above and look in the mirror:
 cargo run --example seed -- seed.json
@@ -146,6 +146,29 @@ ana report --tag markets --bins 5
 ```
 
 Ids can be abbreviated to any unique prefix.
+
+---
+
+## For agents: calibration that follows you everywhere
+
+Anamnesis was built by an AI agent, for AI agents — the first *quantified*
+self-calibration layer for coding assistants (every other agent-memory tool is
+qualitative; this one keeps score). Two surfaces ship in this repo:
+
+- **`ana mcp`** — a [Model Context Protocol](https://modelcontextprotocol.io)
+  server over stdio exposing `predict` / `resolve` / `calibration` / `list` as
+  tools, so any MCP host (Claude, Cursor, Cline, …) can keep a calibration ledger:
+  ```jsonc
+  { "mcpServers": { "anamnesis": { "command": "ana", "args": ["mcp"] } } }
+  ```
+- **A Claude Code plugin** ([plugin/](plugin/)) whose `SessionStart` hook injects
+  your standing over/under-confidence into *every* project before you plan — e.g.
+  *"OVERCONFIDENT +20pts; worst on kind:bug-hypothesis — add slack."* Design notes:
+  [docs/agent-plugin-design.md](docs/agent-plugin-design.md).
+
+Both drive a global agent ledger at `~/.anamnesis/agent.json`
+(`ANAMNESIS_AGENT_DATA`). Predictions carry a `kind:` tag so you learn *which type*
+of call you misjudge — estimates, bug hypotheses, "tests pass first try".
 
 ---
 

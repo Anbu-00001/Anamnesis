@@ -1,0 +1,18 @@
+{
+  "name": "anamnesis",
+  "owner": { "name": "Anbu-00001" },
+  "metadata": {
+    "description": "Quantified self-calibration for coding agents.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "anamnesis",
+      "source": "./plugin",
+      "description": "Log predictions before acting; get scored when reality answers; see your standing over/under-confidence injected into every project at session start.",
+      "version": "0.1.0",
+      "author": { "name": "Anbu + Claude" },
+      "keywords": ["calibration", "forecasting", "self-evaluation", "metacognition"]
+    }
+  ]
+}

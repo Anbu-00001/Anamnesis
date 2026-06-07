@@ -68,8 +68,18 @@ mod tests {
                 tags: vec!["weather".into()],
                 kind: ClaimKind::Binary,
                 forecasts: vec![
-                    Forecast { at: now, prob: Some(0.4), interval: None, because: Some("dry front".into()) },
-                    Forecast { at: now, prob: Some(0.7), interval: None, because: Some("front stalled".into()) },
+                    Forecast {
+                        at: now,
+                        prob: Some(0.4),
+                        interval: None,
+                        because: Some("dry front".into()),
+                    },
+                    Forecast {
+                        at: now,
+                        prob: Some(0.7),
+                        interval: None,
+                        because: Some("front stalled".into()),
+                    },
                 ],
                 resolution: Some(Resolution {
                     at: now,

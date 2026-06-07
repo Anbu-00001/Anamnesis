@@ -373,6 +373,28 @@ pub fn coverage(samples: &[NumericSample]) -> Option<f64> {
     Some(samples.iter().filter(|s| s.contains()).count() as f64 / samples.len() as f64)
 }
 
+// ───────────────────────── small-sample uncertainty ─────────────────────────
+
+/// **Wilson score interval** for a binomial proportion `successes / n`.
+///
+/// A confidence interval on a rate that, unlike the normal ("Wald") approximation,
+/// stays inside `[0, 1]` and keeps sensible coverage at small `n` and extreme
+/// proportions — exactly the regime a single agent or session lives in, where the
+/// literature warns the central-limit approximation is unsafe. `z` is the
+/// standard-normal quantile (≈ `1.96` for 95%). Returns `None` for `n == 0`.
+pub fn wilson_interval(successes: f64, n: usize, z: f64) -> Option<(f64, f64)> {
+    if n == 0 {
+        return None;
+    }
+    let n = n as f64;
+    let p = (successes / n).clamp(0.0, 1.0);
+    let z2 = z * z;
+    let denom = 1.0 + z2 / n;
+    let center = (p + z2 / (2.0 * n)) / denom;
+    let margin = (z / denom) * ((p * (1.0 - p) / n) + (z2 / (4.0 * n * n))).sqrt();
+    Some(((center - margin).max(0.0), (center + margin).min(1.0)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -382,13 +404,39 @@ mod tests {
     }
 
     #[test]
+    fn wilson_interval_known_and_bounded() {
+        // 1 of 2 at 95%: symmetric about 0.5 and wide, as small n demands.
+        let (lo, hi) = wilson_interval(1.0, 2, 1.96).unwrap();
+        assert!((lo - 0.0945).abs() < 1e-3, "lo={lo}");
+        assert!((hi - 0.9055).abs() < 1e-3, "hi={hi}");
+        // 0 of 5: clamps at 0 below, stays strictly inside (0,1) above.
+        let (lo0, hi0) = wilson_interval(0.0, 5, 1.96).unwrap();
+        assert_eq!(lo0, 0.0);
+        assert!(hi0 > 0.0 && hi0 < 1.0, "hi0={hi0}");
+        // The interval always brackets the point estimate.
+        let (lo2, hi2) = wilson_interval(7.0, 10, 1.96).unwrap();
+        assert!(lo2 < 0.7 && 0.7 < hi2, "[{lo2},{hi2}] should bracket 0.7");
+        // n = 0 → undefined.
+        assert!(wilson_interval(0.0, 0, 1.96).is_none());
+    }
+
+    #[test]
     fn brier_known_values() {
         // Perfect, confident, correct.
-        approx(brier(&[Sample::new(1.0, true), Sample::new(0.0, false)]).unwrap(), 0.0);
+        approx(
+            brier(&[Sample::new(1.0, true), Sample::new(0.0, false)]).unwrap(),
+            0.0,
+        );
         // Always 0.5: squared error 0.25 every time.
-        approx(brier(&[Sample::new(0.5, true), Sample::new(0.5, false)]).unwrap(), 0.25);
+        approx(
+            brier(&[Sample::new(0.5, true), Sample::new(0.5, false)]).unwrap(),
+            0.25,
+        );
         // Confidently, maximally wrong.
-        approx(brier(&[Sample::new(0.0, true), Sample::new(1.0, false)]).unwrap(), 1.0);
+        approx(
+            brier(&[Sample::new(0.0, true), Sample::new(1.0, false)]).unwrap(),
+            1.0,
+        );
         assert!(brier(&[]).is_none());
     }
 
@@ -465,8 +513,16 @@ mod tests {
     /// Self-evidently-correct `O(n²)` reference, kept only to validate the fast
     /// rank-based `auc`.
     fn auc_pairwise(samples: &[Sample]) -> Option<f64> {
-        let pos: Vec<f64> = samples.iter().filter(|s| s.outcome >= 0.5).map(|s| s.prob).collect();
-        let neg: Vec<f64> = samples.iter().filter(|s| s.outcome < 0.5).map(|s| s.prob).collect();
+        let pos: Vec<f64> = samples
+            .iter()
+            .filter(|s| s.outcome >= 0.5)
+            .map(|s| s.prob)
+            .collect();
+        let neg: Vec<f64> = samples
+            .iter()
+            .filter(|s| s.outcome < 0.5)
+            .map(|s| s.prob)
+            .collect();
         if pos.is_empty() || neg.is_empty() {
             return None;
         }
@@ -549,17 +605,37 @@ mod tests {
 
     #[test]
     fn winkler_inside_is_width_outside_is_penalised() {
-        let inside = NumericSample { low: 10.0, high: 20.0, level: 0.8, value: 15.0 };
+        let inside = NumericSample {
+            low: 10.0,
+            high: 20.0,
+            level: 0.8,
+            value: 15.0,
+        };
         approx(winkler(&inside), 10.0); // just the width
 
         // width 10 + (2/0.2)*(10 - 5) = 10 + 10*5 = 60
-        let below = NumericSample { low: 10.0, high: 20.0, level: 0.8, value: 5.0 };
+        let below = NumericSample {
+            low: 10.0,
+            high: 20.0,
+            level: 0.8,
+            value: 5.0,
+        };
         approx(winkler(&below), 60.0);
-        let above = NumericSample { low: 10.0, high: 20.0, level: 0.8, value: 25.0 };
+        let above = NumericSample {
+            low: 10.0,
+            high: 20.0,
+            level: 0.8,
+            value: 25.0,
+        };
         approx(winkler(&above), 60.0);
 
         // A tighter nominal level (larger α) penalises a miss less.
-        let loose = NumericSample { low: 10.0, high: 20.0, level: 0.5, value: 5.0 };
+        let loose = NumericSample {
+            low: 10.0,
+            high: 20.0,
+            level: 0.5,
+            value: 5.0,
+        };
         // 10 + (2/0.5)*5 = 10 + 4*5 = 30
         approx(winkler(&loose), 30.0);
     }
@@ -567,9 +643,24 @@ mod tests {
     #[test]
     fn coverage_counts_contained_intervals() {
         let s = [
-            NumericSample { low: 0.0, high: 10.0, level: 0.8, value: 5.0 },  // in
-            NumericSample { low: 0.0, high: 10.0, level: 0.8, value: 50.0 }, // out
-            NumericSample { low: 0.0, high: 10.0, level: 0.8, value: 0.0 },  // edge = in
+            NumericSample {
+                low: 0.0,
+                high: 10.0,
+                level: 0.8,
+                value: 5.0,
+            }, // in
+            NumericSample {
+                low: 0.0,
+                high: 10.0,
+                level: 0.8,
+                value: 50.0,
+            }, // out
+            NumericSample {
+                low: 0.0,
+                high: 10.0,
+                level: 0.8,
+                value: 0.0,
+            }, // edge = in
         ];
         approx(coverage(&s).unwrap(), 2.0 / 3.0);
         assert!(coverage(&[]).is_none());

@@ -234,7 +234,12 @@ mod tests {
     }
 
     fn binary_forecast(p: f64) -> Forecast {
-        Forecast { at: ts(2025, 1, 1), prob: Some(p), interval: None, because: None }
+        Forecast {
+            at: ts(2025, 1, 1),
+            prob: Some(p),
+            interval: None,
+            because: None,
+        }
     }
 
     fn claim(id: &str, probs: &[f64], outcome: Option<Outcome>) -> Claim {
@@ -274,14 +279,26 @@ mod tests {
             forecasts: vec![Forecast {
                 at: ts(2025, 1, 1),
                 prob: None,
-                interval: Some(NumericForecast { low: 10.0, high: 20.0, level: 0.8 }),
+                interval: Some(NumericForecast {
+                    low: 10.0,
+                    high: 20.0,
+                    level: 0.8,
+                }),
                 because: None,
             }],
-            resolution: Some(Resolution { at: ts(2025, 6, 1), outcome: None, value: Some(13.0), note: None }),
+            resolution: Some(Resolution {
+                at: ts(2025, 6, 1),
+                outcome: None,
+                value: Some(13.0),
+                note: None,
+            }),
         };
         assert!(c.sample().is_none()); // not a binary sample
         let ns = c.numeric_sample().unwrap();
-        assert_eq!((ns.low, ns.high, ns.level, ns.value), (10.0, 20.0, 0.8, 13.0));
+        assert_eq!(
+            (ns.low, ns.high, ns.level, ns.value),
+            (10.0, 20.0, 0.8, 13.0)
+        );
     }
 
     #[test]
@@ -317,7 +334,12 @@ mod tests {
 
     #[test]
     fn tags_normalised() {
-        let got = normalize_tags(&[" Politics ".into(), "politics".into(), "".into(), "TECH".into()]);
+        let got = normalize_tags(&[
+            " Politics ".into(),
+            "politics".into(),
+            "".into(),
+            "TECH".into(),
+        ]);
         assert_eq!(got, vec!["politics".to_string(), "tech".to_string()]);
     }
 

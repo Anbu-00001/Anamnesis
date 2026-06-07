@@ -1,0 +1,19 @@
+{
+  "description": "Anamnesis calibration hooks: inject standing calibration at SessionStart; nudge to resolve overdue predictions at Stop.",
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"" }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.sh\"" }
+        ]
+      }
+    ]
+  }
+}
