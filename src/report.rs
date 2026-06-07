@@ -47,6 +47,11 @@ pub struct TagStat {
     /// Confidence gap with accuracy shrunk toward the overall rate — the
     /// small-n-robust number to trust when `n` is tiny.
     pub confidence_gap_shrunk: Option<f64>,
+    /// Anytime-valid calibration e-value *within this slice* — the multicalibration
+    /// view: which kind of prediction is *really* miscalibrated, not just by luck.
+    /// Valid at tiny subgroup `n` (it cannot false-alarm), unlike a raw worst-group
+    /// gap. `None` for the by-tag rows, where it is not surfaced.
+    pub eprocess: Option<f64>,
 }
 
 /// Summary of the claims whose probability you revised before they resolved.
@@ -72,6 +77,17 @@ pub struct NumericData {
     /// (overconfident), positive ⇒ too wide.
     pub coverage_gap: f64,
     pub mean_width: f64,
+    /// Jeffreys-shrunk coverage `(k+½)/(n+1)` — the de-noised coverage point that
+    /// keeps a 0-of-3 or 3-of-3 fluke from reading as 0% or 100%.
+    pub coverage_shrunk: f64,
+    /// Anytime-valid e-value on interval coverage (the same betting test as the
+    /// binary side, fed `prob = nominal level`, `outcome = contained`): is the
+    /// miscoverage real, or too few intervals to tell?
+    pub coverage_eprocess: Option<f64>,
+    /// Conformal width multiplier: multiply your interval half-widths by this to
+    /// hit your nominal coverage (`>1` widen, `<1` sharpen). `None` below three
+    /// usable intervals. Acted on only once `coverage_eprocess` finds real evidence.
+    pub width_factor: Option<f64>,
 }
 
 /// Prior strength pulling the recalibration map toward the identity — high enough
@@ -82,6 +98,31 @@ pub(crate) const RECAL_RIDGE: f64 = 1.5;
 /// the MCP `recalibrate` tool so the two can never disagree.
 pub(crate) const RECAL_MIN_E: f64 = 3.0;
 pub(crate) const RECAL_MIN_N: usize = 6;
+
+/// The recalibration map for the resolved binary claims matching `tag` (in
+/// resolution order), together with whether the e-process has **earned** applying
+/// it — real evidence (`≥ RECAL_MIN_E`) over enough samples (`≥ RECAL_MIN_N`). The
+/// fitted map is returned regardless; `earned` says whether to trust it. Defined
+/// once here, next to the gate constants, so the report, the MCP `recalibrate`/
+/// `decide` tools, and the CLI can never disagree about when a correction is real.
+pub fn earned_recalibration(
+    ledger: &Ledger,
+    tag: Option<&str>,
+) -> (Option<scoring::Recalibration>, bool, usize, Option<f64>) {
+    let mut claims: Vec<&crate::model::Claim> = ledger
+        .claims
+        .iter()
+        .filter(|c| c.is_resolved())
+        .filter(|c| tag.is_none_or(|t| c.tags.iter().any(|x| x == t)))
+        .collect();
+    claims.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
+    let samples: Vec<Sample> = claims.iter().filter_map(|c| c.sample()).collect();
+    let n = samples.len();
+    let e = scoring::calibration_eprocess(&samples);
+    let recal = scoring::fit_recalibration(&samples, RECAL_RIDGE);
+    let earned = recal.is_some() && e.is_some_and(|ev| ev >= RECAL_MIN_E) && n >= RECAL_MIN_N;
+    (recal, earned, n, e)
+}
 
 /// Bootstrap settings for the Brier band — a fixed seed makes the report
 /// reproducible run-to-run (a band that jittered every run would unsettle).
@@ -208,6 +249,13 @@ impl ReportData {
             )
         };
 
+        // Chronological (resolution-order) view, reused by the e-process and by the
+        // per-slice e-values below: sequential validity is about the order outcomes
+        // were *learned*, so sort by resolution time once and share it.
+        let mut chrono: Vec<&crate::model::Claim> = resolved_claims.clone();
+        chrono.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
+        let chrono_samples: Vec<Sample> = chrono.iter().filter_map(|c| c.sample()).collect();
+
         let decomp = scoring::decompose(&samples);
         let over = scoring::overconfidence(&samples);
         let overall_acc = over.map(|o| o.accuracy); // shrinkage prior for per-slice gaps
@@ -228,7 +276,7 @@ impl ReportData {
             Vec::new()
         } else {
             let mut map: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
-            for c in &resolved_claims {
+            for c in &chrono {
                 if let Some(s) = c.sample() {
                     for t in &c.tags {
                         if t.contains(':') {
@@ -260,6 +308,7 @@ impl ReportData {
                         brier: scoring::brier(&s),
                         confidence_gap: oc.map(|o| o.gap),
                         confidence_gap_shrunk: gap_shrunk,
+                        eprocess: None, // surfaced only for the per-kind view
                     }
                 })
                 .collect();
@@ -271,7 +320,7 @@ impl ReportData {
         // project/tag filter, because calibration-per-type is the agent's lever.
         let by_kind = {
             let mut map: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
-            for c in &resolved_claims {
+            for c in &chrono {
                 if let Some(s) = c.sample() {
                     for t in &c.tags {
                         if let Some(k) = t.strip_prefix("kind:") {
@@ -302,6 +351,9 @@ impl ReportData {
                         brier: scoring::brier(&s),
                         confidence_gap: oc.map(|o| o.gap),
                         confidence_gap_shrunk: gap_shrunk,
+                        // Per-kind anytime-valid evidence (samples already in
+                        // resolution order, inherited from `chrono`).
+                        eprocess: scoring::calibration_eprocess(&s),
                     }
                 })
                 .collect();
@@ -350,6 +402,17 @@ impl ReportData {
             let nominal = numeric_samples.iter().map(|s| s.level).sum::<f64>() / n;
             let cov = scoring::coverage(&numeric_samples).unwrap_or(f64::NAN);
             let width = numeric_samples.iter().map(|s| s.width()).sum::<f64>() / n;
+            // Jeffreys-shrunk coverage point: (k+½)/(n+1), de-noising tiny records.
+            let contained = numeric_samples.iter().filter(|s| s.contains()).count() as f64;
+            let coverage_shrunk =
+                scoring::shrink_toward(contained, numeric_samples.len(), 0.5, 1.0);
+            // Coverage is itself a calibration question: did each interval, at its
+            // stated level, contain the truth? Reuse the binary e-process on
+            // (prob = level, outcome = contained) for an anytime-valid coverage test.
+            let coverage_samples: Vec<Sample> = numeric_samples
+                .iter()
+                .map(|s| Sample::new(s.level, s.contains()))
+                .collect();
             Some(NumericData {
                 count: numeric_samples.len(),
                 mean_winkler,
@@ -357,14 +420,14 @@ impl ReportData {
                 empirical_coverage: cov,
                 coverage_gap: cov - nominal,
                 mean_width: width,
+                coverage_shrunk,
+                coverage_eprocess: scoring::calibration_eprocess(&coverage_samples),
+                width_factor: scoring::conformal_width_factor(&numeric_samples),
             })
         };
 
         // Anytime-valid calibration test, fed the outcomes in the order they were
-        // learned — sequential validity is about the order of *resolution*.
-        let mut chrono: Vec<&crate::model::Claim> = resolved_claims.clone();
-        chrono.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
-        let chrono_samples: Vec<Sample> = chrono.iter().filter_map(|c| c.sample()).collect();
+        // learned (chrono / chrono_samples computed once, above).
         let eprocess = scoring::calibration_eprocess(&chrono_samples);
         let eprocess_pvalue = eprocess.map(scoring::eprocess_pvalue);
 
@@ -695,14 +758,25 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
             let has_evidence = d.eprocess.is_some_and(|e| e >= RECAL_MIN_E);
             if has_evidence && r.n >= RECAL_MIN_N && ((r.b - 1.0).abs() > 0.10 || r.a.abs() > 0.10)
             {
+                // The Cox calibration slope (b) and intercept (a), read aloud:
+                // b<1 ⇒ forecasts too extreme; the intercept is a level-independent
+                // bias — a>0 means your stated numbers should be higher (you
+                // under-state), a<0 lower (you over-state).
                 let shape = if r.b < 1.0 {
                     "you run too extreme"
                 } else {
                     "you are too timid"
                 };
+                let bias = if r.a > 0.10 {
+                    "; under-stating on average"
+                } else if r.a < -0.10 {
+                    "; over-stating on average"
+                } else {
+                    ""
+                };
                 let _ = writeln!(
                     out,
-                    "\n  Recalibration    stated → what it should be   (slope b={:.2}: {shape})",
+                    "\n  Recalibration    stated → what it should be   (Cox slope b={:.2}: {shape}{bias})",
                     r.b
                 );
                 let cells: Vec<String> = r
@@ -802,6 +876,28 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                     t.tag, t.n, br, g, gs
                 );
             }
+            // Multicalibration verdict. The per-kind e-process is anytime-valid, so
+            // the worst kind that clears the evidence bar is *genuinely* miscalibrated
+            // — not the small-subgroup fluke that derails a raw worst-group gap. Stay
+            // silent otherwise; the overall "Is it real?" line already covers that.
+            if let Some((t, e)) = d
+                .by_kind
+                .iter()
+                .filter_map(|t| t.eprocess.map(|e| (t, e)))
+                .filter(|&(_, e)| e >= RECAL_MIN_E)
+                .max_by(|a, b| a.1.total_cmp(&b.1))
+            {
+                let dir = match t.confidence_gap {
+                    Some(g) if g > 0.0 => "overconfident",
+                    Some(_) => "underconfident",
+                    None => "miscalibrated",
+                };
+                let _ = writeln!(
+                    out,
+                    "    → '{}' is really {dir} (e={:.0}) — trust your '{}' calls least.",
+                    t.tag, e, t.tag
+                );
+            }
         }
 
         if let Some(mc) = &d.mind_changing {
@@ -854,6 +950,18 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
             "    Your intervals are about the right width. Well judged."
         };
         let _ = writeln!(out, "{line}");
+        // The conformal width correction — gated on the coverage e-process finding
+        // real evidence (mirrors the binary recalibration gate), so the agent is
+        // never told to resize intervals on the strength of a couple of misses.
+        if let (Some(m), Some(e)) = (num.width_factor, num.coverage_eprocess) {
+            if e >= RECAL_MIN_E && (m - 1.0).abs() > 0.10 {
+                let verb = if m > 1.0 { "WIDEN" } else { "SHARPEN" };
+                let _ = writeln!(
+                    out,
+                    "    Recalibration: {verb} — multiply your interval half-widths by {m:.2} (coverage e={e:.0})."
+                );
+            }
+        }
     }
 
     let _ = writeln!(

@@ -171,6 +171,37 @@ fn coverage(
     Ok(scoring::coverage(&samples))
 }
 
+/// Conformal width multiplier: multiply your interval half-widths by this to hit
+/// your nominal coverage (`>1` widen, `<1` sharpen) — the numeric recalibration
+/// map. `None` below three usable intervals.
+#[pyfunction]
+fn conformal_width_factor(
+    lows: Vec<f64>,
+    highs: Vec<f64>,
+    levels: Vec<f64>,
+    values: Vec<f64>,
+) -> PyResult<Option<f64>> {
+    let n = lows.len();
+    if highs.len() != n || levels.len() != n || values.len() != n {
+        return Err(PyValueError::new_err(format!(
+            "lows, highs, levels, values must have equal length ({}, {}, {}, {})",
+            lows.len(),
+            highs.len(),
+            levels.len(),
+            values.len()
+        )));
+    }
+    let samples: Vec<NumericSample> = (0..n)
+        .map(|i| NumericSample {
+            low: lows[i],
+            high: highs[i],
+            level: levels[i],
+            value: values[i],
+        })
+        .collect();
+    Ok(scoring::conformal_width_factor(&samples))
+}
+
 /// Wilson score interval for a binomial rate `successes/n`. `z` defaults to the
 /// 95% standard-normal quantile. `None` for `n == 0`.
 #[pyfunction]
@@ -276,6 +307,32 @@ fn risk_coverage_curve(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Vec<(f64
         .unwrap_or_default())
 }
 
+/// Decision gate: correct `p` through an optional recalibration map `(recal_a,
+/// recal_b)`, then apply Chow's stake-aware threshold. Returns
+/// `(act, adjusted_p, proceed_threshold, margin)` where `act` ∈ {proceed, verify,
+/// abstain}. Pass `recal_a`/`recal_b` only when a correction has been earned.
+#[pyfunction]
+#[pyo3(signature = (p, stake=1.0, verify_cost=0.2, recal_a=None, recal_b=None))]
+fn decide(
+    p: f64,
+    stake: f64,
+    verify_cost: f64,
+    recal_a: Option<f64>,
+    recal_b: Option<f64>,
+) -> (String, f64, f64, f64) {
+    let recal = match (recal_a, recal_b) {
+        (Some(a), Some(b)) => Some(scoring::Recalibration { a, b, n: 0 }),
+        _ => None,
+    };
+    let d = scoring::decide(p, recal, stake, verify_cost);
+    let act = match d.act {
+        scoring::Act::Proceed => "proceed",
+        scoring::Act::Verify => "verify",
+        scoring::Act::Abstain => "abstain",
+    };
+    (act.to_string(), d.adjusted_p, d.proceed_threshold, d.margin)
+}
+
 /// The compiled extension module `anamnesis._core`.
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -292,6 +349,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(calibration_curve, m)?)?;
     m.add_function(wrap_pyfunction!(winkler, m)?)?;
     m.add_function(wrap_pyfunction!(coverage, m)?)?;
+    m.add_function(wrap_pyfunction!(conformal_width_factor, m)?)?;
     m.add_function(wrap_pyfunction!(wilson_interval, m)?)?;
     m.add_function(wrap_pyfunction!(shrink_toward, m)?)?;
     m.add_function(wrap_pyfunction!(calibration_eprocess, m)?)?;
@@ -303,6 +361,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(distinct_forecasts, m)?)?;
     m.add_function(wrap_pyfunction!(risk_coverage_summary, m)?)?;
     m.add_function(wrap_pyfunction!(risk_coverage_curve, m)?)?;
+    m.add_function(wrap_pyfunction!(decide, m)?)?;
     m.add_function(wrap_pyfunction!(dialectical_mean, m)?)?;
     Ok(())
 }

@@ -30,9 +30,20 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   to trust your own judgement), a **stake-weighted Brier** (`brier_weighted`: are you
   miscalibrated on the calls that *matter*?) and a **dialectical-bootstrapping**
   aggregator (`dialectical_mean`: average a first estimate with a "consider the
-  opposite" second — an elicitation aid, not a score). This is the load-bearing
-  core; everything else is plumbing. Types: `Sample` (binary), `NumericSample`
-  (interval).
+  opposite" second — an elicitation aid, not a score) and a **conformal interval
+  recalibration** (`conformal_width_factor`: the multiplier on your credible-interval
+  half-widths that makes them hit nominal coverage — the numeric analogue of the
+  recalibration map, the split-conformal quantile of standardized residuals). This is
+  the load-bearing core; everything else is plumbing. Types: `Sample` (binary),
+  `NumericSample` (interval). Tier 3 reuses the e-process two more ways: per-`kind:`
+  (multicalibration — which prediction *type* is really miscalibrated, anytime-valid
+  so tiny subgroups can't false-alarm) and on interval coverage (`prob=level`,
+  `outcome=contained`) to gate the width correction; `fit_recalibration`'s `(a,b)`
+  doubles as the Cox calibration slope/intercept the report reads aloud. The
+  **decision gate** `decide` (`Act::{Proceed,Verify,Abstain}` + `Decision`) is the
+  operational end: recalibrate the stated `p`, then apply Chow's reject threshold
+  `τ = 1 − verify_cost/stake` (proceed iff `p̂ ≥ τ`; abstain below even odds) — a
+  number becomes an action, and the bar climbs with the stakes.
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
   (forecasts appended, never overwritten). `ClaimKind::{Binary,Numeric}`. `Forecast`
   holds `Option<prob>` xor `Option<interval>`; `Resolution` holds `Option<outcome>`
@@ -43,17 +54,23 @@ not the same as knowing how sure to be (calibration).** The report shows both.
 - [src/store.rs](src/store.rs) — one JSON file, atomic write (temp + rename),
   missing file = empty ledger.
 - [src/report.rs](src/report.rs) — **compute once into `ReportData`, render twice**
-  (`render` = text, `render_json` = JSON). Never compute metrics in a renderer.
-- [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/list/show/report/mcp`,
-  global `--data` and `--json`. `list --tag` filters by tag; the agent ledger is
-  `~/.anamnesis/agent.json` (`ANAMNESIS_AGENT_DATA`).
+  (`render` = text, `render_json` = JSON). Never compute metrics in a renderer. Also
+  home of `earned_recalibration` (the shared evidence gate: fitted map + whether the
+  e-process has earned it, next to the `RECAL_*` constants) reused by the CLI and the
+  MCP `recalibrate`/`decide` tools so the gate is defined exactly once.
+- [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/list/show/report/decide/mcp`,
+  global `--data` and `--json`. `decide --prob --stake` is the decision gate (below);
+  `list --tag` filters by tag; the agent ledger is `~/.anamnesis/agent.json`
+  (`ANAMNESIS_AGENT_DATA`).
 - [src/mcp.rs](src/mcp.rs) — `ana mcp`: a hand-rolled Model Context Protocol
   server over newline-delimited JSON-RPC stdio (no new deps), exposing
-  predict/resolve/calibration/**recalibrate**/list as tools for any MCP agent.
-  `recalibrate` returns a stated probability unchanged until the e-process finds
-  real evidence (shares `report::RECAL_MIN_E`/`RECAL_MIN_N` with the report so
-  they never diverge). The cross-agent reach surface; reuses scoring/report as the
-  single source of truth.
+  predict/resolve/calibration/**recalibrate**/**decide**/list as tools for any MCP
+  agent. `recalibrate` returns a stated probability unchanged until the e-process
+  finds real evidence; `decide` corrects it through that map then applies a
+  stake-aware threshold (proceed/verify/abstain) — the operational end of
+  calibration, the documented fix for "agents verbalize uncertainty but act anyway".
+  Both share `report::earned_recalibration` via the thin `fit_and_gate` helper. The
+  cross-agent reach surface; reuses scoring/report as the single source of truth.
 - [bindings/python/](bindings/python/) — **PyO3 + maturin** binding exposing the
   pure `scoring` core to Python as an `abi3` wheel (`import anamnesis`). It is a
   *standalone* crate (its own empty `[workspace]`) depending on the core lib by

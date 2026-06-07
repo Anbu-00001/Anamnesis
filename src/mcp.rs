@@ -1,7 +1,7 @@
 //! `ana mcp` — a minimal Model Context Protocol server over stdio.
 //!
 //! Exposes Anamnesis as MCP **tools** (`predict`, `resolve`, `calibration`,
-//! `list`) so that *any* MCP-capable agent — Claude, Cursor, Cline, Windsurf,
+//! `recalibrate`, `decide`, `list`) so that *any* MCP-capable agent — Claude, Cursor, Cline, Windsurf,
 //! and the growing list of hosts that speak the protocol — can keep a
 //! calibration ledger, not just the Claude Code plugin. This is the reach
 //! surface: one server, every agent.
@@ -21,7 +21,7 @@ use crate::model::{
     compose_reasoning, gen_id, normalize_tags, Claim, ClaimKind, Forecast, NumericForecast,
     Outcome, Resolution,
 };
-use crate::scoring::{self, NumericSample, Sample};
+use crate::scoring::{self, NumericSample};
 use crate::{report, store};
 
 /// The protocol revision this server implements.
@@ -112,6 +112,7 @@ fn tools_call(req: &Value, id: Value, ledger: &Path) -> Value {
         "resolve" => tool_resolve(&args, ledger),
         "calibration" => tool_calibration(&args, ledger),
         "recalibrate" => tool_recalibrate(&args, ledger),
+        "decide" => tool_decide(&args, ledger),
         "list" => tool_list(&args, ledger),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -345,6 +346,16 @@ fn tool_calibration(args: &Value, ledger: &Path) -> ToolResult {
     Ok((text, Some(structured)))
 }
 
+/// Load the ledger and ask [`report::earned_recalibration`] — the single source of
+/// truth for the evidence gate — for the (tag-scoped) map and whether it is earned.
+fn fit_and_gate(
+    ledger: &Path,
+    tag: Option<&str>,
+) -> Result<(Option<scoring::Recalibration>, bool, usize, Option<f64>), String> {
+    let led = store::load(ledger).map_err(|e| e.to_string())?;
+    Ok(report::earned_recalibration(&led, tag))
+}
+
 fn tool_recalibrate(args: &Value, ledger: &Path) -> ToolResult {
     let p = args
         .get("prob")
@@ -357,27 +368,12 @@ fn tool_recalibrate(args: &Value, ledger: &Path) -> ToolResult {
         .get("tag")
         .and_then(Value::as_str)
         .map(str::to_lowercase);
-    let led = store::load(ledger).map_err(|e| e.to_string())?;
-
-    // Resolved binary samples matching the tag, in the order they were learned.
-    let mut claims: Vec<&Claim> = led
-        .claims
-        .iter()
-        .filter(|c| c.is_resolved())
-        .filter(|c| tag.as_ref().is_none_or(|t| c.tags.iter().any(|x| x == t)))
-        .collect();
-    claims.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
-    let samples: Vec<Sample> = claims.iter().filter_map(|c| c.sample()).collect();
-    let n = samples.len();
-
-    let e = scoring::calibration_eprocess(&samples);
-    let recal = scoring::fit_recalibration(&samples, report::RECAL_RIDGE);
-    // Apply the map only once there is real (≥ suggestive) evidence of miscalibration
-    // and enough samples — otherwise hand back the stated number untouched.
-    let has_evidence = e.is_some_and(|ev| ev >= report::RECAL_MIN_E) && n >= report::RECAL_MIN_N;
-    let (corrected, applied) = match (&recal, has_evidence) {
-        (Some(r), true) => (r.apply(p), true),
-        _ => (p, false),
+    // Apply the map only once there is real evidence of miscalibration (and enough
+    // samples) — otherwise hand back the stated number untouched.
+    let (recal, applied, n, e) = fit_and_gate(ledger, tag.as_deref())?;
+    let corrected = match (&recal, applied) {
+        (Some(r), true) => r.apply(p),
+        _ => p,
     };
 
     let text = if applied {
@@ -406,6 +402,69 @@ fn tool_recalibrate(args: &Value, ledger: &Path) -> ToolResult {
             "eprocess": e,
             "a": recal.as_ref().map(|r| r.a),
             "b": recal.as_ref().map(|r| r.b),
+        })),
+    ))
+}
+
+fn tool_decide(args: &Value, ledger: &Path) -> ToolResult {
+    let p = args
+        .get("prob")
+        .and_then(Value::as_f64)
+        .ok_or("prob (0..1) is required")?;
+    if !(0.0..=1.0).contains(&p) {
+        return Err(format!("prob must be between 0 and 1, got {p}"));
+    }
+    let stake = args.get("stake").and_then(Value::as_f64).unwrap_or(1.0);
+    let verify_cost = args
+        .get("verify_cost")
+        .and_then(Value::as_f64)
+        .unwrap_or(0.2);
+    let tag = args
+        .get("tag")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase);
+
+    // Correct the stated probability through the earned map (if any), then apply
+    // Chow's stake-aware threshold — the same evidence gate as `recalibrate`.
+    let (recal, earned, n, e) = fit_and_gate(ledger, tag.as_deref())?;
+    let map = if earned { recal } else { None };
+    let d = scoring::decide(p, map, stake, verify_cost);
+
+    let (verb, gloss) = match d.act {
+        scoring::Act::Proceed => ("PROCEED", "confidence clears the bar for the stakes"),
+        scoring::Act::Verify => ("VERIFY", "in the doubt zone — check before you commit"),
+        scoring::Act::Abstain => (
+            "ABSTAIN",
+            "more likely to fail than succeed — replan or escalate",
+        ),
+    };
+    let corr = if earned {
+        format!(
+            " (corrected {:.0}%→{:.0}% from {n} resolved calls)",
+            p * 100.0,
+            d.adjusted_p * 100.0
+        )
+    } else {
+        String::new()
+    };
+    let text = format!(
+        "{verb} — {gloss}. Need ≥{:.0}% at stake {stake:.1}; you have {:.0}%{corr}.",
+        d.proceed_threshold * 100.0,
+        d.adjusted_p * 100.0,
+    );
+    Ok((
+        text,
+        Some(json!({
+            "act": verb.to_lowercase(),
+            "stated": p,
+            "adjusted": d.adjusted_p,
+            "proceed_threshold": d.proceed_threshold,
+            "margin": d.margin,
+            "stake": stake,
+            "verify_cost": verify_cost,
+            "used_recalibration": earned,
+            "n": n,
+            "eprocess": e,
         })),
     ))
 }
@@ -532,6 +591,16 @@ fn tool_schemas() -> Value {
             }, "required": ["prob"] }
         },
         {
+            "name": "decide",
+            "description": "Turn a stated probability into an ACTION under stakes — the operational end of calibration, for when you're about to do something and want to know whether to just do it. Corrects your number through the earned recalibration map (verbalized confidence is unreliable), then applies Chow's stake-aware threshold: returns PROCEED, VERIFY (check first), or ABSTAIN (replan — more likely to fail than succeed). Raise `stake` for consequential or irreversible actions; the bar to proceed climbs with it. Use this instead of acting on a gut number.",
+            "inputSchema": { "type": "object", "properties": {
+                "prob": { "type": "number", "description": "your stated success probability, 0..1" },
+                "stake": { "type": "number", "description": "cost of a wrong action relative to one verification; 1 = ordinary, raise for irreversible calls (default 1)" },
+                "verify_cost": { "type": "number", "description": "cost of a verification step in the same unit (default 0.2)" },
+                "tag": { "type": "string", "description": "scope the correction map to claims with this tag, e.g. kind:estimate" }
+            }, "required": ["prob"] }
+        },
+        {
             "name": "list",
             "description": "List predictions, optionally filtered by status and tag.",
             "inputSchema": { "type": "object", "properties": {
@@ -550,7 +619,7 @@ mod tests {
     fn schemas_are_well_formed() {
         let t = tool_schemas();
         let arr = t.as_array().unwrap();
-        assert_eq!(arr.len(), 5);
+        assert_eq!(arr.len(), 6);
         for tool in arr {
             assert!(tool["name"].is_string());
             assert_eq!(tool["inputSchema"]["type"], "object");

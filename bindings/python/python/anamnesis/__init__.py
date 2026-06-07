@@ -60,6 +60,7 @@ __all__ = [
     "calibration_curve",
     "winkler",
     "coverage",
+    "conformal_width_factor",
     "wilson_interval",
     "shrink_toward",
     "calibration_eprocess",
@@ -73,6 +74,8 @@ __all__ = [
     "risk_coverage",
     "risk_coverage_curve",
     "dialectical_mean",
+    "decide",
+    "Decision",
     "report",
     "Calibration",
 ]
@@ -160,6 +163,17 @@ def coverage(
     """Fraction of intervals that actually contained their value — compare with
     the nominal level to see interval over/under-confidence."""
     return _core.coverage(_floats(lows), _floats(highs), _floats(levels), _floats(values))
+
+
+def conformal_width_factor(
+    lows: Sequence, highs: Sequence, levels: Sequence, values: Sequence
+) -> Optional[float]:
+    """Conformal width multiplier — multiply your interval half-widths by this to
+    hit your nominal coverage (``>1`` widen, ``<1`` sharpen); the numeric analogue
+    of the recalibration map. ``None`` below three usable intervals."""
+    return _core.conformal_width_factor(
+        _floats(lows), _floats(highs), _floats(levels), _floats(values)
+    )
 
 
 # ── small-sample uncertainty ─────────────────────────────────────────────────
@@ -271,6 +285,24 @@ def dialectical_mean(p1: float, p2: float) -> float:
     """Herzog–Hertwig "crowd within": average a first estimate with a deliberate
     "consider the opposite" second one. Recovers ~half the gain of a second person."""
     return _core.dialectical_mean(float(p1), float(p2))
+
+
+# ── decision gate ────────────────────────────────────────────────────────────
+Decision = namedtuple("Decision", "act adjusted_p proceed_threshold margin")
+
+
+def decide(p: float, stake: float = 1.0, verify_cost: float = 0.2, recal=None) -> Decision:
+    """Should you act on a stated probability ``p``? Corrects it through an optional
+    earned :class:`Recalibration` ``recal`` (verbalized confidence is unreliable),
+    then applies Chow's stake-aware threshold. Returns a :class:`Decision` whose
+    ``act`` is ``"proceed"``, ``"verify"`` (check first), or ``"abstain"`` (replan).
+    Raise ``stake`` for consequential or irreversible calls — the bar to proceed,
+    ``1 − verify_cost/stake``, climbs with it. Pass ``recal`` only once a correction
+    has been earned (real e-process evidence)."""
+    a = recal.a if recal is not None else None
+    b = recal.b if recal is not None else None
+    t = _core.decide(float(p), float(stake), float(verify_cost), a, b)
+    return Decision(*t)
 
 
 # ── convenience ──────────────────────────────────────────────────────────────

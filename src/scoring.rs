@@ -393,6 +393,44 @@ pub fn coverage(samples: &[NumericSample]) -> Option<f64> {
     Some(samples.iter().filter(|s| s.contains()).count() as f64 / samples.len() as f64)
 }
 
+/// **Conformal interval recalibration** — the multiplicative correction for your
+/// credible intervals, the numeric analogue of [`fit_recalibration`].
+///
+/// For each forecast the *standardized residual* `r = |value − center| / half_width`
+/// is how many half-widths the truth fell from the interval's midpoint; the interval
+/// covered exactly when `r ≤ 1`. Scaling every half-width by a factor `m` makes an
+/// interval cover iff `r ≤ m`, so the fraction covered after scaling is the fraction
+/// of residuals `≤ m`. To hit a target coverage we therefore set `m` to the empirical
+/// quantile of the residuals at that target — the split-conformal construction (the
+/// `(1−α)`-quantile of the nonconformity scores), distribution-free and valid in
+/// finite samples. The target is the mean nominal level across the pool, so `m > 1`
+/// means "your intervals are too narrow — multiply their half-widths by `m`" and
+/// `m < 1` means they are too wide.
+///
+/// Pooled and scale-only by design: it assumes a single common width error, which is
+/// the honest amount of structure to fit from one agent's handful of intervals.
+/// Zero-width intervals carry no scale information and are skipped. Returns `None`
+/// with fewer than three usable samples, where the quantile would be meaningless.
+pub fn conformal_width_factor(samples: &[NumericSample]) -> Option<f64> {
+    let mut residuals: Vec<f64> = Vec::with_capacity(samples.len());
+    let mut level_sum = 0.0;
+    for s in samples {
+        let hw = s.width() / 2.0;
+        if hw <= 0.0 {
+            continue; // degenerate point interval — no scale information
+        }
+        let center = (s.low + s.high) / 2.0;
+        residuals.push((s.value - center).abs() / hw);
+        level_sum += s.level;
+    }
+    if residuals.len() < 3 {
+        return None;
+    }
+    let target = level_sum / residuals.len() as f64;
+    residuals.sort_by(f64::total_cmp);
+    Some(quantile_sorted(&residuals, target))
+}
+
 // ───────────────────────── small-sample uncertainty ─────────────────────────
 
 /// **Wilson score interval** for a binomial proportion `successes / n`.
@@ -569,6 +607,93 @@ pub fn fit_recalibration(samples: &[Sample], ridge: f64) -> Option<Recalibration
     } else {
         Recalibration::identity(samples.len())
     })
+}
+
+// ─────────────────────────── decision gate ──────────────────────────────────
+
+/// What to do with a stated probability once the stakes are taken into account —
+/// the *operational* end of calibration, where a number becomes an action.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Act {
+    /// Corrected confidence clears the bar for the stakes — commit.
+    Proceed,
+    /// In the doubt zone — gather more evidence before you commit.
+    Verify,
+    /// More likely to fail than succeed *after correction* — replan or escalate
+    /// rather than spend a verification cycle on a probable dead end.
+    Abstain,
+}
+
+/// A recommendation for one prospective action: what to do, the corrected
+/// probability it rests on, and how much room there was in the call.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Decision {
+    pub act: Act,
+    /// The probability the decision actually used: your stated `p` after the
+    /// track-record correction (or the raw `p` when no correction was earned).
+    pub adjusted_p: f64,
+    /// Chow's break-even confidence to proceed without verifying,
+    /// `1 − verify_cost/stake`. Rises toward `1` as the stakes grow.
+    pub proceed_threshold: f64,
+    /// `adjusted_p − proceed_threshold`; `≥ 0` ⇒ proceed. The room you had.
+    pub margin: f64,
+}
+
+/// Within Chow's reject region, the boundary between *verify* and *abstain*: below
+/// an even-odds corrected probability the action is more likely to fail than
+/// succeed, so replanning beats verifying. Parameter-free by design.
+const ABSTAIN_BELOW: f64 = 0.5;
+
+/// **Decision gate** — turn a stated probability into an action under stakes.
+///
+/// This is the step the calibration literature finds agents skip: they can *state*
+/// their uncertainty yet still barrel into an irreversible action. The gate closes
+/// that loop in two principled moves:
+///
+/// 1. **Correct the number.** Verbalized confidence is the least reliable signal, so
+///    the stated `p` is first pushed through the learned [`Recalibration`] map (pass
+///    `Some` only once the e-process has *earned* it; `None` leaves `p` untouched) —
+///    your best estimate of the true success probability given your track record.
+/// 2. **Threshold by the stakes.** By Chow's optimal reject rule, proceeding is worth
+///    it only when the expected cost of a wrong action, `(1 − p̂)·stake`, is below the
+///    cost of a verification step — i.e. when `p̂ ≥ 1 − verify_cost/stake`. The
+///    threshold climbs toward `1` as `stake` grows: the more irreversible the action,
+///    the closer to certain you must be to skip the check. Below the threshold the
+///    gate says *verify*, unless the corrected odds are worse than even, where it says
+///    *abstain* (replan) instead.
+///
+/// `stake` is the cost of a wrong proceed relative to one verification (`1.0` =
+/// ordinary; raise it for consequential or irreversible calls). `verify_cost` is the
+/// cost of that check in the same unit. Pure: no I/O, no ledger — the caller supplies
+/// the (evidence-gated) map.
+pub fn decide(p: f64, recal: Option<Recalibration>, stake: f64, verify_cost: f64) -> Decision {
+    let p = p.clamp(0.0, 1.0);
+    let adjusted_p = match recal {
+        Some(r) => r.apply(p),
+        None => p,
+    };
+    let stake = stake.max(0.0);
+    // Chow's reject threshold for a one-sided act/verify decision. With nothing at
+    // stake there is nothing to verify against, so proceed.
+    let proceed_threshold = if stake > 0.0 {
+        (1.0 - verify_cost.max(0.0) / stake).clamp(0.0, 1.0)
+    } else {
+        0.0
+    };
+    let margin = adjusted_p - proceed_threshold;
+    let act = if adjusted_p >= proceed_threshold {
+        Act::Proceed
+    } else if adjusted_p >= ABSTAIN_BELOW {
+        Act::Verify
+    } else {
+        Act::Abstain
+    };
+    Decision {
+        act,
+        adjusted_p,
+        proceed_threshold,
+        margin,
+    }
 }
 
 // ───────────────────────── small-sample / over-time bands ───────────────────
@@ -1030,6 +1155,92 @@ mod tests {
         ];
         approx(coverage(&s).unwrap(), 2.0 / 3.0);
         assert!(coverage(&[]).is_none());
+    }
+
+    #[test]
+    fn conformal_width_factor_scales_to_hit_nominal() {
+        // Helper: an interval centred at 0 with half-width 1, so the standardized
+        // residual equals |value|. level is the nominal coverage of the interval.
+        let mk = |value: f64, level: f64| NumericSample {
+            low: -1.0,
+            high: 1.0,
+            level,
+            value,
+        };
+
+        // Residuals {0.2, 0.4, 0.6, 0.8}, target 0.5 → the 0.5-quantile is the
+        // midpoint of 0.4 and 0.6 = 0.5. Scaling half-widths by 0.5 leaves exactly
+        // the two residuals ≤ 0.5 covered = 50% = nominal. Intervals are too wide.
+        let wide = [mk(0.2, 0.5), mk(0.4, 0.5), mk(0.6, 0.5), mk(0.8, 0.5)];
+        approx(conformal_width_factor(&wide).unwrap(), 0.5);
+
+        // Residuals {0.5, 0.9, 1.3, 1.7, 2.1}, target 0.8 → 0.8-quantile sits at
+        // pos 3.2 between 1.7 and 2.1 = 1.78. m > 1: intervals are too narrow.
+        let narrow = [
+            mk(0.5, 0.8),
+            mk(0.9, 0.8),
+            mk(1.3, 0.8),
+            mk(1.7, 0.8),
+            mk(2.1, 0.8),
+        ];
+        let m = conformal_width_factor(&narrow).unwrap();
+        assert!((m - 1.78).abs() < 1e-9, "m={m}");
+
+        // Fewer than three usable samples, or only degenerate point intervals → None.
+        assert!(conformal_width_factor(&wide[..2]).is_none());
+        let points =
+            [mk(0.0, 0.5), mk(0.0, 0.5), mk(0.0, 0.5)].map(|s| NumericSample { high: -1.0, ..s }); // width 0 ⇒ all skipped
+        assert!(conformal_width_factor(&points).is_none());
+    }
+
+    #[test]
+    fn decide_thresholds_on_chow_rule_and_stakes() {
+        // Ordinary stake 1, a check costs 0.2 → break-even τ = 1 − 0.2/1 = 0.80.
+        let d = decide(0.85, None, 1.0, 0.2);
+        approx(d.proceed_threshold, 0.80);
+        assert_eq!(d.act, Act::Proceed); // 0.85 ≥ 0.80
+        approx(d.margin, 0.05);
+
+        // Same call at 0.70 lands in the doubt zone → verify (0.5 ≤ 0.70 < 0.80).
+        assert_eq!(decide(0.70, None, 1.0, 0.2).act, Act::Verify);
+
+        // Raise the stakes and the bar climbs: τ = 1 − 0.2/4 = 0.95, so even 0.90
+        // is no longer good enough to skip the check.
+        let hi = decide(0.90, None, 4.0, 0.2);
+        approx(hi.proceed_threshold, 0.95);
+        assert_eq!(hi.act, Act::Verify);
+
+        // Below even odds (after any correction) → abstain, not verify.
+        assert_eq!(decide(0.40, None, 1.0, 0.2).act, Act::Abstain);
+    }
+
+    #[test]
+    fn decide_applies_the_track_record_correction_first() {
+        // A map that says "your 0.70s are really ~0.34" (overconfident history).
+        let overconf = Recalibration {
+            a: -1.5,
+            b: 1.0,
+            n: 12,
+        };
+        // Raw 0.70 on an ordinary call would only *verify*…
+        assert_eq!(decide(0.70, None, 1.0, 0.2).act, Act::Verify);
+        // …but corrected to 0.34 it drops below even odds → abstain. The gate acts
+        // on the de-biased number, exactly the point.
+        let d = decide(0.70, Some(overconf), 1.0, 0.2);
+        assert!(d.adjusted_p < 0.5, "adjusted={}", d.adjusted_p);
+        assert_eq!(d.act, Act::Abstain);
+    }
+
+    #[test]
+    fn decide_degenerate_costs_are_sane() {
+        // Nothing at stake → just proceed, even on a long shot.
+        assert_eq!(decide(0.10, None, 0.0, 0.2).act, Act::Proceed);
+        // A check costing as much as the worst case → never worth it, proceed.
+        assert_eq!(decide(0.30, None, 1.0, 1.0).proceed_threshold, 0.0);
+        assert_eq!(decide(0.30, None, 1.0, 1.0).act, Act::Proceed);
+        // A free check → demand near-certainty; 0.99 still verifies.
+        approx(decide(0.99, None, 1.0, 0.0).proceed_threshold, 1.0);
+        assert_eq!(decide(0.99, None, 1.0, 0.0).act, Act::Verify);
     }
 
     #[test]

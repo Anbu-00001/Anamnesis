@@ -61,5 +61,22 @@ Act on it:
   **REAL**. When it does, the *"Recalibration"* line tells you the concrete
   correction to apply ("your 60%s should be 80%"); until then, keep logging.
 
+## When to *act* on it (`/decide`)
+
+Knowing how sure you are is worthless if you act anyway — and that is precisely the
+trap the research finds agents fall into: stating uncertainty, then taking the
+irreversible step regardless. Before any costly or hard-to-undo action — shipping
+without a test, a migration, a deletion, committing to an estimate — run the call
+through `/decide` instead of trusting the gut number:
+
+- It **corrects** your stated probability through your earned recalibration map (so
+  your documented overconfidence is discounted automatically), then **thresholds by
+  the stakes** (Chow's rule: proceed only when `p̂ ≥ 1 − verify_cost/stake`).
+- Raise `--stake` for consequential or irreversible actions; the bar to proceed
+  climbs toward certainty. You get back **PROCEED**, **VERIFY** (gather evidence
+  first), or **ABSTAIN** (replan/escalate — worse than even odds after correction).
+- Then *do what it says*. This is the whole point of keeping score: not a prettier
+  report, but a better next action.
+
 The lesson only compounds if the ledger is honest. A no-LLM scorer can't flatter
 you — don't do its job for it.

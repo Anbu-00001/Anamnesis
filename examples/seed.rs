@@ -565,6 +565,61 @@ fn main() {
         350,
         23.0,
     )); // outside (above)
+        // Four more, all drawn too tight and all missed — enough that the coverage
+        // e-process crosses the evidence bar and the report earns a conformal
+        // "WIDEN your intervals by ×N" correction (the numeric recalibration map).
+    c.push(numeric_claim(
+        next(),
+        base,
+        9,
+        "Brent crude 2025 low (US$)",
+        &["markets"],
+        70.0,
+        85.0,
+        0.80,
+        "the floor felt solid",
+        300,
+        63.0,
+    )); // outside (below)
+    c.push(numeric_claim(
+        next(),
+        base,
+        13,
+        "Number of FOMC dissenting votes at any 2025 meeting",
+        &["markets", "geopolitics"],
+        0.0,
+        2.0,
+        0.80,
+        "consensus usually holds",
+        330,
+        4.0,
+    )); // outside (above)
+    c.push(numeric_claim(
+        next(),
+        base,
+        17,
+        "Nvidia peak intraday drawdown from its 2025 high (%)",
+        &["markets", "tech"],
+        10.0,
+        20.0,
+        0.80,
+        "shallow dips in a strong tape",
+        340,
+        32.0,
+    )); // outside (above)
+    c.push(numeric_claim(
+        next(),
+        base,
+        35,
+        "My half-marathon finish time this year (minutes)",
+        &["personal", "health"],
+        105.0,
+        115.0,
+        0.80,
+        "training pace extrapolated straight out",
+        280,
+        123.0,
+    )); // outside (above)
 
     // ── Still OPEN (so list/due/report have live items) ─────────────────────
     c.push(claim(

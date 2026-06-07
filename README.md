@@ -76,14 +76,15 @@ ANAMNESIS — the shape of your judgement
     Brier of first guess 0.253  →  Brier of final guess 0.215   (+0.038)
     Your updates moved you TOWARD the truth. Good — you changed your mind well.
 
-  Numeric forecasts   5 resolved interval(s)
-    mean Winkler score   76.800   (lower better; width + miscoverage penalty)
-    mean interval width  16.800
-    coverage             40% actual  vs  80% intended   (-40 pts)
+  Numeric forecasts   9 resolved interval(s)
+    mean Winkler score   79.000   (lower better; width + miscoverage penalty)
+    mean interval width  13.444
+    coverage             22% actual  vs  80% intended   (-58 pts)
     Your intervals are TOO NARROW — overconfident about numbers, just like probabilities.
+    Recalibration: WIDEN — multiply your interval half-widths by 2.76 (coverage e=6).
 ```
 
-Read that and a whole personality falls out of it. This forecaster **can actually discriminate** (AUC 0.66 — their high-probability calls really do come true more often than their low ones), yet they score **worse than someone who just guessed the base rate every time** (skill −0.094). The reason is written all over the reliability diagram: every confident bin has its `P` (predicted) stranded far to the right of its `O` (observed). They are **most deluded about themselves** (`personal` confidence-gap +0.46) and about **tech/AI timelines** (+0.34), and genuinely **humble about science** (−0.13). And the one virtue they have: when they changed their minds, they changed them *toward* the truth. Their *numeric* forecasts sing the same tune as their probabilities — 80%-confidence intervals that catch the truth only 40% of the time — the tell that overconfidence is a trait, not a topic.
+Read that and a whole personality falls out of it. This forecaster **can actually discriminate** (AUC 0.66 — their high-probability calls really do come true more often than their low ones), yet they score **worse than someone who just guessed the base rate every time** (skill −0.094). The reason is written all over the reliability diagram: every confident bin has its `P` (predicted) stranded far to the right of its `O` (observed). They are **most deluded about themselves** (`personal` confidence-gap +0.46) and about **tech/AI timelines** (+0.34), and genuinely **humble about science** (−0.13). And the one virtue they have: when they changed their minds, they changed them *toward* the truth. Their *numeric* forecasts sing the same tune as their probabilities — 80%-confidence intervals that catch the truth only 22% of the time — the tell that overconfidence is a trait, not a topic. And because that miscoverage is now backed by real evidence, the report doesn't just diagnose it, it *prescribes*: **widen those interval half-widths by ×2.76** and they'd be honest.
 
 That negative skill score sitting next to a real AUC is the entire thesis of the project in two numbers: **being able to tell true from false is not the same as knowing how sure to be.**
 
@@ -143,6 +144,11 @@ ana show 3ef7f5
 # The mirror. Slice it by domain if you like.
 ana report
 ana report --tag markets --bins 5
+
+# About to act on a hunch? Run it through the gate. It corrects your number with
+# your track record, then thresholds by the stakes: PROCEED / VERIFY / ABSTAIN.
+ana decide --prob 0.8                    # ordinary call → need ≥80% to just proceed
+ana decide --prob 0.9 --stake 5          # irreversible → bar climbs to ~96%, so: verify
 ```
 
 Ids can be abbreviated to any unique prefix.
@@ -157,11 +163,16 @@ qualitative; this one keeps score). Two surfaces ship in this repo:
 
 - **`ana mcp`** — a [Model Context Protocol](https://modelcontextprotocol.io)
   server over stdio exposing `predict` / `resolve` / `calibration` / `recalibrate`
-  / `list` as tools, so any MCP host (Claude, Cursor, Cline, …) can keep a
-  calibration ledger:
+  / `decide` / `list` as tools, so any MCP host (Claude, Cursor, Cline, …) can keep
+  a calibration ledger *and act on it*:
   ```jsonc
   { "mcpServers": { "anamnesis": { "command": "ana", "args": ["mcp"] } } }
   ```
+  The `decide` tool is the operational payoff: the calibration literature's sharpest
+  finding about agents is that they *state* uncertainty yet take the irreversible
+  action anyway. `decide` closes that loop — it discounts your stated confidence by
+  your own track record, then returns **proceed / verify / abstain** against a
+  stake-aware threshold, so high-stakes calls demand near-certainty before you commit.
 - **A Claude Code plugin** ([plugin/](plugin/)) whose `SessionStart` hook injects
   your standing over/under-confidence into *every* project before you plan — e.g.
   *"OVERCONFIDENT +20pts; worst on kind:bug-hypothesis — add slack."* Design notes:
@@ -216,6 +227,18 @@ Every metric operates on resolved samples — a probability `p` you assigned and
 | **Coverage** | `fraction of values inside their interval` | Calibration for quantities: your 80%-level intervals should contain the truth ~80% of the time. Below that = intervals too tight. |
 | **Calibration e-value** | `mean over λ of ∏(1 + λ(oᵢ − pᵢ))` (betting martingale) | **Is the miscalibration real, or just too-few-samples noise?** An [anytime-valid](https://arxiv.org/pdf/2109.11761) test that stays honest even though you check it every session: ≈1 = no evidence, ≥20 = significant. |
 | **Recalibration** | `p ↦ σ(a + b·logit p)` (ridge-shrunk logistic) | The *correction*: what your stated confidence should be. `b<1` = too extreme, `b>1` = too timid. Stays the identity until the e-value earns a change — it won't correct on noise. |
+| **Cox slope / intercept** | the `(a, b)` of the recalibration fit | The *shape* of your miscalibration, read off the same logistic fit: slope `b<1` = forecasts too extreme; intercept `a>0` = you under-state on average, `a<0` = over-state. |
+| **Stake-weighted Brier** | `Σ wᵢ(pᵢ − oᵢ)² / Σ wᵢ` | Are you miscalibrated on the calls that actually *matter*? Tag consequential predictions with a higher stake; shown only when stakes vary. |
+| **Bootstrap Brier band** | percentile CI of the Brier over seeded resamples | How far luck alone could move your Brier. Deterministic (seeded), so the band doesn't jitter run-to-run. |
+| **Recency Brier** | exponentially-weighted Brier (≈5-call half-life) | "How am I doing *lately*", read against the lifetime Brier. A descriptive trend — deliberately *not* a control-chart alarm, which would false-alarm at an agent's sample size. |
+| **Confidence vocabulary** | count of distinct `p` values used | You can't be sharper than your vocabulary: only ever saying 0.5 / 0.7 / 0.9 caps the resolution you can reach. |
+| **Selective prediction** | error among your boldest kept fraction; AURCC = mean risk over coverage | When to act on your own judgement vs. flag uncertainty. Risk should *fall* as you keep only your surest calls; if it doesn't, your confidence ranking is noise. |
+| **Dialectical mean** | `(p₁ + p₂) / 2` | An elicitation *aid*, not a score: average a first estimate with a deliberate "consider the opposite" second (the crowd-within), recovering ~half the gain of asking a second person. |
+| **Conformal width factor** | `Quantile_L( \|v − c\| / half-width )` | NUMERIC recalibration — the multiplier on your interval half-widths that makes them hit nominal coverage `L` (`>1` widen, `<1` sharpen). The split-conformal analogue of the binary recalibration map; gated on real coverage evidence. |
+| **Coverage e-value** | the calibration e-value on `(level, inside?)` | Is your interval *miscoverage* real, or too few intervals to tell? The same anytime-valid betting test, applied to whether each interval contained the truth. |
+| **Shrunk coverage** | `(k + ½) / (n + 1)` (Jeffreys) | A de-noised coverage point that stops a 0-of-3 or 3-of-3 fluke from reading as 0% or 100%. |
+| **Per-kind multicalibration** | the calibration e-value *within each* `kind:` | *Which type* of prediction is genuinely miscalibrated (tests-pass vs. bug-hypothesis vs. estimate). Anytime-valid, so a tiny, fluky subgroup can't trip a false alarm — the classic multicalibration pitfall. |
+| **Decision gate** | proceed iff `p̂ ≥ 1 − verify_cost/stake` (Chow's reject rule) | Not a score — the *action*. Correct your stated `p` through the recalibration map, then threshold by the stakes: **proceed / verify / abstain**. The bar climbs with the stakes, so an irreversible call needs near-certainty to skip a check. This is the step the literature finds agents skip — stating uncertainty yet acting anyway. |
 
 **Murphy's decomposition** is the centrepiece: `Brier = Reliability − Resolution + Uncertainty`. Anamnesis groups forecasts by their *exact* probability value, which makes that identity hold to floating-point precision rather than approximately — and the test suite asserts exactly that ([`decomposition_identity_holds_exactly`](src/scoring.rs)). It cleanly separates the two ways to be a good forecaster:
 
@@ -264,7 +287,7 @@ A claim is a **palimpsest**: every revision is *appended*, never overwritten. Wr
 
 ## Limitations & where it could go
 
-- Full distributional forecasts (the CRPS over a whole predictive distribution, beyond the interval score already shipped) and multi-category outcomes.
+- Full distributional forecasts (a whole predictive distribution, not a single interval) and multi-category outcomes. Note CRPS is *deliberately not* added: for the interval format Anamnesis actually logs, the Winkler interval score already **is** its specialization (the weighted interval score converges to CRPS as you add quantile levels), so a CRPS over an *assumed* distribution shape would be more math for no new information — it would only fool you that you'd recorded a distribution you didn't.
 - A TUI for review, and a small reliability-diagram plot.
 - Time-resolved tracking — a calibration *curve over time*, to actually watch yourself improve.
 - Reminders for due claims; import/export from forecasting platforms.

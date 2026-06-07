@@ -93,6 +93,19 @@ def test_coverage_fraction():
     assert ana.coverage(lows, highs, levels, values) == pytest.approx(2 / 3)
 
 
+def test_conformal_width_factor_scales_to_nominal():
+    # Intervals centred at 0 with half-width 1 (so residual == |value|), all at
+    # nominal level 0.5. Residuals {0.2, 0.4, 0.6, 0.8} → the 0.5-quantile is 0.5,
+    # i.e. these intervals are twice as wide as they need to be.
+    lows = [-1.0, -1.0, -1.0, -1.0]
+    highs = [1.0, 1.0, 1.0, 1.0]
+    levels = [0.5, 0.5, 0.5, 0.5]
+    values = [0.2, 0.4, 0.6, 0.8]
+    assert ana.conformal_width_factor(lows, highs, levels, values) == pytest.approx(0.5)
+    # Fewer than three usable intervals → None.
+    assert ana.conformal_width_factor(lows[:2], highs[:2], levels[:2], values[:2]) is None
+
+
 def test_calibration_curve_empty_bin_is_none():
     rows = ana.calibration_curve([0.95, 0.95], [1, 1], n_bins=10)
     assert len(rows) == 10
@@ -204,6 +217,21 @@ def test_brier_weighted():
 def test_dialectical_mean():
     assert ana.dialectical_mean(0.7, 0.5) == pytest.approx(0.6)
     assert ana.dialectical_mean(1.5, -0.2) == pytest.approx(0.5)  # clamps
+
+
+def test_decide_gate():
+    # Ordinary stake → break-even τ = 1 − 0.2/1 = 0.80.
+    d = ana.decide(0.85)
+    assert d.act == "proceed" and d.proceed_threshold == pytest.approx(0.80)
+    assert ana.decide(0.70).act == "verify"  # doubt zone
+    assert ana.decide(0.40).act == "abstain"  # worse than even odds
+    # Higher stakes raise the bar: τ = 1 − 0.2/4 = 0.95, so 0.90 must verify.
+    hi = ana.decide(0.90, stake=4.0)
+    assert hi.proceed_threshold == pytest.approx(0.95) and hi.act == "verify"
+    # An earned overconfidence correction discounts the number first.
+    overconf = ana.Recalibration(-1.5, 1.0, 12)
+    d = ana.decide(0.70, recal=overconf)
+    assert d.adjusted_p < 0.5 and d.act == "abstain"
 
 
 def test_bools_and_numpy_inputs_work():

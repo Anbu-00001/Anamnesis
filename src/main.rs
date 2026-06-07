@@ -129,8 +129,25 @@ enum Cmd {
         #[arg(long, default_value_t = 10)]
         bins: usize,
     },
+    /// Should you act on it? Corrects a stated probability through your earned
+    /// recalibration map, then applies a stake-aware threshold: PROCEED / VERIFY / ABSTAIN.
+    Decide {
+        /// Your stated success probability, 0..1
+        #[arg(long, short = 'p')]
+        prob: f64,
+        /// Cost of a wrong action relative to one verification (1 = ordinary; raise it
+        /// for consequential or irreversible calls — the bar to proceed climbs with it)
+        #[arg(long, default_value_t = 1.0)]
+        stake: f64,
+        /// Cost of a verification step, in the same unit as stake
+        #[arg(long, default_value_t = 0.2)]
+        verify_cost: f64,
+        /// Scope the correction map to claims carrying this tag (e.g. kind:estimate)
+        #[arg(long)]
+        tag: Option<String>,
+    },
     /// Serve as a Model Context Protocol server over stdio — exposes
-    /// predict/resolve/calibration/list as tools for any MCP-capable agent.
+    /// predict/resolve/calibration/recalibrate/decide/list as tools for any MCP-capable agent.
     Mcp,
 }
 
@@ -706,6 +723,69 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!("{}", report::render_json(&ledger, tag.as_deref(), *bins));
             } else {
                 print!("{}", report::render(&ledger, tag.as_deref(), *bins));
+            }
+        }
+
+        Cmd::Decide {
+            prob,
+            stake,
+            verify_cost,
+            tag,
+        } => {
+            let p = *prob;
+            if !(0.0..=1.0).contains(&p) {
+                return Err(format!("prob must be between 0 and 1, got {p}"));
+            }
+            // Correct the number through the earned map (if any), then threshold by
+            // the stakes — the same evidence gate as the report and the MCP tools.
+            let (recal, earned, n, e) = report::earned_recalibration(&ledger, tag.as_deref());
+            let map = if earned { recal } else { None };
+            let d = scoring::decide(p, map, *stake, *verify_cost);
+            let verb = match d.act {
+                scoring::Act::Proceed => "PROCEED",
+                scoring::Act::Verify => "VERIFY",
+                scoring::Act::Abstain => "ABSTAIN",
+            };
+            if cli.json {
+                println!(
+                    "{}",
+                    json!({
+                        "act": verb.to_lowercase(),
+                        "stated": p,
+                        "adjusted": d.adjusted_p,
+                        "proceed_threshold": d.proceed_threshold,
+                        "margin": d.margin,
+                        "stake": *stake,
+                        "verify_cost": *verify_cost,
+                        "used_recalibration": earned,
+                        "n": n,
+                        "eprocess": e,
+                    })
+                );
+            } else {
+                let gloss = match d.act {
+                    scoring::Act::Proceed => "confidence clears the bar for the stakes",
+                    scoring::Act::Verify => "in the doubt zone — verify before you commit",
+                    scoring::Act::Abstain => {
+                        "more likely to fail than succeed — replan or escalate"
+                    }
+                };
+                let corr = if earned {
+                    format!(
+                        "  (corrected {:.0}%→{:.0}% from {n} resolved calls)",
+                        p * 100.0,
+                        d.adjusted_p * 100.0
+                    )
+                } else {
+                    String::new()
+                };
+                println!("{verb}  —  {gloss}");
+                println!(
+                    "  need ≥{:.0}% to proceed at stake {:.1}; you have {:.0}%{corr}",
+                    d.proceed_threshold * 100.0,
+                    *stake,
+                    d.adjusted_p * 100.0
+                );
             }
         }
 

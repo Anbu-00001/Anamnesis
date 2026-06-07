@@ -337,3 +337,143 @@ fn dialectical_elicitation_end_to_end() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Add a binary claim carrying tags and resolve it, through the real CLI.
+fn add_resolve_tagged(data: &str, prob: &str, outcome: &str, tags: &str) {
+    let (o, _, ok) = ana(data, &["add", "canned claim", "-p", prob, "--tags", tags]);
+    assert!(ok, "tagged add({prob}) failed: {o}");
+    let id = extract_id(&o);
+    let (o, e, ok) = ana(data, &["resolve", &id, outcome]);
+    assert!(ok, "resolve({id},{outcome}) failed: {o}{e}");
+}
+
+/// Add an 80% interval and resolve it to a value that falls outside — a miss.
+fn add_miss_interval(data: &str, interval: &str, value: &str) {
+    let (o, _, ok) = ana(data, &["add", "canned interval", "--interval", interval]);
+    assert!(ok, "interval add failed: {o}");
+    let id = extract_id(&o);
+    let (o, e, ok) = ana(data, &["resolve", &id, "--value", value]);
+    assert!(ok, "resolve interval({id}) failed: {o}{e}");
+}
+
+/// Tier 3 end-to-end: the per-kind multicalibration verdict names the kind that is
+/// *really* miscalibrated (anytime-valid, so a fluky small kind cannot trip it), and
+/// the numeric side earns a conformal width correction once coverage evidence is real.
+#[test]
+fn tier3_multicalibration_and_conformal_recalibration() {
+    let dir = std::env::temp_dir().join(format!("ana_t3_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.json");
+    let data = path.to_str().unwrap();
+
+    // One kind is grossly overconfident ("10% sure" yet it always happens); another
+    // is fine. The verdict must single out the bad kind, by name and direction.
+    for _ in 0..12 {
+        add_resolve_tagged(data, "0.1", "yes", "kind:bug-hypothesis");
+    }
+    add_resolve_tagged(data, "0.7", "yes", "kind:tests-pass");
+    add_resolve_tagged(data, "0.3", "no", "kind:tests-pass");
+
+    let (o, _, ok) = ana(data, &["report"]);
+    assert!(ok, "report should succeed:\n{o}");
+    assert!(
+        o.contains("By prediction kind"),
+        "per-kind table missing:\n{o}"
+    );
+    assert!(
+        o.contains("'bug-hypothesis' is really overconfident"),
+        "multicalibration verdict should name the bad kind:\n{o}"
+    );
+
+    // Eight 80% intervals that all miss → coverage evidence becomes REAL and the
+    // conformal correction tells the agent to WIDEN (residual ratio 2.0 ⇒ ×2.00).
+    for _ in 0..8 {
+        add_miss_interval(data, "0..10", "15");
+    }
+    let (o, _, ok) = ana(data, &["report"]);
+    assert!(ok);
+    assert!(
+        o.contains("Numeric forecasts"),
+        "numeric section missing:\n{o}"
+    );
+    assert!(
+        o.contains("Recalibration: WIDEN"),
+        "conformal width correction should fire on real evidence:\n{o}"
+    );
+    assert!(
+        o.contains("multiply your interval half-widths by 2.00"),
+        "width factor should be the residual quantile 2.00:\n{o}"
+    );
+
+    // The JSON view exposes the Tier 3 fields, machine-readable.
+    let (o, _, ok) = ana(data, &["--json", "report"]);
+    assert!(ok);
+    for key in [
+        "\"coverage_shrunk\"",
+        "\"coverage_eprocess\"",
+        "\"width_factor\"",
+        "\"eprocess\"",
+    ] {
+        assert!(o.contains(key), "JSON must carry {key}:\n{o}");
+    }
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// End-to-end proof of the decision gate: stakes raise the bar to proceed, and an
+/// earned recalibration discounts a stated number into a different action — through
+/// the real binary and the MCP `decide` tool.
+#[test]
+fn decision_gate_end_to_end() {
+    let dir = std::env::temp_dir().join(format!("ana_decide_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.json");
+    let data = path.to_str().unwrap();
+
+    // 1) On a clean ledger (no correction earned), the stakes alone move the bar.
+    let (o, _, ok) = ana(data, &["decide", "-p", "0.85"]);
+    assert!(
+        ok && o.contains("PROCEED"),
+        "0.85 at ordinary stake should proceed:\n{o}"
+    );
+    let (o, _, ok) = ana(data, &["decide", "-p", "0.85", "--stake", "5"]);
+    assert!(
+        ok && o.contains("VERIFY") && o.contains("96%"),
+        "high stakes should demand ~96% and force a verify:\n{o}"
+    );
+    // A long shot is sent back to replan, not verified.
+    let (o, _, _) = ana(data, &["decide", "-p", "0.30"]);
+    assert!(o.contains("ABSTAIN"), "a long shot should abstain:\n{o}");
+
+    // 2) Teach the ledger gross overconfidence ("90% sure" that keeps failing). Now
+    //    the gate must DISCOUNT a stated 0.9 through the earned correction.
+    for _ in 0..12 {
+        add_resolve(data, "0.9", "no");
+    }
+    let (o, _, ok) = ana(data, &["--json", "decide", "-p", "0.9"]);
+    assert!(ok, "decide should succeed:\n{o}");
+    assert!(
+        o.contains("\"used_recalibration\":true"),
+        "with evidence the gate must use the correction:\n{o}"
+    );
+    assert!(
+        !o.contains("\"act\":\"proceed\""),
+        "a discounted 0.9 must no longer be a blind proceed:\n{o}"
+    );
+
+    // 3) The MCP decide tool works over real JSON-RPC stdio and is advertised.
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+    let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"decide","arguments":{"prob":0.9,"stake":1}}}"#;
+    let resp = ana_mcp(data, &[init, call]);
+    assert!(
+        resp.contains("corrected"),
+        "MCP decide must apply the earned correction:\n{resp}"
+    );
+    let list = ana_mcp(data, &[r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#]);
+    assert!(
+        list.contains("\"decide\""),
+        "tools/list must advertise decide:\n{list}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
