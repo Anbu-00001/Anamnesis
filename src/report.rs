@@ -83,6 +83,15 @@ pub(crate) const RECAL_RIDGE: f64 = 1.5;
 pub(crate) const RECAL_MIN_E: f64 = 3.0;
 pub(crate) const RECAL_MIN_N: usize = 6;
 
+/// Bootstrap settings for the Brier band — a fixed seed makes the report
+/// reproducible run-to-run (a band that jittered every run would unsettle).
+const BRIER_CI_RESAMPLES: usize = 2000;
+const BRIER_CI_SEED: u64 = 0xA11A_5EED_C0FF_EE00;
+/// EWMA half-life (in resolutions) for the "lately" Brier, and the minimum record
+/// before a recency trend is worth showing at all.
+const EWMA_HALF_LIFE: f64 = 5.0;
+const TREND_MIN_N: usize = 10;
+
 /// A learned recalibration map, machine-readable: `p ↦ σ(a + b·logit p)` plus a
 /// few worked corrections for the human view.
 #[derive(Serialize, Clone, Debug)]
@@ -94,6 +103,18 @@ pub struct RecalData {
     pub n: usize,
     /// `(stated, recalibrated)` pairs — what your stated confidences *should* be.
     pub examples: Vec<(f64, f64)>,
+}
+
+/// Selective-prediction summary: how your error falls when you act only on your
+/// most-confident calls.
+#[derive(Serialize, Clone, Debug)]
+pub struct SelectiveData {
+    /// Directional error acting on every call.
+    pub risk_full: f64,
+    /// Directional error acting only on your most-confident half.
+    pub risk_half: f64,
+    /// Area under the risk–coverage curve (lower ⇒ confidence ranks reliably).
+    pub aurcc: f64,
 }
 
 /// The whole report as data — serialisable, and the single input to both views.
@@ -133,6 +154,19 @@ pub struct ReportData {
     pub eprocess_pvalue: Option<f64>,
     /// The learned correction to apply to your stated probabilities.
     pub recalibration: Option<RecalData>,
+    /// Bootstrap percentile band on the Brier score — how far luck alone could
+    /// move it. `None` for fewer than two resolutions.
+    pub brier_ci: Option<(f64, f64)>,
+    /// Recency-weighted (EWMA) Brier — "how am I doing *lately*", read against
+    /// `brier`. Descriptive trend, not a significance test.
+    pub recent_brier: Option<f64>,
+    /// Distinct forecast probabilities used — a coarse vocabulary caps resolution.
+    pub distinct_forecasts: usize,
+    /// Selective-prediction summary — error among your surest calls vs all.
+    pub selective: Option<SelectiveData>,
+    /// Stake-weighted Brier — present only when stakes vary; compare with `brier`
+    /// to see whether you are worse on the calls that actually matter.
+    pub weighted_brier: Option<f64>,
 }
 
 impl ReportData {
@@ -345,6 +379,28 @@ impl ReportData {
                 .collect(),
         });
 
+        // Small-sample / over-time bands (chrono order reused from the e-process).
+        let brier_ci =
+            scoring::brier_ci_bootstrap(&samples, 0.95, BRIER_CI_RESAMPLES, BRIER_CI_SEED);
+        let recent_brier = scoring::ewma_brier(&chrono_samples, EWMA_HALF_LIFE);
+        let distinct_forecasts = scoring::distinct_forecasts(&samples);
+        let selective = scoring::risk_coverage(&samples).map(|rc| SelectiveData {
+            risk_full: rc.risk_at_full,
+            risk_half: rc.risk_at(0.5),
+            aurcc: rc.aurcc,
+        });
+
+        // Stake-weighted Brier — only meaningful (and only shown) when stakes vary.
+        let stakes: Vec<f64> = resolved_claims
+            .iter()
+            .filter_map(|c| c.sample().map(|_| c.stake))
+            .collect();
+        let weighted_brier = if stakes.iter().any(|&w| (w - 1.0).abs() > 1e-9) {
+            scoring::brier_weighted(&samples, &stakes)
+        } else {
+            None
+        };
+
         ReportData {
             tag: tag_filter,
             resolved: samples.len(),
@@ -372,6 +428,11 @@ impl ReportData {
             eprocess,
             eprocess_pvalue,
             recalibration,
+            brier_ci,
+            recent_brier,
+            distinct_forecasts,
+            selective,
+            weighted_brier,
         }
     }
 
@@ -462,6 +523,25 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
     if d.resolved > 0 {
         if let (Some(brier), Some(logs), Some(base)) = (d.brier, d.log_score, d.base_rate) {
             let _ = writeln!(out, "\n  Brier score      {brier:.3}   (0 = perfect · 0.25 = always 50/50 · lower better)");
+            if let Some((lo, hi)) = d.brier_ci {
+                let _ = writeln!(
+                    out,
+                    "                   95% bootstrap band [{lo:.3}, {hi:.3}] — how far luck alone could move it"
+                );
+            }
+            if let Some(wb) = d.weighted_brier {
+                let cmp = if wb > brier + 0.01 {
+                    "WORSE on the calls that matter"
+                } else if wb < brier - 0.01 {
+                    "better on the calls that matter"
+                } else {
+                    "about the same across stakes"
+                };
+                let _ = writeln!(
+                    out,
+                    "  Stake-weighted   {wb:.3}   vs {brier:.3} flat → {cmp}"
+                );
+            }
             let _ = writeln!(
                 out,
                 "  Log score        {logs:.3}   (lower better; punishes confident misses)"
@@ -475,6 +555,23 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                     "no better than guessing the base rate"
                 };
                 let _ = writeln!(out, "  Brier skill      {bss:+.3}   ({tail})");
+            }
+            // Recency trend — descriptive only (small-n control charts false-alarm).
+            if let Some(recent) = d.recent_brier {
+                if d.resolved >= TREND_MIN_N {
+                    let delta = brier - recent; // > 0 ⇒ recent lower ⇒ improving
+                    let lean = if delta > 0.02 {
+                        "improving"
+                    } else if delta < -0.02 {
+                        "slipping"
+                    } else {
+                        "steady"
+                    };
+                    let _ = writeln!(
+                        out,
+                        "  Lately           {recent:.3}   recent Brier vs {brier:.3} lifetime → {lean}  (last ~5 weighted; directional, not significant)"
+                    );
+                }
             }
             let ci = d
                 .base_rate_ci
@@ -535,6 +632,40 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                 let _ = writeln!(
                     out,
                     "                   directional bias {bias:+.3} ({dir})"
+                );
+            }
+        }
+
+        // Confidence vocabulary — a handful of distinct values caps your resolution.
+        if d.distinct_forecasts > 0 {
+            let _ = writeln!(
+                out,
+                "\n  Confidence vocab {:>4} distinct level(s) across {} call(s){}",
+                d.distinct_forecasts,
+                d.resolved,
+                if d.distinct_forecasts <= 3 && d.resolved >= 6 {
+                    " — coarse; more gradations would sharpen you"
+                } else {
+                    ""
+                }
+            );
+        }
+
+        // Selective prediction — error among your surest calls vs all (when to act).
+        if let Some(sel) = &d.selective {
+            if d.resolved >= 6 {
+                let verdict = if sel.risk_half < sel.risk_full - 0.05 {
+                    "your confidence ranks your calls — trust the bold ones"
+                } else if sel.risk_half > sel.risk_full + 0.05 {
+                    "INVERTED — your most-confident calls are your worst"
+                } else {
+                    "confidence barely separates winners from losers"
+                };
+                let _ = writeln!(
+                    out,
+                    "\n  Selective        act on all {:.0}% error · surest half {:.0}% → {verdict}",
+                    sel.risk_full * 100.0,
+                    sel.risk_half * 100.0
                 );
             }
         }
@@ -750,6 +881,7 @@ mod tests {
             resolve_by: None,
             tags: tags.iter().map(|s| s.to_string()).collect(),
             kind: crate::model::ClaimKind::Binary,
+            stake: 1.0,
             forecasts: vec![Forecast {
                 at: now(),
                 prob: Some(prob),
@@ -777,6 +909,7 @@ mod tests {
             resolve_by: None,
             tags: vec![],
             kind: crate::model::ClaimKind::Numeric,
+            stake: 1.0,
             forecasts: vec![Forecast {
                 at: now(),
                 prob: None,

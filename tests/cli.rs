@@ -187,6 +187,15 @@ fn tier1_report_surfaces_eprocess_and_recalibration() {
         o.contains("Recalibration"),
         "with evidence, a correction should appear:\n{o}"
     );
+    // Tier 2 surfaces: a bootstrap band on the Brier, a recency trend (n ≥ 10),
+    // and the confidence-vocabulary line.
+    assert!(o.contains("bootstrap band"), "Brier band missing:\n{o}");
+    assert!(o.contains("Lately"), "recency trend missing at n≥10:\n{o}");
+    assert!(o.contains("Confidence vocab"), "vocab line missing:\n{o}");
+    assert!(
+        o.contains("Selective"),
+        "selective-prediction line missing:\n{o}"
+    );
 
     // 3) The JSON view exposes both, machine-readable, for any agent.
     let (o, _, ok) = ana(data, &["--json", "report"]);
@@ -240,6 +249,44 @@ fn mcp_recalibrate_tool_end_to_end() {
     assert!(
         list.contains("\"recalibrate\""),
         "tools/list must advertise recalibrate:\n{list}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// End-to-end proof of stakes-weighting: a stake-weighted Brier appears once
+/// stakes vary, and a negative stake is rejected — through the real binary.
+#[test]
+fn stakes_weighting_end_to_end() {
+    let dir = std::env::temp_dir().join(format!("ana_stake_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.json");
+    let data = path.to_str().unwrap();
+
+    // Three ordinary (default-stake) calls…
+    for _ in 0..3 {
+        add_resolve(data, "0.6", "yes");
+    }
+    // …and one high-stake call that gets blown.
+    let (o, _, ok) = ana(data, &["add", "high stakes", "-p", "0.9", "--stake", "5"]);
+    assert!(ok, "add --stake should succeed: {o}");
+    let id = extract_id(&o);
+    let (_, e, ok) = ana(data, &["resolve", &id, "no"]);
+    assert!(ok, "resolve should succeed: {e}");
+
+    // The stake-weighted Brier line appears only because stakes vary.
+    let (o, _, ok) = ana(data, &["report"]);
+    assert!(ok);
+    assert!(
+        o.contains("Stake-weighted"),
+        "stake-weighted Brier should appear when stakes vary:\n{o}"
+    );
+
+    // A negative stake is a friendly error.
+    let (_, e, ok) = ana(data, &["add", "bad", "-p", "0.5", "--stake=-1"]);
+    assert!(
+        !ok && e.contains("stake must be"),
+        "negative stake must be rejected: {e}"
     );
 
     std::fs::remove_dir_all(&dir).ok();

@@ -45,6 +45,17 @@ fn brier(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Option<f64>> {
     Ok(scoring::brier(&binary(&probs, &outcomes)?))
 }
 
+/// Stake-weighted Brier: each forecast weighted by how much it mattered. With
+/// equal weights this reduces to `brier`. `None` for a length mismatch or no
+/// positive weight.
+#[pyfunction]
+fn brier_weighted(probs: Vec<f64>, outcomes: Vec<f64>, weights: Vec<f64>) -> PyResult<Option<f64>> {
+    Ok(scoring::brier_weighted(
+        &binary(&probs, &outcomes)?,
+        &weights,
+    ))
+}
+
 /// Mean logarithmic (Good) score. Probabilities are clamped into `[eps, 1-eps]`
 /// so a single confident miss cannot return `+inf`.
 #[pyfunction]
@@ -207,11 +218,63 @@ fn recalibration_apply(a: f64, b: f64, p: f64) -> f64 {
     Recalibration { a, b, n: 0 }.apply(p)
 }
 
+/// Bootstrap percentile band on the Brier score — an intuitive "how far could luck
+/// alone move it" band. Deterministic given `seed`. `None` for < 2 samples.
+#[pyfunction]
+#[pyo3(signature = (probs, outcomes, level=0.95, resamples=2000, seed=0xA11A_5EED_C0FF_EE00))]
+fn brier_ci_bootstrap(
+    probs: Vec<f64>,
+    outcomes: Vec<f64>,
+    level: f64,
+    resamples: usize,
+    seed: u64,
+) -> PyResult<Option<(f64, f64)>> {
+    Ok(scoring::brier_ci_bootstrap(
+        &binary(&probs, &outcomes)?,
+        level,
+        resamples,
+        seed,
+    ))
+}
+
+/// Recency-weighted (EWMA) Brier over samples in the given chronological order,
+/// with the given half-life in samples. The "how am I doing lately" number.
+#[pyfunction]
+#[pyo3(signature = (probs, outcomes, half_life=5.0))]
+fn ewma_brier(probs: Vec<f64>, outcomes: Vec<f64>, half_life: f64) -> PyResult<Option<f64>> {
+    Ok(scoring::ewma_brier(&binary(&probs, &outcomes)?, half_life))
+}
+
+/// Count of distinct forecast probabilities used (a coarse vocabulary caps
+/// resolution). Only the probabilities matter, so outcomes are not required.
+#[pyfunction]
+fn distinct_forecasts(probs: Vec<f64>) -> usize {
+    let s: Vec<Sample> = probs.iter().map(|&p| Sample::new(p, false)).collect();
+    scoring::distinct_forecasts(&s)
+}
+
+/// Selective-prediction summary: `(error acting on all, error on the surest half,
+/// area under the risk–coverage curve)`. `None` for an empty record.
+#[pyfunction]
+fn risk_coverage_summary(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Option<(f64, f64, f64)>> {
+    Ok(scoring::risk_coverage(&binary(&probs, &outcomes)?)
+        .map(|rc| (rc.risk_at_full, rc.risk_at(0.5), rc.aurcc)))
+}
+
+/// The full risk–coverage curve as `(coverage, risk)` points, coverage ascending.
+#[pyfunction]
+fn risk_coverage_curve(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Vec<(f64, f64)>> {
+    Ok(scoring::risk_coverage(&binary(&probs, &outcomes)?)
+        .map(|rc| rc.points)
+        .unwrap_or_default())
+}
+
 /// The compiled extension module `anamnesis._core`.
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add("__version__", env!("CARGO_PKG_VERSION"))?;
     m.add_function(wrap_pyfunction!(brier, m)?)?;
+    m.add_function(wrap_pyfunction!(brier_weighted, m)?)?;
     m.add_function(wrap_pyfunction!(log_score, m)?)?;
     m.add_function(wrap_pyfunction!(base_rate, m)?)?;
     m.add_function(wrap_pyfunction!(decompose, m)?)?;
@@ -228,5 +291,10 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(eprocess_pvalue, m)?)?;
     m.add_function(wrap_pyfunction!(fit_recalibration, m)?)?;
     m.add_function(wrap_pyfunction!(recalibration_apply, m)?)?;
+    m.add_function(wrap_pyfunction!(brier_ci_bootstrap, m)?)?;
+    m.add_function(wrap_pyfunction!(ewma_brier, m)?)?;
+    m.add_function(wrap_pyfunction!(distinct_forecasts, m)?)?;
+    m.add_function(wrap_pyfunction!(risk_coverage_summary, m)?)?;
+    m.add_function(wrap_pyfunction!(risk_coverage_curve, m)?)?;
     Ok(())
 }

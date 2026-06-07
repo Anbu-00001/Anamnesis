@@ -49,6 +49,7 @@ __all__ = [
     "Overconfidence",
     "Bin",
     "brier",
+    "brier_weighted",
     "log_score",
     "base_rate",
     "decompose",
@@ -65,6 +66,12 @@ __all__ = [
     "eprocess_pvalue",
     "fit_recalibration",
     "Recalibration",
+    "brier_ci_bootstrap",
+    "ewma_brier",
+    "distinct_forecasts",
+    "RiskCoverage",
+    "risk_coverage",
+    "risk_coverage_curve",
     "report",
     "Calibration",
 ]
@@ -84,6 +91,13 @@ def _floats(xs: Sequence) -> List[float]:
 def brier(probs: Sequence, outcomes: Sequence) -> Optional[float]:
     """Mean Brier score (mean squared error). 0 is perfect; lower is better."""
     return _core.brier(_floats(probs), _floats(outcomes))
+
+
+def brier_weighted(probs: Sequence, outcomes: Sequence, weights: Sequence) -> Optional[float]:
+    """Stake-weighted Brier: each forecast scaled by how much it mattered. With
+    equal weights this equals :func:`brier`. ``None`` for a length mismatch or no
+    positive weight — surfaces whether you're miscalibrated on the calls that count."""
+    return _core.brier_weighted(_floats(probs), _floats(outcomes), _floats(weights))
 
 
 def log_score(probs: Sequence, outcomes: Sequence, eps: float = 1e-9) -> Optional[float]:
@@ -203,6 +217,54 @@ def fit_recalibration(
     return None if t is None else Recalibration(*t)
 
 
+# ── small-sample / over-time bands ───────────────────────────────────────────
+def brier_ci_bootstrap(
+    probs: Sequence,
+    outcomes: Sequence,
+    level: float = 0.95,
+    resamples: int = 2000,
+    seed: int = 0xA11A5EEDC0FFEE00,
+) -> Optional[Tuple[float, float]]:
+    """Bootstrap percentile band on the Brier score — how far luck alone could
+    move it. Deterministic given ``seed`` (reproducible). ``None`` for < 2 samples.
+    A rough band; the rigorous calibration call is :func:`calibration_eprocess`."""
+    return _core.brier_ci_bootstrap(
+        _floats(probs), _floats(outcomes), float(level), int(resamples), int(seed)
+    )
+
+
+def ewma_brier(probs: Sequence, outcomes: Sequence, half_life: float = 5.0) -> Optional[float]:
+    """Recency-weighted (EWMA) Brier — "how am I doing *lately*", read against the
+    lifetime :func:`brier`. Pass samples chronologically. Descriptive trend, not a
+    significance test. ``None`` for an empty record."""
+    return _core.ewma_brier(_floats(probs), _floats(outcomes), float(half_life))
+
+
+def distinct_forecasts(probs: Sequence) -> int:
+    """Number of distinct forecast probabilities used — a coarse confidence
+    vocabulary caps the resolution you can achieve."""
+    return _core.distinct_forecasts(_floats(probs))
+
+
+# ── selective prediction ─────────────────────────────────────────────────────
+RiskCoverage = namedtuple("RiskCoverage", "risk_full risk_half aurcc")
+
+
+def risk_coverage(probs: Sequence, outcomes: Sequence) -> Optional[RiskCoverage]:
+    """Selective-prediction summary: directional error acting on every call
+    (``risk_full``), on your most-confident half (``risk_half``), and the area
+    under the risk–coverage curve (``aurcc``, lower ⇒ your confidence ranks your
+    calls). ``None`` for an empty record."""
+    t = _core.risk_coverage_summary(_floats(probs), _floats(outcomes))
+    return None if t is None else RiskCoverage(*t)
+
+
+def risk_coverage_curve(probs: Sequence, outcomes: Sequence) -> List[Tuple[float, float]]:
+    """The full risk–coverage curve as ``(coverage, risk)`` points (coverage
+    ascending) — the data behind a selective-prediction plot."""
+    return _core.risk_coverage_curve(_floats(probs), _floats(outcomes))
+
+
 # ── convenience ──────────────────────────────────────────────────────────────
 def report(probs: Sequence, outcomes: Sequence) -> dict:
     """Compute every binary metric at once and return a plain dict — handy in a
@@ -231,6 +293,10 @@ def report(probs: Sequence, outcomes: Sequence) -> dict:
         "accuracy": None if oc is None else oc.accuracy,
         "confidence_gap": None if oc is None else oc.gap,
         "calibration_eprocess": calibration_eprocess(p, o),
+        "brier_ci": brier_ci_bootstrap(p, o),
+        "recent_brier": ewma_brier(p, o),
+        "distinct_forecasts": distinct_forecasts(p),
+        "selective": (lambda s: None if s is None else s._asdict())(risk_coverage(p, o)),
     }
 
 

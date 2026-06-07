@@ -21,9 +21,13 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   (`calibration_eprocess`: a mixture of betting martingales, valid under
   continuous peeking — answers "is the miscalibration real, or n-too-small noise?")
   and a **ridge-shrunk logistic recalibration map** (`fit_recalibration` →
-  `Recalibration::apply`: `p ↦ σ(a+b·logit p)`, the mechanical self-correction).
-  This is the load-bearing core; everything else is plumbing. Types: `Sample`
-  (binary), `NumericSample` (interval).
+  `Recalibration::apply`: `p ↦ σ(a+b·logit p)`, the mechanical self-correction),
+  a **bootstrap Brier band** (`brier_ci_bootstrap`, seeded SplitMix64 → reproducible),
+  a **recency-weighted EWMA Brier** (`ewma_brier`, a descriptive "lately" trend — *not*
+  a control-chart alarm, which false-alarms at an agent's n), and a
+  **confidence-vocabulary** count (`distinct_forecasts`). This is the load-bearing
+  core; everything else is plumbing. Types: `Sample` (binary), `NumericSample`
+  (interval).
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
   (forecasts appended, never overwritten). `ClaimKind::{Binary,Numeric}`. `Forecast`
   holds `Option<prob>` xor `Option<interval>`; `Resolution` holds `Option<outcome>`

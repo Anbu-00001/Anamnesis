@@ -48,6 +48,26 @@ pub fn brier(samples: &[Sample]) -> Option<f64> {
     Some(sum / samples.len() as f64)
 }
 
+/// **Stake-weighted Brier**: the Brier score with each forecast weighted by how
+/// much it *mattered*. `weights[i]` scales `samples[i]`; weights `≤ 0` drop out,
+/// and a length mismatch or no positive weight yields `None`. With all weights
+/// equal this reduces to [`brier`]. The point is to surface whether you are
+/// miscalibrated on the calls that carry consequences, not merely on average.
+pub fn brier_weighted(samples: &[Sample], weights: &[f64]) -> Option<f64> {
+    if samples.is_empty() || samples.len() != weights.len() {
+        return None;
+    }
+    let mut num = 0.0;
+    let mut den = 0.0;
+    for (s, &w) in samples.iter().zip(weights) {
+        if w > 0.0 {
+            num += w * (s.prob - s.outcome).powi(2);
+            den += w;
+        }
+    }
+    (den > 0.0).then_some(num / den)
+}
+
 /// Mean **logarithmic (Good) score**: the average negative log-likelihood of
 /// the outcomes under your forecasts. Lower is better.
 ///
@@ -551,6 +571,185 @@ pub fn fit_recalibration(samples: &[Sample], ridge: f64) -> Option<Recalibration
     })
 }
 
+// ───────────────────────── small-sample / over-time bands ───────────────────
+
+/// A tiny, dependency-free SplitMix64 PRNG — enough for a reproducible bootstrap.
+fn splitmix64(state: &mut u64) -> u64 {
+    *state = state.wrapping_add(0x9E37_79B9_7F4A_7C15);
+    let mut z = *state;
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+    z ^ (z >> 31)
+}
+
+/// Linear-interpolated quantile of an already-sorted slice.
+fn quantile_sorted(sorted: &[f64], q: f64) -> f64 {
+    let q = q.clamp(0.0, 1.0);
+    let pos = q * (sorted.len() as f64 - 1.0);
+    let lo = pos.floor() as usize;
+    let hi = pos.ceil() as usize;
+    let frac = pos - lo as f64;
+    sorted[lo] * (1.0 - frac) + sorted[hi] * frac
+}
+
+/// **Bootstrap percentile interval** for the Brier score — an intuitive band on
+/// "how far luck alone could move this number." Deterministic given `seed`, so the
+/// report is reproducible run-to-run. `level` is the two-sided coverage (e.g.
+/// `0.95`); `resamples` ≥ ~2000 is sensible. Returns `None` for fewer than two
+/// samples (a one-sample band is meaningless).
+///
+/// Note: the percentile interval skews a touch *narrow* at very small `n`, so
+/// treat it as a rough band — the rigorous, optional-stopping-valid calibration
+/// call is [`calibration_eprocess`], not this.
+pub fn brier_ci_bootstrap(
+    samples: &[Sample],
+    level: f64,
+    resamples: usize,
+    seed: u64,
+) -> Option<(f64, f64)> {
+    let n = samples.len();
+    if n < 2 || resamples == 0 {
+        return None;
+    }
+    let mut state = seed;
+    let mut briers = Vec::with_capacity(resamples);
+    for _ in 0..resamples {
+        let mut sum = 0.0;
+        for _ in 0..n {
+            let idx = (splitmix64(&mut state) % n as u64) as usize;
+            let s = &samples[idx];
+            sum += (s.prob - s.outcome).powi(2);
+        }
+        briers.push(sum / n as f64);
+    }
+    briers.sort_by(f64::total_cmp);
+    let alpha = (1.0 - level) / 2.0;
+    Some((
+        quantile_sorted(&briers, alpha),
+        quantile_sorted(&briers, 1.0 - alpha),
+    ))
+}
+
+/// **Recency-weighted (EWMA) Brier** over the samples in the given order, with the
+/// given `half_life` in samples (the lag at which a forecast's weight halves).
+/// Pass samples chronologically: this is the "how am I doing *lately*" number, to
+/// be read against the lifetime Brier as a trend. `None` for an empty record.
+///
+/// Deliberately *not* a control-chart drift alarm: at the few-dozen-sample scale
+/// an agent lives in, hard EWMA/CUSUM limits false-alarm. This is a descriptive
+/// trend, not a significance test.
+pub fn ewma_brier(samples: &[Sample], half_life: f64) -> Option<f64> {
+    let first = samples.first()?;
+    let lambda = 1.0 - 0.5_f64.powf(1.0 / half_life.max(1e-9));
+    let mut ewma = (first.prob - first.outcome).powi(2);
+    for s in &samples[1..] {
+        let b = (s.prob - s.outcome).powi(2);
+        ewma = lambda * b + (1.0 - lambda) * ewma;
+    }
+    Some(ewma)
+}
+
+/// How many **distinct forecast probabilities** appear. A coarse confidence
+/// vocabulary (you only ever say 0.5/0.7/0.9) caps the resolution you can
+/// achieve — the LLM-calibration literature finds verbalized confidence clusters
+/// on a few round numbers. Grouped by exact bit pattern.
+pub fn distinct_forecasts(samples: &[Sample]) -> usize {
+    samples
+        .iter()
+        .map(|s| s.prob.to_bits())
+        .collect::<std::collections::BTreeSet<_>>()
+        .len()
+}
+
+// ───────────────────────── selective prediction ─────────────────────────────
+
+/// The 0/1 *directional* error of one forecast: you lean "yes" when `p > 0.5`
+/// and "no" when `p < 0.5`; the call is wrong when the leaned side did not happen.
+/// An exact `0.5` picks no side and scores half-error.
+fn directional_error(s: &Sample) -> f64 {
+    if (s.prob - 0.5).abs() < 1e-12 {
+        0.5
+    } else if s.prob > 0.5 {
+        1.0 - s.outcome // leaned yes → wrong if it did not happen
+    } else {
+        s.outcome // leaned no → wrong if it happened
+    }
+}
+
+/// A risk–coverage curve: how your error rate falls as you abstain from your
+/// least-confident calls.
+#[derive(Clone, Debug)]
+pub struct RiskCoverage {
+    /// `(coverage, risk)` points, coverage ascending from `1/n` (act only on the
+    /// single most-confident call) to `1.0` (act on everything).
+    pub points: Vec<(f64, f64)>,
+    /// Area under the risk–coverage curve (mean risk across coverage levels).
+    /// **Lower is better**: your confident calls really are your reliable ones.
+    pub aurcc: f64,
+    /// Error rate at full coverage — acting on every call.
+    pub risk_at_full: f64,
+}
+
+impl RiskCoverage {
+    /// Risk (error rate) when acting only on the most-confident `target` fraction
+    /// of calls — the smallest coverage point `≥ target`.
+    pub fn risk_at(&self, target: f64) -> f64 {
+        self.points
+            .iter()
+            .find(|(c, _)| *c >= target)
+            .or_else(|| self.points.last())
+            .map(|(_, r)| *r)
+            .unwrap_or(0.0)
+    }
+}
+
+/// **Selective prediction**: rank forecasts by *boldness* (`max(p, 1-p)`) and, for
+/// each coverage level, report the directional error among the calls you would
+/// keep. This answers "how good am I when I only commit to my surest calls?" — the
+/// agent's version of knowing *when to act on its own judgement versus flag
+/// uncertainty*. On a forecaster whose confidence means something, risk falls as
+/// coverage shrinks; if it does not (or rises), the confidence ranking is noise.
+/// Returns `None` for an empty record.
+pub fn risk_coverage(samples: &[Sample]) -> Option<RiskCoverage> {
+    if samples.is_empty() {
+        return None;
+    }
+    let n = samples.len();
+    let mut order: Vec<usize> = (0..n).collect();
+    // Most confident first; total_cmp keeps it panic-free and ties stable-ish.
+    order.sort_by(|&a, &b| {
+        let ca = samples[a].prob.max(1.0 - samples[a].prob);
+        let cb = samples[b].prob.max(1.0 - samples[b].prob);
+        cb.total_cmp(&ca)
+    });
+    let mut points = Vec::with_capacity(n);
+    let mut cum_err = 0.0;
+    for (k, &i) in order.iter().enumerate() {
+        cum_err += directional_error(&samples[i]);
+        let coverage = (k + 1) as f64 / n as f64;
+        points.push((coverage, cum_err / (k + 1) as f64));
+    }
+    let risk_at_full = points.last().map(|&(_, r)| r).unwrap_or(0.0);
+    let aurcc = points.iter().map(|&(_, r)| r).sum::<f64>() / n as f64;
+    Some(RiskCoverage {
+        points,
+        aurcc,
+        risk_at_full,
+    })
+}
+
+// ───────────────────────── elicitation aids ─────────────────────────────────
+
+/// **Dialectical aggregation** of two of your own estimates — Herzog & Hertwig's
+/// "crowd within" (2009). Make a first estimate, then a second that deliberately
+/// assumes the first is wrong ("consider the opposite — give two reasons it might
+/// be off"), and average them: the arithmetic mean recovers roughly half the
+/// accuracy gain of consulting a *second person*. This is a pre-resolution input
+/// aid, not a score; the inputs are clamped to `[0, 1]`.
+pub fn dialectical_mean(p1: f64, p2: f64) -> f64 {
+    (p1.clamp(0.0, 1.0) + p2.clamp(0.0, 1.0)) / 2.0
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -938,5 +1137,116 @@ mod tests {
         assert!(r.a.is_finite() && r.b.is_finite(), "a={}, b={}", r.a, r.b);
         assert!(r.apply(0.8) > r.apply(0.2), "map should stay increasing");
         assert!(fit_recalibration(&[], 1.0).is_none());
+    }
+
+    #[test]
+    fn bootstrap_ci_brackets_point_and_is_deterministic() {
+        let s: Vec<Sample> = (0..40).map(|i| Sample::new(0.7, i % 10 < 7)).collect();
+        let b = brier(&s).unwrap();
+        let (lo, hi) = brier_ci_bootstrap(&s, 0.95, 2000, 42).unwrap();
+        assert!(
+            lo <= b && b <= hi,
+            "CI [{lo},{hi}] should bracket point {b}"
+        );
+        assert!((0.0..=1.0).contains(&lo) && (0.0..=1.0).contains(&hi));
+        // Same seed ⇒ identical interval (reproducible reports).
+        assert_eq!((lo, hi), brier_ci_bootstrap(&s, 0.95, 2000, 42).unwrap());
+        // One sample (or zero) is not enough for a band.
+        assert!(brier_ci_bootstrap(&[Sample::new(0.5, true)], 0.95, 100, 1).is_none());
+    }
+
+    #[test]
+    fn ewma_brier_rewards_recent_improvement() {
+        // Wrong early (Brier 1.0), perfect late (Brier 0.0): recency < lifetime 0.5.
+        let mut s = Vec::new();
+        for _ in 0..10 {
+            s.push(Sample::new(0.0, true));
+        }
+        for _ in 0..10 {
+            s.push(Sample::new(1.0, true));
+        }
+        let life = brier(&s).unwrap();
+        let recent = ewma_brier(&s, 5.0).unwrap();
+        assert!(
+            recent < life,
+            "recency should reward recent gains: {recent} vs {life}"
+        );
+        // Constant performance ⇒ EWMA equals that Brier.
+        let c: Vec<Sample> = (0..20).map(|_| Sample::new(0.5, true)).collect();
+        approx(ewma_brier(&c, 5.0).unwrap(), 0.25);
+        assert!(ewma_brier(&[], 5.0).is_none());
+    }
+
+    #[test]
+    fn distinct_forecasts_counts_unique_values() {
+        let s = [
+            Sample::new(0.6, true),
+            Sample::new(0.6, false),
+            Sample::new(0.3, true),
+        ];
+        assert_eq!(distinct_forecasts(&s), 2);
+        assert_eq!(distinct_forecasts(&[]), 0);
+    }
+
+    #[test]
+    fn risk_coverage_rewards_a_good_confidence_ranking() {
+        // The confident calls are right; the unsure ones are the errors.
+        let mut s = Vec::new();
+        for _ in 0..10 {
+            s.push(Sample::new(0.95, true)); // confident & correct
+        }
+        for _ in 0..10 {
+            s.push(Sample::new(0.55, false)); // unsure & wrong (leaned yes, didn't happen)
+        }
+        let rc = risk_coverage(&s).unwrap();
+        approx(rc.risk_at_full, 0.5); // act on all → 10/20 wrong
+        assert!(
+            rc.risk_at(0.5) < 0.05,
+            "the most-confident half should be near-perfect, got {}",
+            rc.risk_at(0.5)
+        );
+        assert!(
+            rc.aurcc < rc.risk_at_full,
+            "being selective should beat acting on everything"
+        );
+    }
+
+    #[test]
+    fn risk_coverage_flags_inverted_confidence() {
+        // Confidence is anti-informative: the bold calls are the wrong ones.
+        let mut s = Vec::new();
+        for _ in 0..10 {
+            s.push(Sample::new(0.95, false)); // confident & wrong
+        }
+        for _ in 0..10 {
+            s.push(Sample::new(0.55, true)); // unsure & right
+        }
+        let rc = risk_coverage(&s).unwrap();
+        assert!(
+            rc.risk_at(0.5) > rc.risk_at_full,
+            "surest-half error should exceed overall when ranking is inverted"
+        );
+        assert!(risk_coverage(&[]).is_none());
+    }
+
+    #[test]
+    fn dialectical_mean_averages_the_crowd_within() {
+        approx(dialectical_mean(0.7, 0.5), 0.6);
+        approx(dialectical_mean(0.9, 0.9), 0.9);
+        approx(dialectical_mean(1.5, -0.2), 0.5); // clamps out-of-range inputs
+    }
+
+    #[test]
+    fn weighted_brier_emphasises_high_stake_calls() {
+        // A cheap perfect call and a costly blown one: unweighted Brier is 0.5…
+        let s = [Sample::new(1.0, true), Sample::new(0.0, true)]; // briers 0 and 1
+        approx(brier_weighted(&s, &[1.0, 1.0]).unwrap(), 0.5);
+        // …but weight the blown call 9× and it rightly dominates.
+        approx(brier_weighted(&s, &[1.0, 9.0]).unwrap(), 0.9);
+        // Equal weights reproduce the plain Brier.
+        approx(brier_weighted(&s, &[2.0, 2.0]).unwrap(), brier(&s).unwrap());
+        // No positive weight, or a length mismatch ⇒ None.
+        assert!(brier_weighted(&s, &[0.0, 0.0]).is_none());
+        assert!(brier_weighted(&s, &[1.0]).is_none());
     }
 }

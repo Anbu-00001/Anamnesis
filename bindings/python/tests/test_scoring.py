@@ -156,6 +156,51 @@ def test_recalibration_identity_on_calibrated_data():
     assert abs(r.apply(0.3) - 0.3) < 0.05
 
 
+def test_brier_ci_brackets_and_is_deterministic():
+    probs = [0.7] * 40
+    outs = [1 if i % 10 < 7 else 0 for i in range(40)]
+    b = ana.brier(probs, outs)
+    lo, hi = ana.brier_ci_bootstrap(probs, outs)
+    assert lo <= b <= hi
+    assert ana.brier_ci_bootstrap(probs, outs) == (lo, hi)  # reproducible
+    assert ana.brier_ci_bootstrap([0.5], [1]) is None  # < 2 samples
+
+
+def test_ewma_brier_rewards_recency():
+    s = [(0.0, 1)] * 10 + [(1.0, 1)] * 10  # wrong early, perfect late
+    probs = [p for p, _ in s]
+    outs = [o for _, o in s]
+    assert ana.ewma_brier(probs, outs, half_life=5.0) < ana.brier(probs, outs)
+    assert ana.ewma_brier([], []) is None
+
+
+def test_distinct_forecasts():
+    assert ana.distinct_forecasts([0.6, 0.6, 0.3]) == 2
+    assert ana.distinct_forecasts([]) == 0
+
+
+def test_risk_coverage_rewards_good_ranking():
+    # Confident calls right, unsure calls wrong → surest half near-perfect.
+    probs = [0.95] * 10 + [0.55] * 10
+    outs = [1] * 10 + [0] * 10
+    rc = ana.risk_coverage(probs, outs)
+    assert rc.risk_full == pytest.approx(0.5)
+    assert rc.risk_half < 0.05
+    assert rc.aurcc < rc.risk_full
+    curve = ana.risk_coverage_curve(probs, outs)
+    assert len(curve) == 20 and curve[-1] == (pytest.approx(1.0), pytest.approx(0.5))
+    assert ana.risk_coverage([], []) is None
+
+
+def test_brier_weighted():
+    probs, outs = [1.0, 0.0], [1, 1]  # briers 0 and 1
+    assert ana.brier_weighted(probs, outs, [1, 1]) == pytest.approx(0.5)
+    assert ana.brier_weighted(probs, outs, [1, 9]) == pytest.approx(0.9)
+    assert ana.brier_weighted(probs, outs, [2, 2]) == pytest.approx(ana.brier(probs, outs))
+    assert ana.brier_weighted(probs, outs, [0, 0]) is None
+    assert ana.brier_weighted(probs, outs, [1]) is None
+
+
 def test_bools_and_numpy_inputs_work():
     # bools as outcomes
     assert ana.brier([0.9, 0.1], [True, False]) == pytest.approx(0.01)

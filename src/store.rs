@@ -67,6 +67,7 @@ mod tests {
                 resolve_by: Some(chrono::NaiveDate::from_ymd_opt(2025, 4, 3).unwrap()),
                 tags: vec!["weather".into()],
                 kind: ClaimKind::Binary,
+                stake: 1.0,
                 forecasts: vec![
                     Forecast {
                         at: now,

@@ -14,7 +14,8 @@ use clap::{Parser, Subcommand, ValueEnum};
 use serde_json::{json, Value};
 
 use anamnesis::model::{
-    gen_id, normalize_tags, Claim, ClaimKind, Forecast, NumericForecast, Outcome, Resolution,
+    compose_reasoning, gen_id, normalize_tags, Claim, ClaimKind, Forecast, NumericForecast,
+    Outcome, Resolution,
 };
 use anamnesis::scoring::{self, NumericSample};
 use anamnesis::{mcp, report, store};
@@ -65,6 +66,19 @@ enum Cmd {
         /// The reasoning behind the forecast — what hindsight will try to erase
         #[arg(long)]
         because: Option<String>,
+        /// How much this call MATTERS (≥ 0; default 1) — weights the Brier toward
+        /// your consequential predictions
+        #[arg(long, default_value_t = 1.0)]
+        stake: f64,
+        /// BINARY: a SECOND, deliberately-opposite estimate ("consider the
+        /// opposite"); the logged probability is the average of the two
+        /// (dialectical bootstrapping — the wisdom of your own crowd)
+        #[arg(long)]
+        second_prob: Option<f64>,
+        /// The OUTSIDE VIEW: a reference class of similar past cases and its base
+        /// rate, recorded with the forecast
+        #[arg(long)]
+        reference_class: Option<String>,
     },
     /// Revise a belief (history is preserved). Match the claim's kind.
     Update {
@@ -240,10 +254,17 @@ fn run(cli: Cli) -> Result<(), String> {
             by,
             tags,
             because,
+            stake,
+            second_prob,
+            reference_class,
         } => {
             let statement = statement.trim().to_string();
             if statement.is_empty() {
                 return Err("statement must not be empty".into());
+            }
+            let stake = *stake;
+            if !(stake.is_finite() && stake >= 0.0) {
+                return Err(format!("stake must be a finite number ≥ 0, got {stake}"));
             }
             let resolve_by = by.as_deref().map(parse_date).transpose()?;
             let now = Utc::now();
@@ -256,13 +277,26 @@ fn run(cli: Cli) -> Result<(), String> {
                 }
                 (Some(p), None) => {
                     check_prob(*p)?;
+                    // Dialectical bootstrapping: if a second "consider the opposite"
+                    // estimate is given, log the average of the two.
+                    let (p_eff, estimates) = match second_prob {
+                        Some(sp) => {
+                            check_prob(*sp)?;
+                            (scoring::dialectical_mean(*p, *sp), Some((*p, *sp)))
+                        }
+                        None => (*p, None),
+                    };
                     (
                         ClaimKind::Binary,
                         Forecast {
                             at: now,
-                            prob: Some(*p),
+                            prob: Some(p_eff),
                             interval: None,
-                            because: because.clone(),
+                            because: compose_reasoning(
+                                because.as_deref(),
+                                reference_class.as_deref(),
+                                estimates,
+                            ),
                         },
                     )
                 }
@@ -279,7 +313,11 @@ fn run(cli: Cli) -> Result<(), String> {
                                 high,
                                 level: *level,
                             }),
-                            because: because.clone(),
+                            because: compose_reasoning(
+                                because.as_deref(),
+                                reference_class.as_deref(),
+                                None,
+                            ),
                         },
                     )
                 }
@@ -306,6 +344,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 resolve_by,
                 tags: normalize_tags(tags),
                 kind,
+                stake,
                 forecasts: vec![forecast],
                 resolution: None,
             });

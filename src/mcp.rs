@@ -18,7 +18,8 @@ use chrono::{NaiveDate, Utc};
 use serde_json::{json, Value};
 
 use crate::model::{
-    gen_id, normalize_tags, Claim, ClaimKind, Forecast, NumericForecast, Outcome, Resolution,
+    compose_reasoning, gen_id, normalize_tags, Claim, ClaimKind, Forecast, NumericForecast,
+    Outcome, Resolution,
 };
 use crate::scoring::{self, NumericSample, Sample};
 use crate::{report, store};
@@ -143,22 +144,31 @@ fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
         return Err("statement is required".into());
     }
     let now = Utc::now();
-    let because = args
-        .get("because")
-        .and_then(Value::as_str)
-        .map(String::from);
+    let because = args.get("because").and_then(Value::as_str);
+    let reference_class = args.get("reference_class").and_then(Value::as_str);
 
     let (kind, forecast) = if let Some(p) = args.get("prob").and_then(Value::as_f64) {
         if !(0.0..=1.0).contains(&p) {
             return Err(format!("prob must be between 0 and 1, got {p}"));
         }
+        // Dialectical bootstrapping: average in a second, "consider the opposite"
+        // estimate when one is supplied.
+        let (p_eff, estimates) = match args.get("second_prob").and_then(Value::as_f64) {
+            Some(sp) => {
+                if !(0.0..=1.0).contains(&sp) {
+                    return Err(format!("second_prob must be between 0 and 1, got {sp}"));
+                }
+                (scoring::dialectical_mean(p, sp), Some((p, sp)))
+            }
+            None => (p, None),
+        };
         (
             ClaimKind::Binary,
             Forecast {
                 at: now,
-                prob: Some(p),
+                prob: Some(p_eff),
                 interval: None,
-                because,
+                because: compose_reasoning(because, reference_class, estimates),
             },
         )
     } else if let Some(iv) = args.get("interval").and_then(Value::as_str) {
@@ -175,7 +185,7 @@ fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
                 at: now,
                 prob: None,
                 interval: Some(NumericForecast { low, high, level }),
-                because,
+                because: compose_reasoning(because, reference_class, None),
             },
         )
     } else {
@@ -212,6 +222,10 @@ fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
         .and_then(Value::as_str)
         .map(parse_date)
         .transpose()?;
+    let stake = args.get("stake").and_then(Value::as_f64).unwrap_or(1.0);
+    if !(stake.is_finite() && stake >= 0.0) {
+        return Err(format!("stake must be a finite number ≥ 0, got {stake}"));
+    }
 
     let mut led = store::load(ledger).map_err(|e| e.to_string())?;
     let mut salt = now.timestamp_nanos_opt().unwrap_or(0) as u64;
@@ -229,6 +243,7 @@ fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
         resolve_by,
         tags: normalize_tags(&tags),
         kind,
+        stake,
         forecasts: vec![forecast],
         resolution: None,
     });
@@ -475,13 +490,16 @@ fn tool_schemas() -> Value {
     json!([
         {
             "name": "predict",
-            "description": "Log a falsifiable prediction BEFORE acting. Use `prob` for a yes/no claim or `interval` for a quantity. Tag a `kind` (estimate, tests-pass, bug-hypothesis, approach, compat) to learn your calibration per type of call.",
+            "description": "Log a falsifiable prediction BEFORE acting. For best calibration: (1) take the OUTSIDE VIEW first — name a `reference_class` of similar past cases and its base rate; (2) make your `prob`, then a `second_prob` that assumes your first is wrong (give yourself two reasons it could be) — the tool logs their average (dialectical bootstrapping, the wisdom of your own crowd); (3) tag a `kind` to learn calibration per type of call. Use `prob` for yes/no or `interval` for a quantity.",
             "inputSchema": { "type": "object", "properties": {
                 "statement": { "type": "string", "description": "the falsifiable claim" },
                 "prob": { "type": "number", "description": "probability it is true, 0..1 (binary)" },
+                "second_prob": { "type": "number", "description": "a SECOND, consider-the-opposite estimate, 0..1; logged prob becomes the average of the two" },
+                "reference_class": { "type": "string", "description": "the outside view: similar past cases and their base rate" },
                 "interval": { "type": "string", "description": "credible interval \"LOW..HIGH\" (numeric)" },
                 "level": { "type": "number", "description": "interval confidence level, default 0.8" },
                 "kind": { "type": "string", "description": "estimate | tests-pass | bug-hypothesis | approach | compat" },
+                "stake": { "type": "number", "description": "how much this call matters (≥ 0, default 1) — weights the Brier toward consequential calls" },
                 "project": { "type": "string", "description": "project/repo slug" },
                 "by": { "type": "string", "description": "expected resolution date, YYYY-MM-DD" },
                 "tags": { "type": "array", "items": { "type": "string" }, "description": "extra tags" }

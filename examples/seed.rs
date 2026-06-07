@@ -44,6 +44,13 @@ fn claim(
         })
         .collect();
     let created_at = fc.first().map(|f| f.at).unwrap_or(base);
+    // Demo flavour: market/personal calls carry real consequences → higher stake,
+    // so the stake-weighted Brier visibly diverges from the flat one.
+    let stake = if tags.iter().any(|&t| t == "markets" || t == "personal") {
+        3.0
+    } else {
+        1.0
+    };
     Claim {
         id: gen_id(stmt, salt),
         statement: stmt.to_string(),
@@ -51,6 +58,7 @@ fn claim(
         resolve_by,
         tags: tags_of(tags),
         kind: ClaimKind::Binary,
+        stake,
         forecasts: fc,
         resolution: resolution.map(|(day, happened, note)| Resolution {
             at: base + Duration::days(day),
@@ -91,6 +99,7 @@ fn numeric_claim(
         resolve_by: None,
         tags: tags_of(tags),
         kind: ClaimKind::Numeric,
+        stake: 1.0,
         forecasts: vec![Forecast {
             at: base + Duration::days(day),
             prob: None,

@@ -91,11 +91,50 @@ pub struct Claim {
     /// Binary or numeric. Absent in older ledgers ⇒ defaults to binary.
     #[serde(default)]
     pub kind: ClaimKind,
+    /// How much this call *matters* (≥ 0; default 1) — weights the Brier toward
+    /// your consequential predictions. Absent in older ledgers ⇒ 1, and a
+    /// default stake is not serialised, so existing ledgers stay byte-identical.
+    #[serde(default = "default_stake", skip_serializing_if = "is_default_stake")]
+    pub stake: f64,
     /// Every forecast you ever made, oldest first. The last is your current
     /// belief; the first is where you started.
     pub forecasts: Vec<Forecast>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<Resolution>,
+}
+
+fn default_stake() -> f64 {
+    1.0
+}
+
+fn is_default_stake(s: &f64) -> bool {
+    (*s - 1.0).abs() < f64::EPSILON
+}
+
+/// Weave the elicitation trail into the stored reasoning: the outside-view
+/// *reference class*, the two *dialectical* estimates that produced the forecast,
+/// and the free-text rationale — joined into one `because`. Empty pieces drop out;
+/// returns `None` only when there is nothing at all to record. This keeps the CLI
+/// and the MCP server recording provenance identically.
+pub fn compose_reasoning(
+    because: Option<&str>,
+    reference_class: Option<&str>,
+    estimates: Option<(f64, f64)>,
+) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(rc) = reference_class.map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(format!("outside view: {rc}"));
+    }
+    if let Some((p1, p2)) = estimates {
+        parts.push(format!(
+            "dialectical {p1:.2} & {p2:.2} → {:.2}",
+            crate::scoring::dialectical_mean(p1, p2)
+        ));
+    }
+    if let Some(b) = because.map(str::trim).filter(|s| !s.is_empty()) {
+        parts.push(b.to_string());
+    }
+    (!parts.is_empty()).then(|| parts.join(" · "))
 }
 
 impl Claim {
@@ -250,6 +289,7 @@ mod tests {
             resolve_by: None,
             tags: vec![],
             kind: ClaimKind::Binary,
+            stake: 1.0,
             forecasts: probs.iter().map(|&p| binary_forecast(p)).collect(),
             resolution: outcome.map(|o| Resolution {
                 at: ts(2025, 6, 1),
@@ -276,6 +316,7 @@ mod tests {
             resolve_by: None,
             tags: vec![],
             kind: ClaimKind::Numeric,
+            stake: 1.0,
             forecasts: vec![Forecast {
                 at: ts(2025, 1, 1),
                 prob: None,
@@ -371,5 +412,13 @@ mod tests {
         assert_eq!(c.current_prob(), Some(0.7));
         assert_eq!(c.outcome(), Some(Outcome::True));
         assert_eq!(c.sample(), Some(Sample::new(0.7, true)));
+        // A ledger predating stakes loads with the default stake of 1.0…
+        assert_eq!(c.stake, 1.0);
+        // …and a default-stake claim does not re-introduce the field on save.
+        let round = serde_json::to_string(&ledger).unwrap();
+        assert!(
+            !round.contains("stake"),
+            "default stake must not be serialised"
+        );
     }
 }
