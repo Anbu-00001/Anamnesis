@@ -395,12 +395,35 @@ pub fn wilson_interval(successes: f64, n: usize, z: f64) -> Option<(f64, f64)> {
     Some(((center - margin).max(0.0), (center + margin).min(1.0)))
 }
 
+/// **Empirical-Bayes-style shrinkage** of a rate toward a prior mean.
+///
+/// `(successes + strength·prior_mean) / (n + strength)` — equivalently a
+/// `Beta(strength·prior_mean, strength·(1−prior_mean))` prior updated by the
+/// data. At small `n` the estimate is pulled toward `prior_mean` (borrowing
+/// strength); as `n` grows it converges to the raw rate. This is what keeps a
+/// single fluky resolution from dominating a per-kind calibration number — the
+/// literature finds shrinkage beats both raw rates and fixed pseudocounts.
+pub fn shrink_toward(successes: f64, n: usize, prior_mean: f64, strength: f64) -> f64 {
+    (successes + strength * prior_mean) / (n as f64 + strength)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "expected {a} ≈ {b}");
+    }
+
+    #[test]
+    fn shrinkage_pulls_small_n_toward_prior() {
+        // 1/1 with a 0.5 prior, strength 4 → (1+2)/(1+4) = 0.6, not 1.0.
+        approx(shrink_toward(1.0, 1, 0.5, 4.0), 0.6);
+        // Large n barely moves: 80/100 shrunk toward 0.5 stays ≈ 0.79.
+        let s = shrink_toward(80.0, 100, 0.5, 4.0);
+        assert!(s > 0.78 && s < 0.80, "s={s}");
+        // strength 0 recovers the raw rate.
+        approx(shrink_toward(3.0, 4, 0.5, 0.0), 0.75);
     }
 
     #[test]

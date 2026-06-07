@@ -42,8 +42,8 @@ if [ "${resolved:-0}" -ge "$MIN_N" ]; then
   [ -n "$gap" ] && add "$gap"
 
   kind="$(jq -r '
-    ([.by_kind[]? | select(.n >= 2 and (.confidence_gap|fabs) >= 0.10)] | sort_by(-(.confidence_gap|fabs)))[0]
-    | if . == null then empty else "  worst type: kind:\(.tag) (gap \((.confidence_gap*100|round))pts, n=\(.n))" end' \
+    ([.by_kind[]? | (.confidence_gap_shrunk // .confidence_gap) as $g | . + {g:$g} | select(.n >= 2 and ($g|fabs) >= 0.10)] | sort_by(-(.g|fabs)))[0]
+    | if . == null then empty else "  worst type: kind:\(.tag) (gap \((.g*100|round))pts shrunk, n=\(.n))" end' \
     <<<"$report" 2>/dev/null)"
   [ -n "$kind" ] && add "$kind"
 fi

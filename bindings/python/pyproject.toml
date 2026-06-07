@@ -1,0 +1,50 @@
+[build-system]
+requires = ["maturin>=1.5,<2"]
+build-backend = "maturin"
+
+[project]
+name = "anamnesis"
+version = "0.3.0"
+description = "Calibration & proper-scoring metrics — exact Murphy decomposition, AUC, Winkler interval score, Wilson interval, empirical-Bayes shrinkage — backed by a trustworthy Rust core."
+readme = "README.md"
+requires-python = ">=3.8"
+license = { text = "MIT" }
+keywords = [
+    "calibration",
+    "brier-score",
+    "proper-scoring-rule",
+    "forecasting",
+    "reliability-diagram",
+    "uncertainty",
+    "auc",
+    "eval",
+]
+classifiers = [
+    "Programming Language :: Rust",
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Typing :: Typed",
+]
+dependencies = []
+
+[project.optional-dependencies]
+# Not required — every function accepts plain iterables. Installs numpy purely so
+# the numpy-interop tests can run.
+numpy = ["numpy"]
+# The LangGraph-over-MCP example (examples/langgraph_mcp.py) reaches the running
+# `ana mcp` server through these; no bespoke binding code is involved.
+langchain = ["langchain-mcp-adapters>=0.1", "langgraph>=0.2"]
+test = ["pytest", "numpy"]
+
+[project.urls]
+Homepage = "https://github.com/Anbu-00001/Anamnesis"
+Source = "https://github.com/Anbu-00001/Anamnesis"
+
+[tool.maturin]
+# Mixed Rust/Python layout: pure-Python package under python/, compiled core as
+# anamnesis._core. abi3 → one wheel for CPython 3.8+.
+module-name = "anamnesis._core"
+python-source = "python"
+features = ["extension-module"]

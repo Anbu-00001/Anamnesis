@@ -34,6 +34,13 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   server over newline-delimited JSON-RPC stdio (no new deps), exposing
   predict/resolve/calibration/list as tools for any MCP agent. The cross-agent
   reach surface; reuses scoring/report as the single source of truth.
+- [bindings/python/](bindings/python/) — **PyO3 + maturin** binding exposing the
+  pure `scoring` core to Python as an `abi3` wheel (`import anamnesis`). It is a
+  *standalone* crate (its own empty `[workspace]`) depending on the core lib by
+  path, so a bare `cargo build`/`clippy`/`test` of the core never touches pyo3.
+  Thin delegates only — **one implementation, two languages, zero drift**. Build:
+  `cd bindings/python && maturin develop && pytest`. Don't reimplement metrics
+  here; wrap `anamnesis::scoring`.
 - [examples/seed.rs](examples/seed.rs) — backdated demo ledger generator.
 - [tests/cli.rs](tests/cli.rs) — drives the compiled binary end-to-end.
 

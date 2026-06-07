@@ -44,6 +44,9 @@ pub struct TagStat {
     pub n: usize,
     pub brier: Option<f64>,
     pub confidence_gap: Option<f64>,
+    /// Confidence gap with accuracy shrunk toward the overall rate — the
+    /// small-n-robust number to trust when `n` is tiny.
+    pub confidence_gap_shrunk: Option<f64>,
 }
 
 /// Summary of the claims whose probability you revised before they resolved.
@@ -144,6 +147,7 @@ impl ReportData {
 
         let decomp = scoring::decompose(&samples);
         let over = scoring::overconfidence(&samples);
+        let overall_acc = over.map(|o| o.accuracy); // shrinkage prior for per-slice gaps
 
         let calibration = scoring::calibration_curve(&samples, bins)
             .into_iter()
@@ -173,11 +177,27 @@ impl ReportData {
             }
             let mut rows: Vec<TagStat> = map
                 .into_iter()
-                .map(|(tag, s)| TagStat {
-                    tag: tag.to_string(),
-                    n: s.len(),
-                    brier: scoring::brier(&s),
-                    confidence_gap: scoring::overconfidence(&s).map(|o| o.gap),
+                .map(|(tag, s)| {
+                    let oc = scoring::overconfidence(&s);
+                    let gap_shrunk = match (oc, overall_acc) {
+                        (Some(o), Some(pa)) => Some(
+                            o.mean_confidence
+                                - scoring::shrink_toward(
+                                    o.accuracy * s.len() as f64,
+                                    s.len(),
+                                    pa,
+                                    4.0,
+                                ),
+                        ),
+                        _ => oc.map(|o| o.gap),
+                    };
+                    TagStat {
+                        tag: tag.to_string(),
+                        n: s.len(),
+                        brier: scoring::brier(&s),
+                        confidence_gap: oc.map(|o| o.gap),
+                        confidence_gap_shrunk: gap_shrunk,
+                    }
                 })
                 .collect();
             rows.sort_by(|a, b| b.n.cmp(&a.n).then(a.tag.cmp(&b.tag)));
@@ -199,11 +219,27 @@ impl ReportData {
             }
             let mut rows: Vec<TagStat> = map
                 .into_iter()
-                .map(|(tag, s)| TagStat {
-                    tag: tag.to_string(),
-                    n: s.len(),
-                    brier: scoring::brier(&s),
-                    confidence_gap: scoring::overconfidence(&s).map(|o| o.gap),
+                .map(|(tag, s)| {
+                    let oc = scoring::overconfidence(&s);
+                    let gap_shrunk = match (oc, overall_acc) {
+                        (Some(o), Some(pa)) => Some(
+                            o.mean_confidence
+                                - scoring::shrink_toward(
+                                    o.accuracy * s.len() as f64,
+                                    s.len(),
+                                    pa,
+                                    4.0,
+                                ),
+                        ),
+                        _ => oc.map(|o| o.gap),
+                    };
+                    TagStat {
+                        tag: tag.to_string(),
+                        n: s.len(),
+                        brier: scoring::brier(&s),
+                        confidence_gap: oc.map(|o| o.gap),
+                        confidence_gap_shrunk: gap_shrunk,
+                    }
                 })
                 .collect();
             rows.sort_by(|a, b| b.n.cmp(&a.n).then(a.tag.cmp(&b.tag)));
@@ -514,12 +550,12 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
         if !d.by_kind.is_empty() {
             let _ = writeln!(
                 out,
-                "\n  By prediction kind   (calibration per type of call)"
+                "\n  By prediction kind   (gap~ = shrunk toward your overall rate; trust it at small n)"
             );
             let _ = writeln!(
                 out,
-                "    {:<16} {:>4}  {:>7}  {:>9}",
-                "kind", "n", "brier", "conf-gap"
+                "    {:<16} {:>4}  {:>7}  {:>8}  {:>8}",
+                "kind", "n", "brier", "gap", "gap~"
             );
             for t in &d.by_kind {
                 let br = t
@@ -530,7 +566,15 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                     .confidence_gap
                     .map(|x| format!("{x:+.3}"))
                     .unwrap_or_else(|| "   —".into());
-                let _ = writeln!(out, "    {:<16} {:>4}  {:>7}  {:>9}", t.tag, t.n, br, g);
+                let gs = t
+                    .confidence_gap_shrunk
+                    .map(|x| format!("{x:+.3}"))
+                    .unwrap_or_else(|| "   —".into());
+                let _ = writeln!(
+                    out,
+                    "    {:<16} {:>4}  {:>7}  {:>8}  {:>8}",
+                    t.tag, t.n, br, g, gs
+                );
             }
         }
 
