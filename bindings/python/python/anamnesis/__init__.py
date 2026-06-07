@@ -72,6 +72,7 @@ __all__ = [
     "RiskCoverage",
     "risk_coverage",
     "risk_coverage_curve",
+    "dialectical_mean",
     "report",
     "Calibration",
 ]
@@ -263,6 +264,13 @@ def risk_coverage_curve(probs: Sequence, outcomes: Sequence) -> List[Tuple[float
     """The full risk–coverage curve as ``(coverage, risk)`` points (coverage
     ascending) — the data behind a selective-prediction plot."""
     return _core.risk_coverage_curve(_floats(probs), _floats(outcomes))
+
+
+# ── elicitation aid ──────────────────────────────────────────────────────────
+def dialectical_mean(p1: float, p2: float) -> float:
+    """Herzog–Hertwig "crowd within": average a first estimate with a deliberate
+    "consider the opposite" second one. Recovers ~half the gain of a second person."""
+    return _core.dialectical_mean(float(p1), float(p2))
 
 
 # ── convenience ──────────────────────────────────────────────────────────────

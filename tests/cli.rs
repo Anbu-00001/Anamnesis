@@ -291,3 +291,49 @@ fn stakes_weighting_end_to_end() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// End-to-end proof of the elicitation protocol: a second "consider the opposite"
+/// estimate is averaged into the logged probability, and the outside-view
+/// reference class is recorded in the reasoning trail.
+#[test]
+fn dialectical_elicitation_end_to_end() {
+    let dir = std::env::temp_dir().join(format!("ana_elicit_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.json");
+    let data = path.to_str().unwrap();
+
+    let (o, _, ok) = ana(
+        data,
+        &[
+            "add",
+            "the refactor's tests pass first try",
+            "-p",
+            "0.7",
+            "--second-prob",
+            "0.5",
+            "--reference-class",
+            "similar refactors pass ~60%",
+            "--because",
+            "looks clean",
+        ],
+    );
+    assert!(ok, "add with elicitation should succeed: {o}");
+    // 0.7 and 0.5 average to 0.60 — that is what gets logged.
+    assert!(
+        o.contains("60%"),
+        "logged probability should be the dialectical mean 60%:\n{o}"
+    );
+    let id = extract_id(&o);
+
+    // The reasoning trail records the outside view, both estimates, and the note.
+    let (o, _, ok) = ana(data, &["show", &id]);
+    assert!(ok);
+    assert!(
+        o.contains("outside view: similar refactors pass ~60%"),
+        "{o}"
+    );
+    assert!(o.contains("dialectical 0.70 & 0.50 → 0.60"), "{o}");
+    assert!(o.contains("looks clean"), "{o}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

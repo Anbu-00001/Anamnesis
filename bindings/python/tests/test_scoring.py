@@ -201,6 +201,11 @@ def test_brier_weighted():
     assert ana.brier_weighted(probs, outs, [1]) is None
 
 
+def test_dialectical_mean():
+    assert ana.dialectical_mean(0.7, 0.5) == pytest.approx(0.6)
+    assert ana.dialectical_mean(1.5, -0.2) == pytest.approx(0.5)  # clamps
+
+
 def test_bools_and_numpy_inputs_work():
     # bools as outcomes
     assert ana.brier([0.9, 0.1], [True, False]) == pytest.approx(0.01)

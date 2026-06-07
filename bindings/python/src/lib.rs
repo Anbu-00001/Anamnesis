@@ -253,6 +253,13 @@ fn distinct_forecasts(probs: Vec<f64>) -> usize {
     scoring::distinct_forecasts(&s)
 }
 
+/// Dialectical aggregation (Herzog–Hertwig "crowd within"): the average of your
+/// first estimate and a deliberate "consider the opposite" second one.
+#[pyfunction]
+fn dialectical_mean(p1: f64, p2: f64) -> f64 {
+    scoring::dialectical_mean(p1, p2)
+}
+
 /// Selective-prediction summary: `(error acting on all, error on the surest half,
 /// area under the risk–coverage curve)`. `None` for an empty record.
 #[pyfunction]
@@ -296,5 +303,6 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(distinct_forecasts, m)?)?;
     m.add_function(wrap_pyfunction!(risk_coverage_summary, m)?)?;
     m.add_function(wrap_pyfunction!(risk_coverage_curve, m)?)?;
+    m.add_function(wrap_pyfunction!(dialectical_mean, m)?)?;
     Ok(())
 }

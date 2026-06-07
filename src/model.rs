@@ -421,4 +421,21 @@ mod tests {
             "default stake must not be serialised"
         );
     }
+
+    #[test]
+    fn compose_reasoning_weaves_the_elicitation_trail() {
+        let r = compose_reasoning(
+            Some("looks clean"),
+            Some("similar PRs pass 60%"),
+            Some((0.7, 0.5)),
+        )
+        .unwrap();
+        assert!(r.contains("outside view: similar PRs pass 60%"));
+        assert!(r.contains("dialectical 0.70 & 0.50 → 0.60"));
+        assert!(r.contains("looks clean"));
+        // A single piece comes back bare; nothing-to-record is None.
+        assert_eq!(compose_reasoning(Some("x"), None, None).unwrap(), "x");
+        assert!(compose_reasoning(None, None, None).is_none());
+        assert!(compose_reasoning(Some("  "), Some(""), None).is_none());
+    }
 }

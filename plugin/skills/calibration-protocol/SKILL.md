@@ -22,6 +22,26 @@ are not certain of. The high-value ones:
 Log the **uncertain** calls, not the safe ones — selection bias toward easy
 predictions is self-deception with extra steps. State your *honest* probability.
 
+## How to pick the number (elicitation)
+
+The forecasting research is clear that *how* you arrive at the probability matters
+as much as the scoring — a sharper input beats another decimal of metric. Two
+cheap, evidence-backed moves, both supported by `/predict`:
+
+1. **Outside view first** (reference-class forecasting). Before judging *this*
+   case, name a class of similar past cases and its base rate — "refactors this
+   size pass first-try maybe 60% of the time" — and start there. The inside view
+   (how confident this one *feels*) is where overconfidence lives. Record it with
+   `--reference-class "..."`.
+2. **Consider the opposite** (dialectical bootstrapping / the "crowd within").
+   Make a first estimate, then deliberately assume it is wrong and find **two**
+   reasons why; that gives a second estimate. Pass both (`--prob`, `--second-prob`)
+   and the engine logs their average — recovering about half the accuracy gain of
+   consulting a second person. Two reasons, not ten (more backfires).
+
+Mark consequential calls with `--stake N` so your scored calibration weights the
+predictions that actually matter.
+
 ## When to resolve (`/resolve`)
 
 The instant reality answers — a test runs, the bug is found, the task ships.
@@ -36,6 +56,10 @@ Act on it:
 - **Underconfident** → trust your high-probability calls more.
 - Watch the **By prediction kind** table: you may be calibrated on tests but wildly
   overconfident on bug hypotheses. Adjust *per type*.
+- **Don't over-react to a handful of calls.** The report's *"Is it real?"* line is an
+  anytime-valid test — only treat the miscalibration as established once it says
+  **REAL**. When it does, the *"Recalibration"* line tells you the concrete
+  correction to apply ("your 60%s should be 80%"); until then, keep logging.
 
 The lesson only compounds if the ledger is honest. A no-LLM scorer can't flatter
 you — don't do its job for it.

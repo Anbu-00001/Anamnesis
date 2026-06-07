@@ -24,14 +24,22 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   `Recalibration::apply`: `p ↦ σ(a+b·logit p)`, the mechanical self-correction),
   a **bootstrap Brier band** (`brier_ci_bootstrap`, seeded SplitMix64 → reproducible),
   a **recency-weighted EWMA Brier** (`ewma_brier`, a descriptive "lately" trend — *not*
-  a control-chart alarm, which false-alarms at an agent's n), and a
-  **confidence-vocabulary** count (`distinct_forecasts`). This is the load-bearing
+  a control-chart alarm, which false-alarms at an agent's n), a
+  **confidence-vocabulary** count (`distinct_forecasts`), a **selective-prediction
+  risk–coverage curve** (`risk_coverage`: error among your surest calls vs all — when
+  to trust your own judgement), a **stake-weighted Brier** (`brier_weighted`: are you
+  miscalibrated on the calls that *matter*?) and a **dialectical-bootstrapping**
+  aggregator (`dialectical_mean`: average a first estimate with a "consider the
+  opposite" second — an elicitation aid, not a score). This is the load-bearing
   core; everything else is plumbing. Types: `Sample` (binary), `NumericSample`
   (interval).
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
   (forecasts appended, never overwritten). `ClaimKind::{Binary,Numeric}`. `Forecast`
   holds `Option<prob>` xor `Option<interval>`; `Resolution` holds `Option<outcome>`
-  xor `Option<value>`. `Ledger::index_of` resolves id prefixes.
+  xor `Option<value>`. A `stake` field (serde-default 1.0, not serialised when
+  default → old ledgers stay byte-identical) weights consequential calls;
+  `compose_reasoning` weaves the outside-view reference class + dialectical
+  estimates into the stored `because`. `Ledger::index_of` resolves id prefixes.
 - [src/store.rs](src/store.rs) — one JSON file, atomic write (temp + rename),
   missing file = empty ledger.
 - [src/report.rs](src/report.rs) — **compute once into `ReportData`, render twice**
