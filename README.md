@@ -75,9 +75,15 @@ ANAMNESIS — the shape of your judgement
   Mind-changing    4 claim(s) you revised
     Brier of first guess 0.253  →  Brier of final guess 0.215   (+0.038)
     Your updates moved you TOWARD the truth. Good — you changed your mind well.
+
+  Numeric forecasts   5 resolved interval(s)
+    mean Winkler score   76.800   (lower better; width + miscoverage penalty)
+    mean interval width  16.800
+    coverage             40% actual  vs  80% intended   (-40 pts)
+    Your intervals are TOO NARROW — overconfident about numbers, just like probabilities.
 ```
 
-Read that and a whole personality falls out of it. This forecaster **can actually discriminate** (AUC 0.66 — their high-probability calls really do come true more often than their low ones), yet they score **worse than someone who just guessed the base rate every time** (skill −0.094). The reason is written all over the reliability diagram: every confident bin has its `P` (predicted) stranded far to the right of its `O` (observed). They are **most deluded about themselves** (`personal` confidence-gap +0.46) and about **tech/AI timelines** (+0.34), and genuinely **humble about science** (−0.13). And the one virtue they have: when they changed their minds, they changed them *toward* the truth.
+Read that and a whole personality falls out of it. This forecaster **can actually discriminate** (AUC 0.66 — their high-probability calls really do come true more often than their low ones), yet they score **worse than someone who just guessed the base rate every time** (skill −0.094). The reason is written all over the reliability diagram: every confident bin has its `P` (predicted) stranded far to the right of its `O` (observed). They are **most deluded about themselves** (`personal` confidence-gap +0.46) and about **tech/AI timelines** (+0.34), and genuinely **humble about science** (−0.13). And the one virtue they have: when they changed their minds, they changed them *toward* the truth. Their *numeric* forecasts sing the same tune as their probabilities — 80%-confidence intervals that catch the truth only 40% of the time — the tell that overconfidence is a trait, not a topic.
 
 That negative skill score sitting next to a real AUC is the entire thesis of the project in two numbers: **being able to tell true from false is not the same as knowing how sure to be.**
 
@@ -90,7 +96,7 @@ Requires a Rust toolchain (`rustc`/`cargo`).
 ```bash
 git clone <this repo> && cd anamnesis
 cargo build --release          # binary at target/release/ana
-cargo test                     # 20 tests, incl. the exact-decomposition proof
+cargo test                     # 27 tests, incl. the exact-decomposition proof
 
 # Generate the demo ledger shown above and look in the mirror:
 cargo run --example seed -- seed.json
@@ -114,6 +120,17 @@ ana update 3ef7f5 --prob 0.20 --because "rally fizzled; reverting toward base ra
 
 # Resolve it once reality speaks, with a post-mortem you'll thank yourself for.
 ana resolve 3ef7f5 no --note "I anchored on the bull case far too long"
+
+# Not everything is yes/no. For a QUANTITY, record a credible interval instead of
+# a probability — at a confidence level — and resolve it with the value that occurred.
+ana add "US Fed rate cuts in 2025" --interval 1..3 --level 0.8 --tags markets \
+    --because "a cut or two looks likely"
+ana update 7a1c2b --interval 1..2 --because "data turned hawkish"
+ana resolve 7a1c2b --value 2          # scored with the Winkler interval score
+
+# Drive any command as JSON for an agent, script, or future UI — never scrape prose.
+ana --json report
+ana --json add "Brent above \$100 in 2026" --prob 0.2
 
 # See what's open, resolved, or overdue.
 ana list --open
@@ -146,6 +163,8 @@ Every metric operates on resolved samples — a probability `p` you assigned and
 | **Uncertainty** | `ō·(1 − ō)` | The irreducible difficulty of the questions you chose. |
 | **AUC** | `P(p₊ > p₋)` (Mann–Whitney) | Can you separate true from false at all, ignoring calibration? |
 | **Confidence gap** | `mean(max(p,1−p)) − accuracy` | Over/under-confidence (Lichtenstein–Fischhoff). Positive = overconfident. |
+| **Interval score** | `(hi−lo) + (2/(1−L))·outside` (Winkler) | NUMERIC claims: rewards tight intervals, penalises a miss by how *far* the value fell outside. |
+| **Coverage** | `fraction of values inside their interval` | Calibration for quantities: your 80%-level intervals should contain the truth ~80% of the time. Below that = intervals too tight. |
 
 **Murphy's decomposition** is the centrepiece: `Brier = Reliability − Resolution + Uncertainty`. Anamnesis groups forecasts by their *exact* probability value, which makes that identity hold to floating-point precision rather than approximately — and the test suite asserts exactly that ([`decomposition_identity_holds_exactly`](src/scoring.rs)). It cleanly separates the two ways to be a good forecaster:
 
@@ -187,14 +206,14 @@ A claim is a **palimpsest**: every revision is *appended*, never overwritten. Wr
 
 - **No LLM, no network, no telemetry.** The whole point is an honest, auditable mirror. A black box that *told* you "you seem overconfident" would be the opposite of the thing.
 - **Pure-`std` scoring engine.** The four dependencies (`clap`, `serde`, `serde_json`, `chrono`) handle the CLI, storage, and dates — none touch the math. A tool meant to outlast your forgetting shouldn't rot when a dependency does.
-- **Binary outcomes only.** Forcing a yes/no keeps the scoring rules proper and the feedback unambiguous. ("Sort of happened" is how people wriggle out of being wrong.)
+- **Two claim shapes, both *properly* scored.** A yes/no proposition (probability → Brier/log) or a quantity (credible interval → Winkler score). Both use strictly proper scoring rules, so stating your true belief is the score-maximising move — and "sort of happened" has nowhere to hide.
 - **Plain text storage.** You can read, grep, back up, and version your own ledger forever.
 
 ---
 
 ## Limitations & where it could go
 
-- Numeric/continuous forecasts (with the CRPS instead of Brier) and multi-category outcomes.
+- Full distributional forecasts (the CRPS over a whole predictive distribution, beyond the interval score already shipped) and multi-category outcomes.
 - A TUI for review, and a small reliability-diagram plot.
 - Time-resolved tracking — a calibration *curve over time*, to actually watch yourself improve.
 - Reminders for due claims; import/export from forecasting platforms.

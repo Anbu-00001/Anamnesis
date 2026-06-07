@@ -9,7 +9,9 @@
 
 use std::path::Path;
 
-use anamnesis::model::{gen_id, normalize_tags, Claim, Forecast, Ledger, Outcome, Resolution};
+use anamnesis::model::{
+    gen_id, normalize_tags, Claim, ClaimKind, Forecast, Ledger, NumericForecast, Outcome, Resolution,
+};
 use anamnesis::store;
 use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 
@@ -17,6 +19,10 @@ use chrono::{DateTime, Duration, NaiveDate, TimeZone, Utc};
 type Fc<'a> = (i64, f64, &'a str);
 /// (day-offset, happened, post-mortem note)
 type Res<'a> = (i64, bool, &'a str);
+
+fn tags_of(tags: &[&str]) -> Vec<String> {
+    normalize_tags(&tags.iter().map(|s| s.to_string()).collect::<Vec<_>>())
+}
 
 fn claim(
     salt: u64,
@@ -31,7 +37,8 @@ fn claim(
         .iter()
         .map(|&(day, prob, because)| Forecast {
             at: base + Duration::days(day),
-            prob,
+            prob: Some(prob),
+            interval: None,
             because: (!because.is_empty()).then(|| because.to_string()),
         })
         .collect();
@@ -41,12 +48,55 @@ fn claim(
         statement: stmt.to_string(),
         created_at,
         resolve_by,
-        tags: normalize_tags(&tags.iter().map(|s| s.to_string()).collect::<Vec<_>>()),
+        tags: tags_of(tags),
+        kind: ClaimKind::Binary,
         forecasts: fc,
         resolution: resolution.map(|(day, happened, note)| Resolution {
             at: base + Duration::days(day),
-            outcome: if happened { Outcome::True } else { Outcome::False },
+            outcome: Some(if happened { Outcome::True } else { Outcome::False }),
+            value: None,
             note: (!note.is_empty()).then(|| note.to_string()),
+        }),
+    }
+}
+
+/// A numeric claim: a single credible interval [low, high] at `level`, resolved
+/// to `value`. Encodes the same human flaw as the binary set — intervals drawn
+/// too tight.
+// Demo scaffolding: a flat positional signature keeps the 5 call sites readable
+// as one-liners; folding these into a params struct would only add noise here.
+#[allow(clippy::too_many_arguments)]
+fn numeric_claim(
+    salt: u64,
+    base: DateTime<Utc>,
+    day: i64,
+    stmt: &str,
+    tags: &[&str],
+    low: f64,
+    high: f64,
+    level: f64,
+    because: &str,
+    resolve_day: i64,
+    value: f64,
+) -> Claim {
+    Claim {
+        id: gen_id(stmt, salt),
+        statement: stmt.to_string(),
+        created_at: base + Duration::days(day),
+        resolve_by: None,
+        tags: tags_of(tags),
+        kind: ClaimKind::Numeric,
+        forecasts: vec![Forecast {
+            at: base + Duration::days(day),
+            prob: None,
+            interval: Some(NumericForecast { low, high, level }),
+            because: (!because.is_empty()).then(|| because.to_string()),
+        }],
+        resolution: Some(Resolution {
+            at: base + Duration::days(resolve_day),
+            outcome: None,
+            value: Some(value),
+            note: None,
         }),
     }
 }
@@ -167,6 +217,18 @@ fn main() {
     c.push(claim(next(), base, "Global EV sales grow more than 15% year over year in 2025", &["markets", "tech"],
         &[(7, 0.60, "China strong, West cooling"), (150, 0.70, "subsidy news tipped me up")],
         Some((350, true, "")), None));
+
+    // ── NUMERIC forecasts (credible intervals, mostly drawn too tight) ──────
+    c.push(numeric_claim(next(), base, 6, "Number of US Fed rate cuts in 2025", &["markets", "geopolitics"],
+        1.0, 3.0, 0.80, "a cut or two looks likely", 320, 2.0)); // inside
+    c.push(numeric_claim(next(), base, 8, "S&P 500 year-end 2025 close (hundreds of points)", &["markets"],
+        58.0, 64.0, 0.80, "grind higher from here", 350, 56.0)); // outside (below)
+    c.push(numeric_claim(next(), base, 11, "Bitcoin year-end 2025 price (thousands of $)", &["markets", "crypto"],
+        120.0, 180.0, 0.80, "supercycle math", 360, 95.0)); // outside (below)
+    c.push(numeric_claim(next(), base, 5, "Books I finish reading in 2025", &["personal"],
+        12.0, 18.0, 0.80, "roughly one a month, give or take", 360, 14.0)); // inside
+    c.push(numeric_claim(next(), base, 7, "Global EV sales year-over-year growth in 2025 (%)", &["markets", "tech"],
+        10.0, 20.0, 0.80, "strong but decelerating", 350, 23.0)); // outside (above)
 
     // ── Still OPEN (so list/due/report have live items) ─────────────────────
     c.push(claim(next(), base, "Bitcoin closes above $200k at some point in 2026", &["markets", "crypto"],

@@ -17,5 +17,7 @@ pub mod report;
 pub mod scoring;
 pub mod store;
 
-pub use model::{gen_id, Claim, Forecast, Ledger, Outcome, Resolution};
-pub use scoring::Sample;
+pub use model::{
+    gen_id, Claim, ClaimKind, Forecast, Ledger, NumericForecast, Outcome, Resolution,
+};
+pub use scoring::{NumericSample, Sample};

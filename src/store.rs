@@ -41,7 +41,7 @@ pub fn save(path: &Path, ledger: &Ledger) -> io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::{Claim, Forecast, Outcome, Resolution};
+    use crate::model::{Claim, ClaimKind, Forecast, Outcome, Resolution};
     use chrono::{TimeZone, Utc};
 
     #[test]
@@ -66,13 +66,15 @@ mod tests {
                 created_at: now,
                 resolve_by: Some(chrono::NaiveDate::from_ymd_opt(2025, 4, 3).unwrap()),
                 tags: vec!["weather".into()],
+                kind: ClaimKind::Binary,
                 forecasts: vec![
-                    Forecast { at: now, prob: 0.4, because: Some("dry front".into()) },
-                    Forecast { at: now, prob: 0.7, because: Some("front stalled".into()) },
+                    Forecast { at: now, prob: Some(0.4), interval: None, because: Some("dry front".into()) },
+                    Forecast { at: now, prob: Some(0.7), interval: None, because: Some("front stalled".into()) },
                 ],
                 resolution: Some(Resolution {
                     at: now,
-                    outcome: Outcome::True,
+                    outcome: Some(Outcome::True),
+                    value: None,
                     note: Some("the front stalled, as feared".into()),
                 }),
             }],

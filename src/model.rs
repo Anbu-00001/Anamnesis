@@ -1,23 +1,36 @@
 //! The domain model: claims, the forecasts layered onto them over time, and
 //! their eventual resolution. A [`Claim`] is deliberately a *palimpsest* — each
-//! revision of your probability is appended, never overwritten, so the history
-//! of your own mind-changing survives intact.
+//! revision is appended, never overwritten, so the history of your own
+//! mind-changing survives intact.
+//!
+//! A claim is either **binary** (a yes/no proposition scored with a probability)
+//! or **numeric** (a quantity scored with a credible interval). Both live in the
+//! same struct; the [`ClaimKind`] tag and the `Option` fields keep older,
+//! binary-only ledgers loading unchanged (see the serde defaults below).
 
 use chrono::{DateTime, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::hash_map::DefaultHasher;
 use std::hash::{Hash, Hasher};
 
-use crate::scoring::Sample;
+use crate::scoring::{NumericSample, Sample};
 
-/// What actually happened, once a claim resolves. Binary by design: forcing a
-/// yes/no keeps the scoring honest and the math proper.
+/// Whether a claim is scored as a yes/no proposition or as a quantity.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ClaimKind {
+    /// A proposition resolved true/false, forecast with a probability.
+    #[default]
+    Binary,
+    /// A quantity resolved to a number, forecast with a credible interval.
+    Numeric,
+}
+
+/// What actually happened for a *binary* claim.
 #[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
-    /// The event happened / the statement turned out true.
     True,
-    /// The event did not happen / the statement turned out false.
     False,
 }
 
@@ -27,26 +40,40 @@ impl Outcome {
     }
 }
 
-/// A single dated probability assignment, with the reasoning that produced it.
+/// A central credible interval `[low, high]` stated at confidence `level`
+/// (e.g. `0.80` for an 80% interval). The stored form of a numeric forecast.
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq)]
+pub struct NumericForecast {
+    pub low: f64,
+    pub high: f64,
+    pub level: f64,
+}
+
+/// A single dated forecast, with the reasoning that produced it. Exactly one of
+/// `prob` (binary) or `interval` (numeric) is set.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Forecast {
-    /// When this probability was recorded.
     pub at: DateTime<Utc>,
-    /// The probability assigned to the claim being true, in `[0, 1]`.
-    pub prob: f64,
-    /// The reasoning behind it — the part hindsight will try to erase.
+    /// Probability the claim is true, in `[0, 1]` — for binary claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prob: Option<f64>,
+    /// Credible interval — for numeric claims.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interval: Option<NumericForecast>,
+    /// The reasoning — the part hindsight will try to erase.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub because: Option<String>,
 }
 
-/// The verdict of reality.
+/// The verdict of reality. Exactly one of `outcome` (binary) or `value`
+/// (numeric) is set.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Resolution {
-    /// When the claim was resolved.
     pub at: DateTime<Utc>,
-    /// True or false.
-    pub outcome: Outcome,
-    /// An optional post-mortem: what, with hindsight, you now think you missed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub outcome: Option<Outcome>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub value: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
 }
@@ -54,38 +81,38 @@ pub struct Resolution {
 /// One belief tracked over its lifetime.
 #[derive(Serialize, Deserialize, Clone, Debug)]
 pub struct Claim {
-    /// Short stable id (6 hex chars), unique within a ledger.
     pub id: String,
-    /// The falsifiable statement, phrased so it can be scored true or false.
     pub statement: String,
-    /// When the claim was first recorded.
     pub created_at: DateTime<Utc>,
-    /// Optional date by which you expect to know the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve_by: Option<NaiveDate>,
-    /// Free-form tags (lower-cased) for slicing the report by domain.
     #[serde(default)]
     pub tags: Vec<String>,
-    /// Every probability you ever assigned, in chronological order. The last is
-    /// your current belief; the first is where you started.
+    /// Binary or numeric. Absent in older ledgers ⇒ defaults to binary.
+    #[serde(default)]
+    pub kind: ClaimKind,
+    /// Every forecast you ever made, oldest first. The last is your current
+    /// belief; the first is where you started.
     pub forecasts: Vec<Forecast>,
-    /// Present once reality has spoken.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<Resolution>,
 }
 
 impl Claim {
-    /// Your current (latest) forecast.
     pub fn current(&self) -> Option<&Forecast> {
         self.forecasts.last()
     }
 
     pub fn current_prob(&self) -> Option<f64> {
-        self.forecasts.last().map(|f| f.prob)
+        self.forecasts.last().and_then(|f| f.prob)
     }
 
     pub fn first_prob(&self) -> Option<f64> {
-        self.forecasts.first().map(|f| f.prob)
+        self.forecasts.first().and_then(|f| f.prob)
+    }
+
+    pub fn current_interval(&self) -> Option<NumericForecast> {
+        self.forecasts.last().and_then(|f| f.interval)
     }
 
     pub fn is_resolved(&self) -> bool {
@@ -96,31 +123,52 @@ impl Claim {
         self.resolution.is_none()
     }
 
-    /// True when the claim is still open and its expected-by date has passed.
     pub fn is_due(&self, today: NaiveDate) -> bool {
         self.is_open() && self.resolve_by.map(|d| d <= today).unwrap_or(false)
     }
 
     pub fn outcome(&self) -> Option<Outcome> {
-        self.resolution.as_ref().map(|r| r.outcome)
+        self.resolution.as_ref().and_then(|r| r.outcome)
     }
 
-    /// The scoreable sample for this claim: current probability paired with the
-    /// resolved outcome. `None` while the claim is open.
+    pub fn value(&self) -> Option<f64> {
+        self.resolution.as_ref().and_then(|r| r.value)
+    }
+
+    /// The scoreable binary sample: current probability paired with the resolved
+    /// outcome. `None` unless this is a resolved binary claim.
     pub fn sample(&self) -> Option<Sample> {
+        if self.kind != ClaimKind::Binary {
+            return None;
+        }
         match (self.current_prob(), self.outcome()) {
             (Some(p), Some(o)) => Some(Sample::new(p, o.happened())),
             _ => None,
         }
     }
 
-    /// True if you ever revised your probability for this claim.
+    /// The scoreable numeric sample: current interval paired with the resolved
+    /// value. `None` unless this is a resolved numeric claim.
+    pub fn numeric_sample(&self) -> Option<NumericSample> {
+        if self.kind != ClaimKind::Numeric {
+            return None;
+        }
+        let iv = self.current_interval()?;
+        let value = self.value()?;
+        Some(NumericSample {
+            low: iv.low,
+            high: iv.high,
+            level: iv.level,
+            value,
+        })
+    }
+
     pub fn was_revised(&self) -> bool {
         self.forecasts.len() > 1
     }
 }
 
-/// The whole ledger: every claim you have ever recorded.
+/// The whole ledger.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Ledger {
     #[serde(default)]
@@ -128,10 +176,8 @@ pub struct Ledger {
 }
 
 impl Ledger {
-    /// Resolve a (possibly abbreviated) id to a single claim index. Returns a
-    /// human-readable error on no match or an ambiguous prefix.
+    /// Resolve a (possibly abbreviated) id to a single claim index.
     pub fn index_of(&self, id_prefix: &str) -> Result<usize, String> {
-        // Exact match wins outright, even if it is a prefix of another id.
         if let Some(i) = self.claims.iter().position(|c| c.id == id_prefix) {
             return Ok(i);
         }
@@ -149,19 +195,16 @@ impl Ledger {
         }
     }
 
-    /// Whether any claim already uses this id.
     pub fn has_id(&self, id: &str) -> bool {
         self.claims.iter().any(|c| c.id == id)
     }
 
-    /// All resolved claims as scoreable samples (current forecast vs outcome).
     pub fn resolved_samples(&self) -> Vec<Sample> {
         self.claims.iter().filter_map(|c| c.sample()).collect()
     }
 }
 
 /// Derive a short, stable, dependency-free id from a statement and a salt.
-/// Collisions are resolved by the caller bumping the salt.
 pub fn gen_id(statement: &str, salt: u64) -> String {
     let mut h = DefaultHasher::new();
     statement.hash(&mut h);
@@ -190,6 +233,10 @@ mod tests {
         Utc.with_ymd_and_hms(y, m, d, 12, 0, 0).unwrap()
     }
 
+    fn binary_forecast(p: f64) -> Forecast {
+        Forecast { at: ts(2025, 1, 1), prob: Some(p), interval: None, because: None }
+    }
+
     fn claim(id: &str, probs: &[f64], outcome: Option<Outcome>) -> Claim {
         Claim {
             id: id.to_string(),
@@ -197,27 +244,44 @@ mod tests {
             created_at: ts(2025, 1, 1),
             resolve_by: None,
             tags: vec![],
-            forecasts: probs
-                .iter()
-                .map(|&p| Forecast {
-                    at: ts(2025, 1, 1),
-                    prob: p,
-                    because: None,
-                })
-                .collect(),
+            kind: ClaimKind::Binary,
+            forecasts: probs.iter().map(|&p| binary_forecast(p)).collect(),
             resolution: outcome.map(|o| Resolution {
                 at: ts(2025, 6, 1),
-                outcome: o,
+                outcome: Some(o),
+                value: None,
                 note: None,
             }),
         }
     }
 
     #[test]
-    fn sample_only_when_resolved() {
+    fn sample_only_when_resolved_binary() {
         assert!(claim("a", &[0.7], None).sample().is_none());
         let s = claim("b", &[0.7], Some(Outcome::True)).sample().unwrap();
         assert_eq!(s, Sample::new(0.7, true));
+    }
+
+    #[test]
+    fn numeric_sample_round_trips() {
+        let c = Claim {
+            id: "n".into(),
+            statement: "how many".into(),
+            created_at: ts(2025, 1, 1),
+            resolve_by: None,
+            tags: vec![],
+            kind: ClaimKind::Numeric,
+            forecasts: vec![Forecast {
+                at: ts(2025, 1, 1),
+                prob: None,
+                interval: Some(NumericForecast { low: 10.0, high: 20.0, level: 0.8 }),
+                because: None,
+            }],
+            resolution: Some(Resolution { at: ts(2025, 6, 1), outcome: None, value: Some(13.0), note: None }),
+        };
+        assert!(c.sample().is_none()); // not a binary sample
+        let ns = c.numeric_sample().unwrap();
+        assert_eq!((ns.low, ns.high, ns.level, ns.value), (10.0, 20.0, 0.8, 13.0));
     }
 
     #[test]
@@ -238,14 +302,13 @@ mod tests {
             ],
         };
         assert_eq!(ledger.index_of("ff0000").unwrap(), 2);
-        assert_eq!(ledger.index_of("ff").unwrap(), 2); // unique prefix
-        assert!(ledger.index_of("ab").is_err()); // ambiguous
-        assert!(ledger.index_of("zz").is_err()); // missing
+        assert_eq!(ledger.index_of("ff").unwrap(), 2);
+        assert!(ledger.index_of("ab").is_err());
+        assert!(ledger.index_of("zz").is_err());
     }
 
     #[test]
     fn exact_id_beats_prefix_collision() {
-        // "ab" is an exact id AND a prefix of "ab12cd"; exact match must win.
         let ledger = Ledger {
             claims: vec![claim("ab", &[0.5], None), claim("ab12cd", &[0.5], None)],
         };
@@ -254,12 +317,7 @@ mod tests {
 
     #[test]
     fn tags_normalised() {
-        let got = normalize_tags(&[
-            " Politics ".into(),
-            "politics".into(),
-            "".into(),
-            "TECH".into(),
-        ]);
+        let got = normalize_tags(&[" Politics ".into(), "politics".into(), "".into(), "TECH".into()]);
         assert_eq!(got, vec!["politics".to_string(), "tech".to_string()]);
     }
 
@@ -269,5 +327,27 @@ mod tests {
         c.resolve_by = Some(NaiveDate::from_ymd_opt(2025, 6, 1).unwrap());
         assert!(c.is_due(NaiveDate::from_ymd_opt(2025, 7, 1).unwrap()));
         assert!(!c.is_due(NaiveDate::from_ymd_opt(2025, 5, 1).unwrap()));
+    }
+
+    #[test]
+    fn legacy_binary_json_still_loads() {
+        // A ledger written before numeric claims existed: no `kind`, bare `prob`,
+        // string `outcome`. It must load as a binary claim, unchanged.
+        let legacy = r#"{
+            "claims": [{
+                "id": "abc123",
+                "statement": "old belief",
+                "created_at": "2025-01-01T12:00:00Z",
+                "tags": ["legacy"],
+                "forecasts": [{ "at": "2025-01-01T12:00:00Z", "prob": 0.7, "because": "why" }],
+                "resolution": { "at": "2025-06-01T12:00:00Z", "outcome": "true", "note": "n" }
+            }]
+        }"#;
+        let ledger: Ledger = serde_json::from_str(legacy).unwrap();
+        let c = &ledger.claims[0];
+        assert_eq!(c.kind, ClaimKind::Binary);
+        assert_eq!(c.current_prob(), Some(0.7));
+        assert_eq!(c.outcome(), Some(Outcome::True));
+        assert_eq!(c.sample(), Some(Sample::new(0.7, true)));
     }
 }

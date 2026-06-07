@@ -210,10 +210,9 @@ pub fn calibration_curve(samples: &[Sample], n_bins: usize) -> Vec<Bin> {
         .collect()
 }
 
-/// **Discrimination**, as the area under the ROC curve (AUC), computed via the
-/// Mann–Whitney statistic: the probability that a randomly chosen event that
-/// *did* happen was given a higher forecast than a randomly chosen event that
-/// did *not*. Ties contribute `0.5`.
+/// **Discrimination**, as the area under the ROC curve (AUC): the probability
+/// that a randomly chosen event that *did* happen was given a higher forecast
+/// than a randomly chosen event that did *not*. Ties contribute `0.5`.
 ///
 /// `0.5` is no discriminating skill (you may still be perfectly calibrated!);
 /// `1.0` is perfect separation. Returns `None` when every outcome is the same,
@@ -222,31 +221,45 @@ pub fn calibration_curve(samples: &[Sample], n_bins: usize) -> Vec<Bin> {
 /// Calibration and discrimination are genuinely different virtues: a forecaster
 /// who always reports the true base rate is perfectly calibrated yet useless
 /// (AUC `0.5`). This metric measures the part calibration cannot see.
+///
+/// Computed in `O(n log n)` via the Wilcoxon–Mann–Whitney rank identity
+/// `AUC = (R₊ − n₊(n₊+1)/2) / (n₊·n₋)`, where `R₊` is the sum of the ranks of
+/// the positive cases using *average ranks* for ties. (A self-evidently correct
+/// `O(n²)` pairwise version lives in the tests and is asserted to agree exactly,
+/// ties included.)
 pub fn auc(samples: &[Sample]) -> Option<f64> {
-    let pos: Vec<f64> = samples
-        .iter()
-        .filter(|s| s.outcome >= 0.5)
-        .map(|s| s.prob)
-        .collect();
-    let neg: Vec<f64> = samples
-        .iter()
-        .filter(|s| s.outcome < 0.5)
-        .map(|s| s.prob)
-        .collect();
-    if pos.is_empty() || neg.is_empty() {
+    let n_pos = samples.iter().filter(|s| s.outcome >= 0.5).count();
+    let n_neg = samples.len() - n_pos;
+    if n_pos == 0 || n_neg == 0 {
         return None;
     }
-    let mut wins = 0.0;
-    for &p in &pos {
-        for &q in &neg {
-            if p > q {
-                wins += 1.0;
-            } else if p == q {
-                wins += 0.5;
-            }
+
+    // Rank by forecast probability, ascending, ranks 1..=N. total_cmp gives a
+    // panic-free total order; tie groups (equal prob) share their average rank.
+    let mut order: Vec<usize> = (0..samples.len()).collect();
+    order.sort_by(|&a, &b| samples[a].prob.total_cmp(&samples[b].prob));
+    let mut rank = vec![0.0f64; samples.len()];
+    let mut i = 0;
+    while i < order.len() {
+        let mut j = i;
+        while j + 1 < order.len() && samples[order[j + 1]].prob == samples[order[i]].prob {
+            j += 1;
         }
+        let avg = ((i + 1) + (j + 1)) as f64 / 2.0; // average of ranks (i+1)..=(j+1)
+        for k in i..=j {
+            rank[order[k]] = avg;
+        }
+        i = j + 1;
     }
-    Some(wins / (pos.len() as f64 * neg.len() as f64))
+
+    let r_pos: f64 = samples
+        .iter()
+        .zip(&rank)
+        .filter(|(s, _)| s.outcome >= 0.5)
+        .map(|(_, r)| *r)
+        .sum();
+    let (np, nn) = (n_pos as f64, n_neg as f64);
+    Some((r_pos - np * (np + 1.0) / 2.0) / (np * nn))
 }
 
 /// The classic over/under-confidence statistic (Lichtenstein–Fischhoff).
@@ -300,6 +313,64 @@ pub fn directional_bias(samples: &[Sample]) -> Option<f64> {
         samples.iter().map(|s| s.prob).sum::<f64>() / samples.len().max(1) as f64
             - base_rate(samples)?,
     )
+}
+
+// ───────────────────────── numeric / interval forecasts ─────────────────────
+
+/// A resolved *numeric* forecast: a central credible interval `[low, high]`
+/// stated at confidence `level` (e.g. `0.80` for an 80% interval), and the
+/// value that actually occurred. This is the quantity-forecasting analogue of
+/// [`Sample`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct NumericSample {
+    pub low: f64,
+    pub high: f64,
+    /// Nominal coverage in `(0, 1)`.
+    pub level: f64,
+    pub value: f64,
+}
+
+impl NumericSample {
+    pub fn width(&self) -> f64 {
+        (self.high - self.low).max(0.0)
+    }
+    pub fn contains(&self) -> bool {
+        self.value >= self.low && self.value <= self.high
+    }
+    /// `α = 1 − level`, clamped away from `0` so the penalty stays finite.
+    pub fn alpha(&self) -> f64 {
+        (1.0 - self.level).clamp(1e-9, 1.0)
+    }
+}
+
+/// **Winkler interval score** for one numeric forecast. Lower is better.
+///
+/// Inside the interval the score is simply its width; outside, the width plus a
+/// `2/α` penalty proportional to how far the truth fell beyond the nearer edge.
+/// It is a strictly proper scoring rule for central prediction intervals, and it
+/// captures the right trade-off: narrow intervals are rewarded, but only if they
+/// keep catching the outcome.
+pub fn winkler(s: &NumericSample) -> f64 {
+    let width = s.high - s.low;
+    let two_over_alpha = 2.0 / s.alpha();
+    if s.value < s.low {
+        width + two_over_alpha * (s.low - s.value)
+    } else if s.value > s.high {
+        width + two_over_alpha * (s.value - s.high)
+    } else {
+        width
+    }
+}
+
+/// Empirical **coverage**: the fraction of intervals that actually contained
+/// their outcome. Compared with the nominal level, this is interval calibration:
+/// 80% intervals that catch the truth far less than 80% of the time are too
+/// narrow — the numeric face of overconfidence.
+pub fn coverage(samples: &[NumericSample]) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    Some(samples.iter().filter(|s| s.contains()).count() as f64 / samples.len() as f64)
 }
 
 #[cfg(test)]
@@ -391,6 +462,46 @@ mod tests {
         assert!(auc(&[Sample::new(0.6, true)]).is_none());
     }
 
+    /// Self-evidently-correct `O(n²)` reference, kept only to validate the fast
+    /// rank-based `auc`.
+    fn auc_pairwise(samples: &[Sample]) -> Option<f64> {
+        let pos: Vec<f64> = samples.iter().filter(|s| s.outcome >= 0.5).map(|s| s.prob).collect();
+        let neg: Vec<f64> = samples.iter().filter(|s| s.outcome < 0.5).map(|s| s.prob).collect();
+        if pos.is_empty() || neg.is_empty() {
+            return None;
+        }
+        let mut wins = 0.0;
+        for &p in &pos {
+            for &q in &neg {
+                if p > q {
+                    wins += 1.0;
+                } else if p == q {
+                    wins += 0.5;
+                }
+            }
+        }
+        Some(wins / (pos.len() as f64 * neg.len() as f64))
+    }
+
+    #[test]
+    fn auc_rank_matches_pairwise_reference_with_ties() {
+        // Deterministic datasets deliberately full of tied probabilities, so the
+        // average-rank tie handling is actually exercised against the oracle.
+        let probs = [0.1, 0.1, 0.4, 0.5, 0.5, 0.5, 0.7, 0.7, 0.9, 0.95];
+        for seed in 0u64..64 {
+            let samples: Vec<Sample> = probs
+                .iter()
+                .enumerate()
+                .map(|(i, &p)| Sample::new(p, ((seed >> (i % 6)) & 1) == 0))
+                .collect();
+            match (auc(&samples), auc_pairwise(&samples)) {
+                (Some(a), Some(b)) => approx(a, b),
+                (None, None) => {}
+                (x, y) => panic!("AUC definedness disagrees: {x:?} vs {y:?}"),
+            }
+        }
+    }
+
     #[test]
     fn overconfidence_detects_boldness_gap() {
         // Bold (0.9) but right only half the time ⇒ overconfident by ~0.4.
@@ -434,5 +545,33 @@ mod tests {
         assert_eq!(bins[1].count, 1);
         assert_eq!(bins[9].count, 2); // 0.95 and 1.0
         approx(bins[9].observed, 1.0);
+    }
+
+    #[test]
+    fn winkler_inside_is_width_outside_is_penalised() {
+        let inside = NumericSample { low: 10.0, high: 20.0, level: 0.8, value: 15.0 };
+        approx(winkler(&inside), 10.0); // just the width
+
+        // width 10 + (2/0.2)*(10 - 5) = 10 + 10*5 = 60
+        let below = NumericSample { low: 10.0, high: 20.0, level: 0.8, value: 5.0 };
+        approx(winkler(&below), 60.0);
+        let above = NumericSample { low: 10.0, high: 20.0, level: 0.8, value: 25.0 };
+        approx(winkler(&above), 60.0);
+
+        // A tighter nominal level (larger α) penalises a miss less.
+        let loose = NumericSample { low: 10.0, high: 20.0, level: 0.5, value: 5.0 };
+        // 10 + (2/0.5)*5 = 10 + 4*5 = 30
+        approx(winkler(&loose), 30.0);
+    }
+
+    #[test]
+    fn coverage_counts_contained_intervals() {
+        let s = [
+            NumericSample { low: 0.0, high: 10.0, level: 0.8, value: 5.0 },  // in
+            NumericSample { low: 0.0, high: 10.0, level: 0.8, value: 50.0 }, // out
+            NumericSample { low: 0.0, high: 10.0, level: 0.8, value: 0.0 },  // edge = in
+        ];
+        approx(coverage(&s).unwrap(), 2.0 / 3.0);
+        assert!(coverage(&[]).is_none());
     }
 }
