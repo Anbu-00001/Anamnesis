@@ -156,8 +156,9 @@ self-calibration layer for coding assistants (every other agent-memory tool is
 qualitative; this one keeps score). Two surfaces ship in this repo:
 
 - **`ana mcp`** — a [Model Context Protocol](https://modelcontextprotocol.io)
-  server over stdio exposing `predict` / `resolve` / `calibration` / `list` as
-  tools, so any MCP host (Claude, Cursor, Cline, …) can keep a calibration ledger:
+  server over stdio exposing `predict` / `resolve` / `calibration` / `recalibrate`
+  / `list` as tools, so any MCP host (Claude, Cursor, Cline, …) can keep a
+  calibration ledger:
   ```jsonc
   { "mcpServers": { "anamnesis": { "command": "ana", "args": ["mcp"] } } }
   ```
@@ -213,6 +214,8 @@ Every metric operates on resolved samples — a probability `p` you assigned and
 | **Confidence gap** | `mean(max(p,1−p)) − accuracy` | Over/under-confidence (Lichtenstein–Fischhoff). Positive = overconfident. |
 | **Interval score** | `(hi−lo) + (2/(1−L))·outside` (Winkler) | NUMERIC claims: rewards tight intervals, penalises a miss by how *far* the value fell outside. |
 | **Coverage** | `fraction of values inside their interval` | Calibration for quantities: your 80%-level intervals should contain the truth ~80% of the time. Below that = intervals too tight. |
+| **Calibration e-value** | `mean over λ of ∏(1 + λ(oᵢ − pᵢ))` (betting martingale) | **Is the miscalibration real, or just too-few-samples noise?** An [anytime-valid](https://arxiv.org/pdf/2109.11761) test that stays honest even though you check it every session: ≈1 = no evidence, ≥20 = significant. |
+| **Recalibration** | `p ↦ σ(a + b·logit p)` (ridge-shrunk logistic) | The *correction*: what your stated confidence should be. `b<1` = too extreme, `b>1` = too timid. Stays the identity until the e-value earns a change — it won't correct on noise. |
 
 **Murphy's decomposition** is the centrepiece: `Brier = Reliability − Resolution + Uncertainty`. Anamnesis groups forecasts by their *exact* probability value, which makes that identity hold to floating-point precision rather than approximately — and the test suite asserts exactly that ([`decomposition_identity_holds_exactly`](src/scoring.rs)). It cleanly separates the two ways to be a good forecaster:
 

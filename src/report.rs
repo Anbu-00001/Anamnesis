@@ -74,6 +74,28 @@ pub struct NumericData {
     pub mean_width: f64,
 }
 
+/// Prior strength pulling the recalibration map toward the identity — high enough
+/// that a handful of resolutions barely move it (you must *earn* a correction).
+pub(crate) const RECAL_RIDGE: f64 = 1.5;
+/// Minimum e-value (at least *suggestive* evidence) and sample count before a
+/// correction is offered — never recalibrate on noise. Shared by the report and
+/// the MCP `recalibrate` tool so the two can never disagree.
+pub(crate) const RECAL_MIN_E: f64 = 3.0;
+pub(crate) const RECAL_MIN_N: usize = 6;
+
+/// A learned recalibration map, machine-readable: `p ↦ σ(a + b·logit p)` plus a
+/// few worked corrections for the human view.
+#[derive(Serialize, Clone, Debug)]
+pub struct RecalData {
+    /// Log-odds bias (`≠ 0` ⇒ over/under-confident on average).
+    pub a: f64,
+    /// Slope (`< 1` ⇒ too extreme, `> 1` ⇒ too timid).
+    pub b: f64,
+    pub n: usize,
+    /// `(stated, recalibrated)` pairs — what your stated confidences *should* be.
+    pub examples: Vec<(f64, f64)>,
+}
+
 /// The whole report as data — serialisable, and the single input to both views.
 #[derive(Serialize, Clone, Debug)]
 pub struct ReportData {
@@ -104,6 +126,13 @@ pub struct ReportData {
     pub by_kind: Vec<TagStat>,
     pub mind_changing: Option<MindChange>,
     pub numeric: Option<NumericData>,
+    /// Anytime-valid calibration e-value — evidence that you are *mis*calibrated,
+    /// valid no matter how often you check it. `≥ 20` ⇒ significant at α = 0.05.
+    pub eprocess: Option<f64>,
+    /// The e→p calibrated, optional-stopping-valid p-value (`1/eprocess`).
+    pub eprocess_pvalue: Option<f64>,
+    /// The learned correction to apply to your stated probabilities.
+    pub recalibration: Option<RecalData>,
 }
 
 impl ReportData {
@@ -297,6 +326,25 @@ impl ReportData {
             })
         };
 
+        // Anytime-valid calibration test, fed the outcomes in the order they were
+        // learned — sequential validity is about the order of *resolution*.
+        let mut chrono: Vec<&crate::model::Claim> = resolved_claims.clone();
+        chrono.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
+        let chrono_samples: Vec<Sample> = chrono.iter().filter_map(|c| c.sample()).collect();
+        let eprocess = scoring::calibration_eprocess(&chrono_samples);
+        let eprocess_pvalue = eprocess.map(scoring::eprocess_pvalue);
+
+        // Learned recalibration map (ridge-shrunk toward identity for small n).
+        let recalibration = scoring::fit_recalibration(&samples, RECAL_RIDGE).map(|r| RecalData {
+            a: r.a,
+            b: r.b,
+            n: r.n,
+            examples: [0.5, 0.6, 0.7, 0.8, 0.9]
+                .iter()
+                .map(|&p| (p, r.apply(p)))
+                .collect(),
+        });
+
         ReportData {
             tag: tag_filter,
             resolved: samples.len(),
@@ -321,6 +369,9 @@ impl ReportData {
             by_kind,
             mind_changing,
             numeric,
+            eprocess,
+            eprocess_pvalue,
+            recalibration,
         }
     }
 
@@ -485,6 +536,50 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
                     out,
                     "                   directional bias {bias:+.3} ({dir})"
                 );
+            }
+        }
+
+        // Anytime-valid significance: is the miscalibration above real, or noise?
+        if let Some(e) = d.eprocess {
+            let p = d.eprocess_pvalue.unwrap_or(1.0);
+            let verdict = if e >= 20.0 {
+                "miscalibration is REAL — significant even though you peek every session (α=.05)"
+            } else if e >= 3.0 {
+                "suggestive, not yet conclusive — keep logging"
+            } else {
+                "no real evidence of miscalibration yet — too few resolutions to tell"
+            };
+            let _ = writeln!(
+                out,
+                "\n  Is it real?      e-value {e:>6.1}   (anytime-valid p ≤ {p:.3})"
+            );
+            let _ = writeln!(out, "                   {verdict}");
+        }
+
+        // The learned correction — only once it is both trustworthy (n) and worth
+        // mentioning (meaningfully off the identity).
+        if let Some(r) = &d.recalibration {
+            // Only offer a correction once the e-process finds at least suggestive
+            // evidence — never invite acting on a map fit to noise.
+            let has_evidence = d.eprocess.is_some_and(|e| e >= RECAL_MIN_E);
+            if has_evidence && r.n >= RECAL_MIN_N && ((r.b - 1.0).abs() > 0.10 || r.a.abs() > 0.10)
+            {
+                let shape = if r.b < 1.0 {
+                    "you run too extreme"
+                } else {
+                    "you are too timid"
+                };
+                let _ = writeln!(
+                    out,
+                    "\n  Recalibration    stated → what it should be   (slope b={:.2}: {shape})",
+                    r.b
+                );
+                let cells: Vec<String> = r
+                    .examples
+                    .iter()
+                    .map(|(p, q)| format!("{p:.2}→{q:.2}"))
+                    .collect();
+                let _ = writeln!(out, "    {}", cells.join("    "));
             }
         }
 

@@ -20,7 +20,7 @@ use serde_json::{json, Value};
 use crate::model::{
     gen_id, normalize_tags, Claim, ClaimKind, Forecast, NumericForecast, Outcome, Resolution,
 };
-use crate::scoring::{self, NumericSample};
+use crate::scoring::{self, NumericSample, Sample};
 use crate::{report, store};
 
 /// The protocol revision this server implements.
@@ -110,6 +110,7 @@ fn tools_call(req: &Value, id: Value, ledger: &Path) -> Value {
         "predict" => tool_predict(&args, ledger),
         "resolve" => tool_resolve(&args, ledger),
         "calibration" => tool_calibration(&args, ledger),
+        "recalibrate" => tool_recalibrate(&args, ledger),
         "list" => tool_list(&args, ledger),
         other => Err(format!("unknown tool: {other}")),
     };
@@ -329,6 +330,71 @@ fn tool_calibration(args: &Value, ledger: &Path) -> ToolResult {
     Ok((text, Some(structured)))
 }
 
+fn tool_recalibrate(args: &Value, ledger: &Path) -> ToolResult {
+    let p = args
+        .get("prob")
+        .and_then(Value::as_f64)
+        .ok_or("prob (0..1) is required")?;
+    if !(0.0..=1.0).contains(&p) {
+        return Err(format!("prob must be between 0 and 1, got {p}"));
+    }
+    let tag = args
+        .get("tag")
+        .and_then(Value::as_str)
+        .map(str::to_lowercase);
+    let led = store::load(ledger).map_err(|e| e.to_string())?;
+
+    // Resolved binary samples matching the tag, in the order they were learned.
+    let mut claims: Vec<&Claim> = led
+        .claims
+        .iter()
+        .filter(|c| c.is_resolved())
+        .filter(|c| tag.as_ref().is_none_or(|t| c.tags.iter().any(|x| x == t)))
+        .collect();
+    claims.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
+    let samples: Vec<Sample> = claims.iter().filter_map(|c| c.sample()).collect();
+    let n = samples.len();
+
+    let e = scoring::calibration_eprocess(&samples);
+    let recal = scoring::fit_recalibration(&samples, report::RECAL_RIDGE);
+    // Apply the map only once there is real (≥ suggestive) evidence of miscalibration
+    // and enough samples — otherwise hand back the stated number untouched.
+    let has_evidence = e.is_some_and(|ev| ev >= report::RECAL_MIN_E) && n >= report::RECAL_MIN_N;
+    let (corrected, applied) = match (&recal, has_evidence) {
+        (Some(r), true) => (r.apply(p), true),
+        _ => (p, false),
+    };
+
+    let text = if applied {
+        format!(
+            "{:.0}% → {:.0}%   (corrected from {n} resolved calls; e-value {:.1}, slope b={:.2})",
+            p * 100.0,
+            corrected * 100.0,
+            e.unwrap_or(0.0),
+            recal.as_ref().map(|r| r.b).unwrap_or(1.0)
+        )
+    } else {
+        format!(
+            "{:.0}% → {:.0}%   (unchanged — not enough evidence to correct yet: n={n}, e-value {:.1})",
+            p * 100.0,
+            corrected * 100.0,
+            e.unwrap_or(1.0)
+        )
+    };
+    Ok((
+        text,
+        Some(json!({
+            "stated": p,
+            "recalibrated": corrected,
+            "applied": applied,
+            "n": n,
+            "eprocess": e,
+            "a": recal.as_ref().map(|r| r.a),
+            "b": recal.as_ref().map(|r| r.b),
+        })),
+    ))
+}
+
 fn tool_list(args: &Value, ledger: &Path) -> ToolResult {
     let filter = args.get("filter").and_then(Value::as_str).unwrap_or("all");
     let tag = args
@@ -440,6 +506,14 @@ fn tool_schemas() -> Value {
             } }
         },
         {
+            "name": "recalibrate",
+            "description": "Correct a stated probability through your learned recalibration map (p ↦ σ(a + b·logit p)) fit from your resolved calls. Hands the number back UNCHANGED until there is real evidence you are miscalibrated — it will not 'correct' on noise. Optionally scope to a `tag` (e.g. kind:estimate, who:claude).",
+            "inputSchema": { "type": "object", "properties": {
+                "prob": { "type": "number", "description": "your stated probability, 0..1" },
+                "tag": { "type": "string", "description": "scope the map to claims with this tag" }
+            }, "required": ["prob"] }
+        },
+        {
             "name": "list",
             "description": "List predictions, optionally filtered by status and tag.",
             "inputSchema": { "type": "object", "properties": {
@@ -458,7 +532,7 @@ mod tests {
     fn schemas_are_well_formed() {
         let t = tool_schemas();
         let arr = t.as_array().unwrap();
-        assert_eq!(arr.len(), 4);
+        assert_eq!(arr.len(), 5);
         for tool in arr {
             assert!(tool["name"].is_string());
             assert_eq!(tool["inputSchema"]["type"], "object");

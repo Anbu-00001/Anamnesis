@@ -5,8 +5,6 @@ by construction; these tests instead guard the wrapper itself — argument
 marshalling, None/NaN handling, validation — against hand-computed values and
 known identities that also appear in the Rust unit tests.
 """
-import math
-
 import pytest
 
 import anamnesis as ana
@@ -125,6 +123,37 @@ def test_report_dict_shape():
 def test_calibration_repr_classifies():
     c = ana.Calibration([0.95, 0.95, 0.95], [0, 0, 0])
     assert "overconfident" in repr(c)
+
+
+def test_eprocess_distinguishes_calibrated_from_miscalibrated():
+    # Alternating outcomes at p=0.5 → no evidence; "10% sure" but always true → lots.
+    calibrated = ana.calibration_eprocess([0.5] * 60, [i % 2 for i in range(60)])
+    assert calibrated < 5.0
+    assert ana.eprocess_pvalue(calibrated) > 0.05
+    gross = ana.calibration_eprocess([0.1] * 40, [1] * 40)
+    assert gross >= 20.0
+    assert ana.eprocess_pvalue(gross) < 0.05
+    assert ana.calibration_eprocess([], []) is None
+
+
+def test_recalibration_fit_and_apply():
+    # Underconfident: stated 0.6 → true 0.9, stated 0.4 → true 0.1.
+    probs = [0.6] * 100 + [0.4] * 100
+    outs = [1] * 90 + [0] * 10 + [1] * 10 + [0] * 90
+    r = ana.fit_recalibration(probs, outs)
+    assert r.b > 1.0  # too timid
+    assert r.apply(0.6) > 0.75
+    assert r.apply(0.4) < 0.25
+    assert "Recalibration" in repr(r)
+    assert ana.fit_recalibration([], []) is None
+
+
+def test_recalibration_identity_on_calibrated_data():
+    probs = [0.7] * 100 + [0.3] * 100
+    outs = [1] * 70 + [0] * 30 + [1] * 30 + [0] * 70
+    r = ana.fit_recalibration(probs, outs, ridge=1.0)
+    assert abs(r.apply(0.7) - 0.7) < 0.05
+    assert abs(r.apply(0.3) - 0.3) < 0.05
 
 
 def test_bools_and_numpy_inputs_work():

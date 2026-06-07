@@ -9,7 +9,7 @@
 //! primitives, which deliberately take plain parallel sequences of floats and
 //! return plain tuples so the binding stays dependency-light.
 
-use anamnesis::scoring::{self, NumericSample, Sample};
+use anamnesis::scoring::{self, NumericSample, Recalibration, Sample};
 use pyo3::exceptions::PyValueError;
 use pyo3::prelude::*;
 
@@ -175,6 +175,38 @@ fn shrink_toward(successes: f64, n: usize, prior_mean: f64, strength: f64) -> f6
     scoring::shrink_toward(successes, n, prior_mean, strength)
 }
 
+/// Anytime-valid calibration e-value (betting / test-martingale). `≥ 20` ⇒
+/// significant at α = 0.05; valid under continuous monitoring. Pass samples
+/// chronologically. `None` for an empty record.
+#[pyfunction]
+fn calibration_eprocess(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Option<f64>> {
+    Ok(scoring::calibration_eprocess(&binary(&probs, &outcomes)?))
+}
+
+/// Convert an e-value to an anytime-valid p-value via the `1/e` calibrator.
+#[pyfunction]
+fn eprocess_pvalue(e: f64) -> f64 {
+    scoring::eprocess_pvalue(e)
+}
+
+/// Fit a ridge-shrunk logistic recalibration map; returns `(a, b, n)` for
+/// `p ↦ σ(a + b·logit p)`. `None` for an empty record.
+#[pyfunction]
+#[pyo3(signature = (probs, outcomes, ridge=1.5))]
+fn fit_recalibration(
+    probs: Vec<f64>,
+    outcomes: Vec<f64>,
+    ridge: f64,
+) -> PyResult<Option<(f64, f64, usize)>> {
+    Ok(scoring::fit_recalibration(&binary(&probs, &outcomes)?, ridge).map(|r| (r.a, r.b, r.n)))
+}
+
+/// Apply a recalibration map `σ(a + b·logit p)` to a single probability.
+#[pyfunction]
+fn recalibration_apply(a: f64, b: f64, p: f64) -> f64 {
+    Recalibration { a, b, n: 0 }.apply(p)
+}
+
 /// The compiled extension module `anamnesis._core`.
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -192,5 +224,9 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(coverage, m)?)?;
     m.add_function(wrap_pyfunction!(wilson_interval, m)?)?;
     m.add_function(wrap_pyfunction!(shrink_toward, m)?)?;
+    m.add_function(wrap_pyfunction!(calibration_eprocess, m)?)?;
+    m.add_function(wrap_pyfunction!(eprocess_pvalue, m)?)?;
+    m.add_function(wrap_pyfunction!(fit_recalibration, m)?)?;
+    m.add_function(wrap_pyfunction!(recalibration_apply, m)?)?;
     Ok(())
 }

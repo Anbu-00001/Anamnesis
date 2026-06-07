@@ -61,6 +61,10 @@ __all__ = [
     "coverage",
     "wilson_interval",
     "shrink_toward",
+    "calibration_eprocess",
+    "eprocess_pvalue",
+    "fit_recalibration",
+    "Recalibration",
     "report",
     "Calibration",
 ]
@@ -159,6 +163,46 @@ def shrink_toward(successes: float, n: int, prior_mean: float, strength: float) 
     return _core.shrink_toward(float(successes), int(n), float(prior_mean), float(strength))
 
 
+# ── anytime-valid calibration test & recalibration map ───────────────────────
+def calibration_eprocess(probs: Sequence, outcomes: Sequence) -> Optional[float]:
+    """Anytime-valid calibration **e-value** (betting / test-martingale). Evidence
+    that you are *mis*calibrated, valid no matter how often you check it: ``≈1`` is
+    none, ``≥20`` is significant at α=0.05. Pass samples chronologically (the order
+    outcomes were learned)."""
+    return _core.calibration_eprocess(_floats(probs), _floats(outcomes))
+
+
+def eprocess_pvalue(e: float) -> float:
+    """Anytime-valid p-value from an e-value, via the ``1/e`` calibrator."""
+    return _core.eprocess_pvalue(float(e))
+
+
+class Recalibration:
+    """A learned correction ``p ↦ σ(a + b·logit p)``. ``a`` is log-odds bias;
+    ``b`` is slope (``<1`` too extreme, ``>1`` too timid). Build it with
+    :func:`fit_recalibration` and apply it with :meth:`apply`."""
+
+    def __init__(self, a: float, b: float, n: int):
+        self.a, self.b, self.n = float(a), float(b), int(n)
+
+    def apply(self, p: float) -> float:
+        """Correct a single stated probability through the map."""
+        return _core.recalibration_apply(self.a, self.b, float(p))
+
+    def __repr__(self) -> str:
+        return f"Recalibration(a={self.a:.3f}, b={self.b:.3f}, n={self.n})"
+
+
+def fit_recalibration(
+    probs: Sequence, outcomes: Sequence, ridge: float = 1.5
+) -> Optional["Recalibration"]:
+    """Fit a ridge-shrunk logistic recalibration map from resolved calls. The
+    ridge pulls it toward the identity at small n (you must *earn* a correction).
+    Returns ``None`` for an empty record."""
+    t = _core.fit_recalibration(_floats(probs), _floats(outcomes), float(ridge))
+    return None if t is None else Recalibration(*t)
+
+
 # ── convenience ──────────────────────────────────────────────────────────────
 def report(probs: Sequence, outcomes: Sequence) -> dict:
     """Compute every binary metric at once and return a plain dict — handy in a
@@ -186,6 +230,7 @@ def report(probs: Sequence, outcomes: Sequence) -> dict:
         "mean_confidence": None if oc is None else oc.mean_confidence,
         "accuracy": None if oc is None else oc.accuracy,
         "confidence_gap": None if oc is None else oc.gap,
+        "calibration_eprocess": calibration_eprocess(p, o),
     }
 
 

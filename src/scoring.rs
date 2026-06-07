@@ -407,6 +407,150 @@ pub fn shrink_toward(successes: f64, n: usize, prior_mean: f64, strength: f64) -
     (successes + strength * prior_mean) / (n as f64 + strength)
 }
 
+// ─────────────────────── anytime-valid calibration test ─────────────────────
+
+/// Fixed symmetric grid of betting fractions λ used by the mixture e-process.
+/// `|λ| < 1` guarantees every factor `1 + λ(y − p)` is non-negative (since
+/// `y − p ∈ [−1, 1]`), so each `∏(1 + λ(yᵢ − pᵢ))` is a valid non-negative test
+/// martingale; averaging over a symmetric grid gives two-sided power without any
+/// data-dependent tuning of λ.
+const EPROCESS_LAMBDAS: [f64; 10] = [-0.9, -0.7, -0.5, -0.3, -0.1, 0.1, 0.3, 0.5, 0.7, 0.9];
+
+/// **Anytime-valid calibration e-value** — a betting / test-martingale statistic
+/// for the null hypothesis "these forecasts are calibrated."
+///
+/// Under calibration each outcome behaves like a draw with the stated
+/// probability, so `E[yᵢ − pᵢ | past] = 0` and, for each betting fraction λ, the
+/// wealth `∏ᵢ (1 + λ(yᵢ − pᵢ))` is a non-negative martingale starting at `1`.
+/// This returns the mean wealth over [`EPROCESS_LAMBDAS`], itself a valid
+/// e-process. By Ville's inequality the value exceeds `1/α` with probability at
+/// most `α` *under the null at any stopping time* — so, unlike a fixed-n test
+/// (Spiegelhalter's Z, a t-test), it stays valid even though you peek at it every
+/// session. Read it as evidence of *mis*calibration: `≈ 1` is none, `≥ 20` is
+/// "significant at α = 0.05", and it grows without bound as miscalibration
+/// accumulates. Samples are consumed in the given order, so pass them
+/// chronologically (the order outcomes were learned). `None` for an empty record.
+pub fn calibration_eprocess(samples: &[Sample]) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut wealth = [1.0f64; EPROCESS_LAMBDAS.len()];
+    for s in samples {
+        let z = s.outcome - s.prob; // mean zero under the calibration null
+        for (w, &lam) in wealth.iter_mut().zip(EPROCESS_LAMBDAS.iter()) {
+            *w *= 1.0 + lam * z;
+        }
+    }
+    Some(wealth.iter().sum::<f64>() / EPROCESS_LAMBDAS.len() as f64)
+}
+
+/// Convert an e-value to an **anytime-valid p-value** via the canonical e→p
+/// calibrator `1/e` (capped at `1`). Valid under optional stopping.
+pub fn eprocess_pvalue(e: f64) -> f64 {
+    (1.0 / e).min(1.0)
+}
+
+// ─────────────────────────── recalibration map ──────────────────────────────
+
+fn sigmoid(x: f64) -> f64 {
+    if x >= 0.0 {
+        1.0 / (1.0 + (-x).exp())
+    } else {
+        let e = x.exp();
+        e / (1.0 + e)
+    }
+}
+
+fn logit(p: f64) -> f64 {
+    (p / (1.0 - p)).ln()
+}
+
+/// A learned **recalibration map** `p ↦ σ(a + b·logit p)` — the post-hoc
+/// correction that turns your stated probabilities into ones that match your
+/// realised frequencies.
+///
+/// `a` is bias on the log-odds scale (`≠ 0` ⇒ over/under-confident on average);
+/// `b` is the slope (`b < 1` ⇒ forecasts too extreme, `b > 1` ⇒ too timid).
+/// Perfect calibration is `(a, b) = (0, 1)`, the identity. Apply it with
+/// [`Recalibration::apply`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Recalibration {
+    pub a: f64,
+    pub b: f64,
+    /// How many resolved samples the fit rests on — i.e. how far to trust it.
+    pub n: usize,
+}
+
+impl Recalibration {
+    /// The identity map — "no correction yet", the small-`n` fallback.
+    pub fn identity(n: usize) -> Self {
+        Recalibration { a: 0.0, b: 1.0, n }
+    }
+
+    /// Correct a single probability through the map.
+    pub fn apply(&self, p: f64) -> f64 {
+        sigmoid(self.a + self.b * logit(p.clamp(1e-6, 1.0 - 1e-6)))
+    }
+}
+
+/// Fit a **ridge-regularised logistic recalibration** `σ(a + b·logit p)` by
+/// Newton–Raphson, penalising departure from the identity `(0, 1)` with strength
+/// `ridge`.
+///
+/// The penalty is what makes the fit safe at small `n`: with few resolutions the
+/// map barely leaves the identity (you have not *earned* a correction yet), and
+/// it only develops real bias/slope as evidence accumulates — the same
+/// borrow-strength logic as [`shrink_toward`]. The ridge also tames the separable
+/// case (every bold call right), where the unpenalised MLE would diverge to
+/// infinity. Returns `None` for an empty record.
+pub fn fit_recalibration(samples: &[Sample], ridge: f64) -> Option<Recalibration> {
+    if samples.is_empty() {
+        return None;
+    }
+    let xs: Vec<f64> = samples
+        .iter()
+        .map(|s| logit(s.prob.clamp(1e-6, 1.0 - 1e-6)))
+        .collect();
+    let (mut a, mut b) = (0.0f64, 1.0f64);
+    for _ in 0..50 {
+        // Gradient g and Hessian H of NLL + (ridge/2)·[a² + (b−1)²].
+        let (mut ga, mut gb) = (ridge * a, ridge * (b - 1.0));
+        let (mut haa, mut hab, mut hbb) = (ridge, 0.0, ridge);
+        for (x, s) in xs.iter().zip(samples) {
+            let mu = sigmoid(a + b * x);
+            let w = mu * (1.0 - mu);
+            let r = mu - s.outcome;
+            ga += r;
+            gb += r * x;
+            haa += w;
+            hab += w * x;
+            hbb += w * x * x;
+        }
+        // Newton step [a, b] -= H⁻¹ g. H is SPD thanks to the ridge, so the 2×2
+        // determinant is strictly positive and the inverse always exists.
+        let det = haa * hbb - hab * hab;
+        if det.abs() < 1e-12 {
+            break;
+        }
+        let da = (hbb * ga - hab * gb) / det;
+        let db = (haa * gb - hab * ga) / det;
+        a -= da;
+        b -= db;
+        if da.abs() < 1e-10 && db.abs() < 1e-10 {
+            break;
+        }
+    }
+    Some(if a.is_finite() && b.is_finite() {
+        Recalibration {
+            a,
+            b,
+            n: samples.len(),
+        }
+    } else {
+        Recalibration::identity(samples.len())
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -687,5 +831,112 @@ mod tests {
         ];
         approx(coverage(&s).unwrap(), 2.0 / 3.0);
         assert!(coverage(&[]).is_none());
+    }
+
+    #[test]
+    fn eprocess_finds_no_evidence_on_calibrated_data() {
+        // Alternating outcomes at p=0.5: calibration-in-the-large holds, and a
+        // fixed (non-predictable) bettor cannot profit → wealth never grows.
+        let s: Vec<Sample> = (0..60).map(|i| Sample::new(0.5, i % 2 == 0)).collect();
+        let e = calibration_eprocess(&s).unwrap();
+        assert!(
+            e < 5.0,
+            "calibrated data should not accumulate evidence, e={e}"
+        );
+        assert!(eprocess_pvalue(e) > 0.05);
+    }
+
+    #[test]
+    fn eprocess_detects_gross_miscalibration() {
+        // "10% sure" every time, but it always happens → wildly underconfident.
+        let s: Vec<Sample> = (0..40).map(|_| Sample::new(0.1, true)).collect();
+        let e = calibration_eprocess(&s).unwrap();
+        assert!(
+            e >= 20.0,
+            "gross miscalibration should be significant, e={e}"
+        );
+        assert!(eprocess_pvalue(e) < 0.05);
+    }
+
+    #[test]
+    fn eprocess_is_finite_at_extremes_and_none_when_empty() {
+        assert!(calibration_eprocess(&[]).is_none());
+        // p exactly 0/1 and wrong: factors stay non-negative, wealth finite.
+        let s = vec![Sample::new(1.0, false), Sample::new(0.0, true)];
+        let e = calibration_eprocess(&s).unwrap();
+        assert!(e.is_finite() && e > 0.0, "e={e}");
+    }
+
+    #[test]
+    fn recalibration_is_identity_on_calibrated_data() {
+        // Forecasts that match realised frequencies ⇒ map ≈ identity.
+        let mut s = Vec::new();
+        for i in 0..100 {
+            s.push(Sample::new(0.7, i < 70)); // 0.7 happens 70%
+        }
+        for i in 0..100 {
+            s.push(Sample::new(0.3, i < 30)); // 0.3 happens 30%
+        }
+        let r = fit_recalibration(&s, 1.0).unwrap();
+        assert!(
+            (r.apply(0.7) - 0.7).abs() < 0.05,
+            "apply(0.7)={}",
+            r.apply(0.7)
+        );
+        assert!(
+            (r.apply(0.3) - 0.3).abs() < 0.05,
+            "apply(0.3)={}",
+            r.apply(0.3)
+        );
+    }
+
+    #[test]
+    fn recalibration_corrects_underconfidence() {
+        // Stated 0.6 but true rate 0.9; stated 0.4 but true rate 0.1 → too timid.
+        let mut s = Vec::new();
+        for i in 0..100 {
+            s.push(Sample::new(0.6, i < 90));
+        }
+        for i in 0..100 {
+            s.push(Sample::new(0.4, i < 10));
+        }
+        let r = fit_recalibration(&s, 1.0).unwrap();
+        assert!(r.b > 1.0, "slope should exceed 1 (too timid), b={}", r.b);
+        assert!(
+            r.apply(0.6) > 0.75,
+            "0.6 should be pushed up, got {}",
+            r.apply(0.6)
+        );
+        assert!(
+            r.apply(0.4) < 0.25,
+            "0.4 should be pushed down, got {}",
+            r.apply(0.4)
+        );
+    }
+
+    #[test]
+    fn recalibration_stays_near_identity_at_small_n() {
+        // One lucky hit must not yield a confident correction.
+        let r = fit_recalibration(&[Sample::new(0.6, true)], 2.0).unwrap();
+        assert!(
+            (r.apply(0.6) - 0.6).abs() < 0.12,
+            "apply(0.6)={}",
+            r.apply(0.6)
+        );
+    }
+
+    #[test]
+    fn recalibration_survives_perfect_separation() {
+        // Unpenalised MLE would diverge; the ridge keeps it finite and monotone.
+        let s = [
+            Sample::new(0.2, false),
+            Sample::new(0.3, false),
+            Sample::new(0.7, true),
+            Sample::new(0.8, true),
+        ];
+        let r = fit_recalibration(&s, 1.0).unwrap();
+        assert!(r.a.is_finite() && r.b.is_finite(), "a={}, b={}", r.a, r.b);
+        assert!(r.apply(0.8) > r.apply(0.2), "map should stay increasing");
+        assert!(fit_recalibration(&[], 1.0).is_none());
     }
 }

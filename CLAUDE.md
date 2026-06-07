@@ -16,9 +16,14 @@ not the same as knowing how sure to be (calibration).** The report shows both.
 
 - [src/scoring.rs](src/scoring.rs) — **pure `std` math, no I/O.** Brier, log score,
   Murphy decomposition (exact, grouped by unique forecast value), rank-based AUC,
-  Lichtenstein–Fischhoff overconfidence, Winkler interval score, coverage. This is
-  the load-bearing core; everything else is plumbing. Types: `Sample` (binary),
-  `NumericSample` (interval).
+  Lichtenstein–Fischhoff overconfidence, Winkler interval score, coverage, Wilson
+  interval, empirical-Bayes shrinkage, an **anytime-valid calibration e-process**
+  (`calibration_eprocess`: a mixture of betting martingales, valid under
+  continuous peeking — answers "is the miscalibration real, or n-too-small noise?")
+  and a **ridge-shrunk logistic recalibration map** (`fit_recalibration` →
+  `Recalibration::apply`: `p ↦ σ(a+b·logit p)`, the mechanical self-correction).
+  This is the load-bearing core; everything else is plumbing. Types: `Sample`
+  (binary), `NumericSample` (interval).
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
   (forecasts appended, never overwritten). `ClaimKind::{Binary,Numeric}`. `Forecast`
   holds `Option<prob>` xor `Option<interval>`; `Resolution` holds `Option<outcome>`
@@ -32,8 +37,11 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   `~/.anamnesis/agent.json` (`ANAMNESIS_AGENT_DATA`).
 - [src/mcp.rs](src/mcp.rs) — `ana mcp`: a hand-rolled Model Context Protocol
   server over newline-delimited JSON-RPC stdio (no new deps), exposing
-  predict/resolve/calibration/list as tools for any MCP agent. The cross-agent
-  reach surface; reuses scoring/report as the single source of truth.
+  predict/resolve/calibration/**recalibrate**/list as tools for any MCP agent.
+  `recalibrate` returns a stated probability unchanged until the e-process finds
+  real evidence (shares `report::RECAL_MIN_E`/`RECAL_MIN_N` with the report so
+  they never diverge). The cross-agent reach surface; reuses scoring/report as the
+  single source of truth.
 - [bindings/python/](bindings/python/) — **PyO3 + maturin** binding exposing the
   pure `scoring` core to Python as an `abi3` wheel (`import anamnesis`). It is a
   *standalone* crate (its own empty `[workspace]`) depending on the core lib by

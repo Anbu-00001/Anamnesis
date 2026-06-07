@@ -3,7 +3,8 @@
 //! parsing, storage, the immutability of resolved history, and reporting —
 //! not just the math in isolation.
 
-use std::process::Command;
+use std::io::Write;
+use std::process::{Command, Stdio};
 
 fn ana(data: &str, args: &[&str]) -> (String, String, bool) {
     let out = Command::new(env!("CARGO_BIN_EXE_ana"))
@@ -17,6 +18,37 @@ fn ana(data: &str, args: &[&str]) -> (String, String, bool) {
         String::from_utf8_lossy(&out.stderr).into_owned(),
         out.status.success(),
     )
+}
+
+/// Add a binary claim at `prob` and immediately resolve it `outcome` (yes/no),
+/// going through the real CLI both times — the canned way to grow a ledger.
+fn add_resolve(data: &str, prob: &str, outcome: &str) {
+    let (o, _, ok) = ana(data, &["add", "canned claim", "-p", prob]);
+    assert!(ok, "add({prob}) failed: {o}");
+    let id = extract_id(&o);
+    let (o, e, ok) = ana(data, &["resolve", &id, outcome]);
+    assert!(ok, "resolve({id},{outcome}) failed: {o}{e}");
+}
+
+/// Drive the `ana mcp` JSON-RPC server: write each request line to stdin, close
+/// the pipe, and return everything it wrote to stdout.
+fn ana_mcp(data: &str, requests: &[&str]) -> String {
+    let mut child = Command::new(env!("CARGO_BIN_EXE_ana"))
+        .arg("--data")
+        .arg(data)
+        .arg("mcp")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()
+        .expect("failed to spawn `ana mcp`");
+    {
+        let stdin = child.stdin.as_mut().expect("mcp stdin");
+        for r in requests {
+            writeln!(stdin, "{r}").expect("write mcp request");
+        }
+    } // stdin dropped here → EOF → server loop exits
+    let out = child.wait_with_output().expect("wait for `ana mcp`");
+    String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
 /// Pull the `[id]` out of a line like: `added [abc123]  30%  "..."`.
@@ -110,6 +142,105 @@ fn full_lifecycle() {
     // ambiguous / missing ids are friendly errors -----------------------
     let (_, e, ok) = ana(data, &["show", "zzzzzz"]);
     assert!(!ok && e.contains("no claim matches"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// End-to-end proof of Tier 1: the report surfaces the anytime-valid e-process
+/// and gates the recalibration map on real evidence — through the actual binary.
+#[test]
+fn tier1_report_surfaces_eprocess_and_recalibration() {
+    let dir = std::env::temp_dir().join(format!("ana_t1_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.json");
+    let data = path.to_str().unwrap();
+
+    // 1) Too few, unremarkable resolutions → the e-process must report NO evidence
+    //    and the report must NOT offer a correction (never recalibrate on noise).
+    add_resolve(data, "0.6", "yes");
+    add_resolve(data, "0.5", "no");
+    add_resolve(data, "0.7", "yes");
+    let (o, _, ok) = ana(data, &["report"]);
+    assert!(ok, "report should succeed");
+    assert!(o.contains("Is it real?"), "e-process line missing:\n{o}");
+    assert!(
+        o.contains("no real evidence"),
+        "small n should read as no evidence:\n{o}"
+    );
+    assert!(
+        !o.contains("Recalibration"),
+        "must NOT offer a correction without evidence:\n{o}"
+    );
+
+    // 2) Pile on gross, consistent miscalibration — "10% sure" but it always
+    //    happens — until the e-value blows past the significance threshold.
+    for _ in 0..15 {
+        add_resolve(data, "0.1", "yes");
+    }
+    let (o, _, ok) = ana(data, &["report"]);
+    assert!(ok);
+    assert!(
+        o.contains("REAL"),
+        "gross miscalibration should read as REAL:\n{o}"
+    );
+    assert!(
+        o.contains("Recalibration"),
+        "with evidence, a correction should appear:\n{o}"
+    );
+
+    // 3) The JSON view exposes both, machine-readable, for any agent.
+    let (o, _, ok) = ana(data, &["--json", "report"]);
+    assert!(ok);
+    assert!(
+        o.contains("\"eprocess\""),
+        "JSON must carry the e-value:\n{o}"
+    );
+    assert!(
+        o.contains("\"recalibration\""),
+        "JSON must carry the map:\n{o}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// End-to-end proof that the MCP `recalibrate` tool works over real stdio JSON-RPC
+/// and honours the evidence gate (unchanged on noise, corrected once earned).
+#[test]
+fn mcp_recalibrate_tool_end_to_end() {
+    let dir = std::env::temp_dir().join(format!("ana_mcp_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.json");
+    let data = path.to_str().unwrap();
+
+    let init = r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18"}}"#;
+    let call = r#"{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"recalibrate","arguments":{"prob":0.6}}}"#;
+
+    // Empty ledger → no evidence → the tool hands the number back UNCHANGED.
+    let resp = ana_mcp(data, &[init, call]);
+    assert!(
+        resp.contains("\"protocolVersion\""),
+        "initialize must respond:\n{resp}"
+    );
+    assert!(
+        resp.contains("unchanged"),
+        "no evidence ⇒ unchanged:\n{resp}"
+    );
+
+    // Now teach it a gross, consistent miscalibration and the tool must correct.
+    for _ in 0..15 {
+        add_resolve(data, "0.1", "yes");
+    }
+    let resp = ana_mcp(data, &[init, call]);
+    assert!(
+        resp.contains("corrected from"),
+        "with evidence the tool should correct:\n{resp}"
+    );
+    // The advertised tool list must include recalibrate.
+    let list = ana_mcp(data, &[r#"{"jsonrpc":"2.0","id":3,"method":"tools/list"}"#]);
+    assert!(
+        list.contains("\"recalibrate\""),
+        "tools/list must advertise recalibrate:\n{list}"
+    );
 
     std::fs::remove_dir_all(&dir).ok();
 }
