@@ -1095,6 +1095,801 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
     out
 }
 
+// ──────────────────── plain-English view (text + HTML card) ──────────────────
+//
+// Two more renderings of the same `ReportData`: the numbers translated into what
+// they *mean* for a person who shouldn't need to know what a Brier score is. The
+// prose is built once in `plain_summary`, so the text view (`render_plain`) and
+// the offline HTML card (`render_html`) can never drift apart — the same
+// compute-once-render-many discipline as the rest of this file.
+
+/// Whole-percent string: `0.833 → "83%"`.
+fn pct(x: f64) -> String {
+    format!("{:.0}%", (x * 100.0).round())
+}
+
+/// Word-wrap `text` to `width` columns, prefixing every line with `indent`.
+fn wrap(text: &str, width: usize, indent: &str) -> String {
+    let mut lines: Vec<String> = Vec::new();
+    let mut cur = String::new();
+    for word in text.split_whitespace() {
+        if !cur.is_empty() && cur.chars().count() + 1 + word.chars().count() > width {
+            lines.push(std::mem::take(&mut cur));
+        }
+        if !cur.is_empty() {
+            cur.push(' ');
+        }
+        cur.push_str(word);
+    }
+    if !cur.is_empty() {
+        lines.push(cur);
+    }
+    lines
+        .into_iter()
+        .map(|l| format!("{indent}{l}"))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// Escape the HTML-significant characters (the report's prose is ours, but a tag
+/// name could in principle reach the card, so be safe).
+fn esc(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// One plain-language insight: a plain question, a plain answer, and the technical
+/// term it maps to — named, not hidden, so the plain view is a *bridge* to the
+/// rich report rather than a dumbing-down.
+struct Insight {
+    label: &'static str,
+    answer: String,
+    jargon: &'static str,
+}
+
+/// The whole report distilled to plain language — the single source of prose for
+/// both the text view and the HTML card.
+struct PlainSummary {
+    headline: String,
+    verdict_word: String,
+    /// Severity/colour hint: `"good" | "over" | "under" | "unknown"`.
+    verdict_class: &'static str,
+    insights: Vec<Insight>,
+    actions: Vec<String>,
+    footer: String,
+}
+
+fn plain_summary(d: &ReportData) -> PlainSummary {
+    let n = d.resolved;
+    let mut insights: Vec<Insight> = Vec::new();
+
+    // — Honest sample? (resolution discipline) —
+    if let Some(rd) = &d.resolution_discipline {
+        let mut a = if rd.open == 0 {
+            format!("Yes — you've graded every one of your {} call(s). This isn't a picture cherry-picked from only the predictions that went your way.", rd.resolved)
+        } else {
+            format!(
+                "You've graded {} of {} call(s) ({}). The {} still open aren't in the numbers below.",
+                rd.resolved,
+                rd.resolved + rd.open,
+                pct(rd.resolution_rate),
+                rd.open
+            )
+        };
+        if rd.overdue > 0 {
+            a.push_str(&format!(" Watch out: {} of those are past their due date — resolve them, or these scores quietly flatter you.", rd.overdue));
+        }
+        if let (Some(rb), Some(ob), Some(asmd)) =
+            (rd.resolved_boldness, rd.open_boldness, rd.boldness_asmd)
+        {
+            if asmd > SELECTION_ASMD_FLAG {
+                let dir = if ob > rb { "bolder" } else { "more cautious" };
+                a.push_str(&format!(
+                    " And the calls you left open are {dir} than the ones you graded, so the split isn't random."
+                ));
+            }
+        }
+        insights.push(Insight {
+            label: "Is this an honest sample of your calls?",
+            answer: a,
+            jargon: "resolution discipline / selection bias",
+        });
+    }
+
+    // — Sure vs right? (calibration) — also fixes the headline verdict.
+    let (verdict_word, verdict_class): (String, &'static str) = match d.confidence_gap {
+        Some(g) if g > 0.05 => ("Overconfident".into(), "over"),
+        Some(g) if g < -0.05 => ("Underconfident".into(), "under"),
+        Some(_) => ("Well calibrated".into(), "good"),
+        None => ("Not enough data".into(), "unknown"),
+    };
+    if let (Some(gap), Some(conf), Some(acc)) = (d.confidence_gap, d.mean_confidence, d.accuracy) {
+        let core = format!(
+            "On the calls you felt about {} sure of, you turned out right about {} of the time.",
+            pct(conf),
+            pct(acc)
+        );
+        let lesson = if gap > 0.05 {
+            "You OVERSELL yourself — you sound more certain than you turn out to be, so shade your confidence down."
+        } else if gap < -0.05 {
+            "You UNDERSELL yourself — reality rewards you more than you claim, so when you feel fairly sure you can trust it more."
+        } else {
+            "Your confidence lines up with how often you're right — well judged."
+        };
+        insights.push(Insight {
+            label: "When you say you're sure, should you be?",
+            answer: format!("{core} {lesson}"),
+            jargon: "calibration / confidence gap",
+        });
+    }
+
+    // — Discrimination —
+    let disc = match d.auc {
+        None => "Everything you've logged so far turned out the same way, so there's nothing to sort yet.".to_string(),
+        Some(_) if n < 12 => format!("Can't tell from {n} call(s) yet — sorting your good calls from your bad ones needs more answers before it means anything."),
+        Some(a) if a >= 0.70 => "Yes — the calls you're more confident about come true noticeably more often than the ones you're unsure of.".to_string(),
+        Some(a) if a >= 0.55 => "Somewhat — your confidence points the right way, but not sharply.".to_string(),
+        Some(_) => "Not really — your confidence isn't tracking which calls actually come true. Of everything here, that's the one most worth fixing.".to_string(),
+    };
+    insights.push(Insight {
+        label: "Can you tell your right calls from your wrong ones?",
+        answer: disc,
+        jargon: "discrimination (AUC)",
+    });
+
+    // — Evidence (is the pattern real?) —
+    if let Some(e) = d.eprocess {
+        let ev = if e >= 20.0 {
+            "Yes, it's real. Even though you check this every session, the pattern above is statistically solid — you can act on it.".to_string()
+        } else if e >= 3.0 {
+            "Maybe — the signs are suggestive but not yet conclusive. Keep logging.".to_string()
+        } else {
+            format!("Too soon to say. With only {n} answer(s), what you see above could easily be luck. The tool will tell you plainly once the evidence is strong enough to act on — it isn't yet.")
+        };
+        insights.push(Insight {
+            label: "Is any of this real, or a small-sample fluke?",
+            answer: ev,
+            jargon: "anytime-valid e-value",
+        });
+    }
+
+    // — Headline score (Brier) —
+    if let Some(b) = d.brier {
+        let band = d
+            .brier_ci
+            .map(|(lo, hi)| {
+                format!(
+                    " Luck alone could place the true figure anywhere between {lo:.2} and {hi:.2}."
+                )
+            })
+            .unwrap_or_default();
+        let quality = if b < 0.10 {
+            "That's sharp."
+        } else if b < 0.25 {
+            "Better than a coin flip."
+        } else {
+            "That's around coin-flip territory."
+        };
+        insights.push(Insight {
+            label: "How good are your predictions overall?",
+            answer: format!(
+                "{b:.2} on the forecasting \"golf score\": 0 is a perfect prophet, 0.25 is a coin flip, lower is better. {quality}{band}"
+            ),
+            jargon: "Brier score",
+        });
+    }
+
+    // — Numeric ranges (only if you've made any) —
+    if let Some(num) = &d.numeric {
+        let a = if num.coverage_gap < -0.05 {
+            format!("Your number ranges are TOO NARROW — meant to contain the true value {} of the time, they only did {} of the time. You're overconfident about numbers, just like probabilities.", pct(num.nominal_coverage), pct(num.empirical_coverage))
+        } else if num.coverage_gap > 0.05 {
+            format!("Your number ranges are too WIDE — they caught the value {} of the time versus the {} you aimed for, so you can afford to be sharper.", pct(num.empirical_coverage), pct(num.nominal_coverage))
+        } else {
+            "Your number ranges are about the right width — well judged.".to_string()
+        };
+        insights.push(Insight {
+            label: "And your number ranges?",
+            answer: a,
+            jargon: "interval coverage",
+        });
+    }
+
+    // — What to do — tailored to the verdict, then the earned correction, then n. —
+    let mut actions: Vec<String> = Vec::new();
+    match verdict_class {
+        "under" => actions
+            .push("Lean in a little when you feel sure — you tend to undersell yourself.".into()),
+        "over" => {
+            actions.push("Add slack and shade your confidence down — you tend to oversell.".into())
+        }
+        "good" => actions.push("Keep doing what you're doing — your confidence is honest.".into()),
+        _ => {}
+    }
+    let earned = d.eprocess.is_some_and(|e| e >= RECAL_MIN_E)
+        && d.recalibration
+            .as_ref()
+            .is_some_and(|r| r.n >= RECAL_MIN_N && ((r.b - 1.0).abs() > 0.10 || r.a.abs() > 0.10));
+    if earned {
+        if let Some((p, q)) = d
+            .recalibration
+            .as_ref()
+            .and_then(|r| r.examples.iter().find(|(p, _)| (*p - 0.7).abs() < 1e-9))
+        {
+            actions.push(format!(
+                "A correction has earned its place: when you'd say {}, log about {} instead.",
+                pct(*p),
+                pct(*q)
+            ));
+        }
+    }
+    if n < 12 {
+        actions.push(format!(
+            "Don't over-read {n} prediction(s) — keep logging and the picture sharpens."
+        ));
+    }
+    actions.push("Before a costly or irreversible call, run `ana decide` to turn your confidence into a clear proceed / verify / abstain.".into());
+
+    let headline = match verdict_class {
+        "under" => "You undersell yourself — trust your sure calls more.".to_string(),
+        "over" => "You oversell yourself — add slack and shade down.".to_string(),
+        "good" => "Your confidence is honest — well calibrated.".to_string(),
+        _ => "Too few resolved calls to read your calibration yet.".to_string(),
+    };
+    let evidence_tag = match d.eprocess {
+        Some(e) if e >= 20.0 => "evidence: solid",
+        Some(e) if e >= 3.0 => "evidence: suggestive",
+        _ => "evidence: too few to tell",
+    };
+    let footer = format!(
+        "{} resolved · {} · offline & local — nothing left your machine",
+        d.resolved, evidence_tag
+    );
+
+    PlainSummary {
+        headline,
+        verdict_word,
+        verdict_class,
+        insights,
+        actions,
+        footer,
+    }
+}
+
+// A calibration cat whose face is the state of your judgement. Its mood is chosen
+// by a 0–100 calibration score — `|confidence gap|` folded into four 25-point bands
+// — so the agent's standing reads at a glance before a single number is parsed.
+// (ASCII faces only; the emoji rides at the end of a line so width never misaligns.)
+const CAT_DIALED: &str = "   /\\_/\\\n  ( ^.^ )  😺\n   > ^ <";
+const CAT_CLOSE: &str = "   /\\_/\\\n  ( o.o )  🐱\n   > · <";
+const CAT_DRIFT: &str = "   /\\_/\\\n  ( ;_; )  🙀\n   > _ <";
+const CAT_OFF: &str = "   /\\_/\\\n  ( @_@ )  😿\n   >< ><";
+const CAT_SLEEPY: &str = "   /\\_/\\\n  ( -.- )  😴 zzz\n   > ~ <";
+
+struct Mood {
+    art: &'static str,
+    name: &'static str,
+    gloss: String,
+}
+
+/// Pick the cat's mood from the calibration score: how well your stated confidence
+/// matches what actually happened, on 0–100, in four equal bands. The face is set
+/// by the band; the over/under direction colours the one-line gloss.
+fn mood(d: &ReportData) -> Mood {
+    let gap = d.confidence_gap;
+    let score = gap.map(|g| (100.0 * (1.0 - g.abs().min(0.25) / 0.25)).round() as u32);
+    let dir = match gap {
+        Some(g) if g > 0.05 => "overconfident — you oversell",
+        Some(g) if g < -0.05 => "underconfident — you undersell",
+        Some(_) => "well calibrated",
+        None => "no calls to judge yet",
+    };
+    let (art, name) = match score {
+        None => (CAT_SLEEPY, "WARMING UP"),
+        Some(s) if s >= 75 => (CAT_DIALED, "DIALED IN"),
+        Some(s) if s >= 50 => (CAT_CLOSE, "CLOSE"),
+        Some(s) if s >= 25 => (CAT_DRIFT, "DRIFTING"),
+        Some(_) => (CAT_OFF, "WAY OFF"),
+    };
+    let gloss = match score {
+        Some(s) => format!("calibration {s}/100 · {dir}"),
+        None => dir.to_string(),
+    };
+    Mood { art, name, gloss }
+}
+
+/// The report in plain English — for a developer skimming, or a newcomer who has
+/// never heard of a Brier score. A rendering of the same `ReportData`; it computes
+/// nothing.
+pub fn render_plain(
+    ledger: &Ledger,
+    tag_filter: Option<&str>,
+    bins: usize,
+    today: NaiveDate,
+) -> String {
+    let d = ReportData::compute(ledger, tag_filter, bins, today);
+    let mut out = String::new();
+    let scope = d
+        .tag
+        .as_deref()
+        .map(|t| format!("  [tag: {t}]"))
+        .unwrap_or_default();
+    let title = format!("ANAMNESIS — your judgement, in plain English{scope}");
+    let _ = writeln!(out, "\n{title}");
+    let _ = writeln!(out, "{}", "=".repeat(title.chars().count()));
+
+    if d.is_empty() {
+        let scope = d
+            .tag
+            .as_ref()
+            .map(|t| format!(" tagged '{t}'"))
+            .unwrap_or_default();
+        let _ = writeln!(
+            out,
+            "\nNothing to reflect yet{scope}. You have {} open prediction(s) but none resolved.\nLog a belief with `ana add`, then `ana resolve` it once you find out — the\nmirror needs something to reflect.\n",
+            d.open
+        );
+        return out;
+    }
+
+    let m = mood(&d);
+    let _ = writeln!(out, "\n{}", m.art);
+    let _ = writeln!(out, "  [{}]  {}", m.name, m.gloss);
+
+    let s = plain_summary(&d);
+    let _ = writeln!(out, "\n{}", s.headline);
+    let _ = writeln!(out, "Based on {} resolved prediction(s).", d.resolved);
+    for ins in &s.insights {
+        let _ = writeln!(out, "\n{}", ins.label);
+        let _ = writeln!(out, "{}", wrap(&ins.answer, 74, "  "));
+        let _ = writeln!(out, "  ↳ technical name: {}", ins.jargon);
+    }
+    let _ = writeln!(out, "\nSo what should you do?");
+    for act in &s.actions {
+        let _ = writeln!(out, "{}", wrap(act, 72, "    ").replacen("    ", "  • ", 1));
+    }
+    let _ = writeln!(out, "\n{}\n", s.footer);
+    out
+}
+
+/// The editorial CSS for the calibration card — verbatim from the Claude Design
+/// handoff (`Calibration Card.template.html`), with the single severity-driven
+/// `--accent-seed` left as `__ACCENT__` for substitution. Inline only: no fonts,
+/// scripts, or network; light + dark via `prefers-color-scheme`.
+const CARD_CSS: &str = r#"  /* ============================================================
+     ANAMNESIS · CALIBRATION CARD
+     One file. Inline CSS only. No fonts, no scripts, no network.
+     Opens offline by double-click. A mirror, not a dashboard.
+     ============================================================ */
+
+  :root {
+    color-scheme: light dark;
+
+    /* --- the one value driven by the verdict's severity --- */
+    --accent-seed: __ACCENT__;         /* e.g. #1565c0 */
+    --accent: var(--accent-seed);
+
+    /* --- light palette (paper & ink) --- */
+    --paper:    #efece4;   /* page behind the card */
+    --card:     #fbfaf6;   /* the card surface     */
+    --ink:      #1d1b16;   /* primary text         */
+    --ink-soft: #3f3c34;   /* answers, body        */
+    --muted:    #75716a;   /* captions, labels     */
+    --faint:    #a39e93;   /* technical terms      */
+    --hairline: #e2ddd2;   /* rules & ticks        */
+    --shadow:   0 1px 2px rgba(40,34,20,.05), 0 18px 50px -28px rgba(40,34,20,.30);
+
+    /* --- type --- */
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, "Times New Roman", serif;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --paper:    #0f1012;
+      --card:     #16181b;
+      --ink:      #eae6dd;
+      --ink-soft: #c4c0b6;
+      --muted:    #8f8b81;
+      --faint:    #6a665e;
+      --hairline: #2a2c30;
+      --shadow:   0 1px 2px rgba(0,0,0,.4), 0 24px 60px -30px rgba(0,0,0,.7);
+      /* lift the accent off the dark ground so it reads as light */
+      --accent: color-mix(in oklab, var(--accent-seed), white 30%);
+    }
+  }
+
+  * { box-sizing: border-box; }
+
+  html, body { margin: 0; }
+
+  body {
+    background: var(--paper);
+    color: var(--ink);
+    font-family: var(--sans);
+    font-size: 16px;
+    line-height: 1.5;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    min-height: 100vh;
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    padding: clamp(16px, 5vw, 64px);
+  }
+
+  .card {
+    width: 100%;
+    max-width: 660px;
+    background: var(--card);
+    border: 1px solid var(--hairline);
+    border-radius: 7px;
+    box-shadow: var(--shadow);
+    overflow: hidden;
+    position: relative;
+  }
+
+  /* the severity colour as a quiet spine across the top edge */
+  .card::before {
+    content: "";
+    position: absolute;
+    inset: 0 0 auto 0;
+    height: 3px;
+    background: var(--accent);
+    opacity: .9;
+  }
+
+  .inner {
+    padding: clamp(30px, 6.5vw, 60px) clamp(26px, 6vw, 60px) clamp(28px, 5vw, 48px);
+  }
+
+  /* ---------- masthead ---------- */
+  .masthead {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 16px;
+    margin-bottom: clamp(30px, 6vw, 52px);
+  }
+  .wordmark {
+    font-family: var(--serif);
+    font-size: 16px;
+    letter-spacing: .02em;
+    color: var(--ink);
+  }
+  .wordmark .dot { color: var(--accent); }
+  .kicker {
+    font-family: var(--sans);
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .22em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+
+  /* ---------- verdict + headline ---------- */
+  .verdict {
+    font-family: var(--serif);
+    font-weight: 600;
+    color: var(--accent);
+    font-size: clamp(40px, 9.5vw, 66px);
+    line-height: .98;
+    letter-spacing: -.018em;
+    margin: 0;
+  }
+  .headline {
+    font-family: var(--serif);
+    font-weight: 400;
+    color: var(--ink);
+    font-size: clamp(20px, 4.1vw, 27px);
+    line-height: 1.34;
+    letter-spacing: -.005em;
+    max-width: 30ch;
+    text-wrap: balance;
+    margin: clamp(18px, 3.5vw, 26px) 0 0;
+  }
+
+  /* ---------- a hairline rule ---------- */
+  .rule {
+    height: 1px;
+    background: var(--hairline);
+    border: 0;
+    margin: clamp(30px, 6vw, 46px) 0;
+  }
+
+  /* ---------- brier stat ---------- */
+  .stat-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: 10px;
+  }
+  .brier {
+    display: flex;
+    align-items: baseline;
+    gap: 18px;
+    flex-wrap: wrap;
+  }
+  .brier-num {
+    font-family: var(--sans);
+    font-weight: 600;
+    font-size: clamp(46px, 11vw, 64px);
+    line-height: 1;
+    letter-spacing: -.03em;
+    color: var(--ink);
+    font-variant-numeric: tabular-nums lining-nums;
+  }
+  .brier-caption {
+    font-size: 13.5px;
+    line-height: 1.45;
+    color: var(--muted);
+    max-width: 30ch;
+  }
+
+  /* ---------- confidence gauge ---------- */
+  .gauge {
+    margin-top: clamp(26px, 5vw, 38px);
+    --pos: 50%;
+  }
+  .gauge-track {
+    position: relative;
+    height: 30px;
+  }
+  /* the baseline */
+  .gauge-track::before {
+    content: "";
+    position: absolute;
+    left: 0; right: 0; top: 50%;
+    height: 2px;
+    transform: translateY(-50%);
+    background: var(--hairline);
+    border-radius: 2px;
+  }
+  /* the "calibrated" reference at centre */
+  .gauge-center {
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 1px; height: 22px;
+    transform: translate(-50%, -50%);
+    background: var(--faint);
+  }
+  /* the marker: a plumb line + dot, in the accent */
+  .gauge-marker {
+    position: absolute;
+    left: var(--pos); top: 50%;
+    transform: translate(-50%, -50%);
+    width: 2px; height: 26px;
+    background: var(--accent);
+    border-radius: 2px;
+  }
+  .gauge-marker::after {
+    content: "";
+    position: absolute;
+    left: 50%; top: 50%;
+    width: 13px; height: 13px;
+    transform: translate(-50%, -50%);
+    background: var(--accent);
+    border-radius: 50%;
+    box-shadow: 0 0 0 4px var(--card);
+  }
+  .gauge-labels {
+    display: grid;
+    grid-template-columns: 1fr auto 1fr;
+    margin-top: 12px;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .14em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  .gauge-labels span:nth-child(1) { text-align: left; }
+  .gauge-labels span:nth-child(2) { text-align: center; color: var(--faint); }
+  .gauge-labels span:nth-child(3) { text-align: right; }
+
+  /* ---------- insight list ---------- */
+  .insights {
+    display: flex;
+    flex-direction: column;
+  }
+  .insight {
+    padding: clamp(22px, 4vw, 30px) 0;
+    border-top: 1px solid var(--hairline);
+  }
+  .insight:first-child { border-top: 0; padding-top: 0; }
+  .insight:last-child  { padding-bottom: 0; }
+  .insight-q {
+    font-family: var(--serif);
+    font-size: clamp(18px, 3.4vw, 21px);
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -.005em;
+    color: var(--ink);
+    margin: 0;
+    text-wrap: pretty;
+  }
+  .insight-a {
+    font-family: var(--sans);
+    font-size: 15.5px;
+    line-height: 1.6;
+    color: var(--ink-soft);
+    margin: 10px 0 0;
+    max-width: 56ch;
+    text-wrap: pretty;
+  }
+  .insight-term {
+    font-family: var(--mono);
+    font-size: 11.5px;
+    letter-spacing: .01em;
+    color: var(--faint);
+    margin: 12px 0 0;
+  }
+
+  /* ---------- what to do ---------- */
+  .todo-label {
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: .2em;
+    text-transform: uppercase;
+    color: var(--muted);
+    margin-bottom: clamp(16px, 3vw, 22px);
+  }
+  .actions {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .actions li {
+    position: relative;
+    padding-left: 26px;
+    font-size: 16.5px;
+    line-height: 1.5;
+    color: var(--ink);
+    max-width: 54ch;
+    text-wrap: pretty;
+  }
+  .actions li::before {
+    content: "";
+    position: absolute;
+    left: 4px; top: .62em;
+    width: 6px; height: 6px;
+    border-radius: 50%;
+    background: var(--accent);
+  }
+
+  /* ---------- footer ---------- */
+  .footer {
+    margin-top: clamp(30px, 6vw, 46px);
+    padding-top: clamp(20px, 4vw, 26px);
+    border-top: 1px solid var(--hairline);
+    font-size: 12.5px;
+    line-height: 1.6;
+    color: var(--muted);
+    letter-spacing: .005em;
+  }
+
+  @media (max-width: 480px) {
+    .masthead { flex-direction: column; gap: 6px; }
+  }
+"#;
+
+/// A self-contained, offline HTML calibration card — the Claude Design "mirror"
+/// rendered for real from this report. One file, inline CSS only, zero
+/// JS/fonts/network; opens by double-click; light **and** dark. Your ledger never
+/// leaves your machine. Built from the same `plain_summary` prose as the text view
+/// so the two can't drift — Brier is the headline stat here, so it is dropped from
+/// the insight list, exactly as the design lays it out.
+pub fn render_html(
+    ledger: &Ledger,
+    tag_filter: Option<&str>,
+    bins: usize,
+    today: NaiveDate,
+) -> String {
+    let d = ReportData::compute(ledger, tag_filter, bins, today);
+    let summary = (!d.is_empty()).then(|| plain_summary(&d));
+
+    // Verdict + accent are defined even for an empty ledger.
+    let (verdict_word, verdict_class): (String, &str) = match &summary {
+        Some(s) => (s.verdict_word.clone(), s.verdict_class),
+        None => ("Not enough data".to_string(), "unknown"),
+    };
+    let accent = match verdict_class {
+        "under" => "#1565c0",
+        "over" => "#c62828",
+        "good" => "#2e7d32",
+        _ => "#757575",
+    };
+    let severity_class = match verdict_class {
+        "under" => "underconfident",
+        "over" => "overconfident",
+        "good" => "well-calibrated",
+        _ => "not-enough-data",
+    };
+
+    let mut b = String::new();
+    b.push_str(&format!(
+        "<main class=\"card\" data-severity=\"{severity_class}\">\n    <div class=\"inner\">\n\
+      <header class=\"masthead\">\n        <span class=\"wordmark\">Anamnesis<span class=\"dot\">.</span></span>\n        <span class=\"kicker\">Calibration</span>\n      </header>\n\
+      <h1 class=\"verdict\">{}</h1>\n",
+        esc(&verdict_word)
+    ));
+
+    match &summary {
+        None => {
+            b.push_str("      <p class=\"headline\">Log a belief and resolve it once you know — the mirror needs something to reflect.</p>\n");
+            b.push_str(&format!(
+                "      <p class=\"footer\">{} open · 0 resolved · offline &amp; local — nothing left your machine</p>\n",
+                d.open
+            ));
+        }
+        Some(s) => {
+            b.push_str(&format!(
+                "      <p class=\"headline\">{}</p>\n      <hr class=\"rule\" />\n",
+                esc(&s.headline)
+            ));
+            // Brier headline stat + gauge. The design's scale: gauge_pos = 50 + gap·100
+            // (so a −0.17 gap sits at 33, left of the calibrated centre).
+            if let Some(brier) = d.brier {
+                b.push_str(&format!(
+                    "      <div>\n        <div class=\"stat-label\">Brier score</div>\n        <div class=\"brier\">\n          <span class=\"brier-num\">{brier:.2}</span>\n          <span class=\"brier-caption\">forecasting golf score — 0 perfect, 0.25 coin-flip, lower better</span>\n        </div>\n"
+                ));
+                if let Some(gap) = d.confidence_gap {
+                    let pos = (50.0 + gap * 100.0).clamp(3.0, 97.0);
+                    b.push_str(&format!(
+                        "        <div class=\"gauge\" style=\"--pos: {pos:.0}%\">\n          <div class=\"gauge-track\">\n            <span class=\"gauge-center\"></span>\n            <span class=\"gauge-marker\"></span>\n          </div>\n          <div class=\"gauge-labels\">\n            <span>Undersell</span>\n            <span>Calibrated</span>\n            <span>Oversell</span>\n          </div>\n        </div>\n"
+                    ));
+                }
+                b.push_str("      </div>\n      <hr class=\"rule\" />\n");
+            }
+            // Insights — Brier is the headline stat above, so leave it out of the list.
+            let items: Vec<&Insight> = s
+                .insights
+                .iter()
+                .filter(|i| i.jargon != "Brier score")
+                .collect();
+            if !items.is_empty() {
+                b.push_str("      <section class=\"insights\">\n");
+                for i in &items {
+                    b.push_str(&format!(
+                        "        <article class=\"insight\">\n          <p class=\"insight-q\">{}</p>\n          <p class=\"insight-a\">{}</p>\n          <p class=\"insight-term\">{}</p>\n        </article>\n",
+                        esc(i.label),
+                        esc(&i.answer),
+                        esc(i.jargon)
+                    ));
+                }
+                b.push_str("      </section>\n      <hr class=\"rule\" />\n");
+            }
+            // What to do.
+            if !s.actions.is_empty() {
+                b.push_str(
+                    "      <div class=\"todo-label\">What to do</div>\n      <ul class=\"actions\">\n",
+                );
+                for a in &s.actions {
+                    b.push_str(&format!("        <li>{}</li>\n", esc(a)));
+                }
+                b.push_str("      </ul>\n");
+            }
+            b.push_str(&format!(
+                "      <p class=\"footer\">{}</p>\n",
+                esc(&s.footer)
+            ));
+        }
+    }
+
+    b.push_str("    </div>\n  </main>");
+
+    let css = CARD_CSS.replace("__ACCENT__", accent);
+    format!(
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n<meta charset=\"utf-8\" />\n<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\" />\n<title>Anamnesis — Calibration Card</title>\n<style>\n{css}</style>\n</head>\n<body>\n  {b}\n</body>\n</html>\n"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1235,5 +2030,74 @@ mod tests {
         let r = render(&ledger, Some("tech"), 10, td());
         assert!(r.contains("[tag: tech]"));
         assert!(!r.contains("By domain")); // suppressed when filtered to one tag
+    }
+
+    #[test]
+    fn plain_and_html_views_explain_and_render() {
+        let ledger = Ledger {
+            claims: vec![
+                binary("a", 0.9, true, &[]),
+                binary("b", 0.8, true, &[]),
+                binary("c", 0.6, false, &[]),
+            ],
+        };
+        let p = render_plain(&ledger, None, 10, td());
+        assert!(p.contains("plain English"));
+        assert!(p.contains("golf score")); // Brier explained, never left bare
+        assert!(p.contains("technical name:")); // jargon named, not hidden
+        assert!(p.contains("what should you do")); // the action list
+                                                   // The calibration cat shows one of its moods.
+        assert!(["DIALED IN", "CLOSE", "DRIFTING", "WAY OFF", "WARMING UP"]
+            .iter()
+            .any(|m| p.contains(m)));
+
+        let h = render_html(&ledger, None, 10, td());
+        assert!(h.contains("<!DOCTYPE html"));
+        assert!(h.contains("class=\"card\""));
+        assert!(h.contains("class=\"verdict\""));
+        assert!(h.contains("golf score")); // Brier caption
+        assert!(!h.contains("__ACCENT__")); // the accent placeholder was filled
+        assert!(h.contains("#c62828")); // this ledger is overconfident → red accent seed
+                                        // Brier is the headline stat, so it must NOT also appear as an insight term.
+        assert!(!h.contains(">Brier score</p>"));
+
+        // Both views survive an empty ledger without panicking.
+        assert!(render_plain(&Ledger::default(), None, 10, td()).contains("Nothing to reflect"));
+        assert!(render_html(&Ledger::default(), None, 10, td()).contains("<!DOCTYPE html"));
+    }
+
+    #[test]
+    fn mood_bands_track_the_confidence_gap() {
+        // Perfectly calibrated (sure and right) → top band.
+        let good = Ledger {
+            claims: vec![
+                binary("a", 1.0, true, &[]),
+                binary("b", 1.0, true, &[]),
+                binary("c", 0.0, false, &[]),
+                binary("d", 0.0, false, &[]),
+            ],
+        };
+        assert_eq!(
+            mood(&ReportData::compute(&good, None, 10, td())).name,
+            "DIALED IN"
+        );
+        // Wildly overconfident (sure and wrong) → bottom band.
+        let bad = Ledger {
+            claims: vec![
+                binary("a", 1.0, false, &[]),
+                binary("b", 1.0, false, &[]),
+                binary("c", 0.0, true, &[]),
+                binary("d", 0.0, true, &[]),
+            ],
+        };
+        assert_eq!(
+            mood(&ReportData::compute(&bad, None, 10, td())).name,
+            "WAY OFF"
+        );
+        // Nothing to judge → the sleepy face.
+        assert_eq!(
+            mood(&ReportData::compute(&Ledger::default(), None, 10, td())).name,
+            "WARMING UP"
+        );
     }
 }

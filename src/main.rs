@@ -128,6 +128,12 @@ enum Cmd {
         tag: Option<String>,
         #[arg(long, default_value_t = 10)]
         bins: usize,
+        /// Plain-English view: every number translated into what it means for you
+        #[arg(long)]
+        plain: bool,
+        /// Self-contained, offline HTML card (redirect to a file: `> card.html`)
+        #[arg(long)]
+        html: bool,
     },
     /// Should you act on it? Corrects a stated probability through your earned
     /// recalibration map, then applies a stake-aware threshold: PROCEED / VERIFY / ABSTAIN.
@@ -718,15 +724,22 @@ fn run(cli: Cli) -> Result<(), String> {
             }
         }
 
-        Cmd::Report { tag, bins } => {
+        Cmd::Report {
+            tag,
+            bins,
+            plain,
+            html,
+        } => {
             let today = Utc::now().date_naive();
+            let tag = tag.as_deref();
             if cli.json {
-                println!(
-                    "{}",
-                    report::render_json(&ledger, tag.as_deref(), *bins, today)
-                );
+                println!("{}", report::render_json(&ledger, tag, *bins, today));
+            } else if *html {
+                print!("{}", report::render_html(&ledger, tag, *bins, today));
+            } else if *plain {
+                print!("{}", report::render_plain(&ledger, tag, *bins, today));
             } else {
-                print!("{}", report::render(&ledger, tag.as_deref(), *bins, today));
+                print!("{}", report::render(&ledger, tag, *bins, today));
             }
         }
 
