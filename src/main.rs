@@ -719,10 +719,14 @@ fn run(cli: Cli) -> Result<(), String> {
         }
 
         Cmd::Report { tag, bins } => {
+            let today = Utc::now().date_naive();
             if cli.json {
-                println!("{}", report::render_json(&ledger, tag.as_deref(), *bins));
+                println!(
+                    "{}",
+                    report::render_json(&ledger, tag.as_deref(), *bins, today)
+                );
             } else {
-                print!("{}", report::render(&ledger, tag.as_deref(), *bins));
+                print!("{}", report::render(&ledger, tag.as_deref(), *bins, today));
             }
         }
 

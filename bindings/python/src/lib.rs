@@ -333,6 +333,21 @@ fn decide(
     (act.to_string(), d.adjusted_p, d.proceed_threshold, d.margin)
 }
 
+/// Mean boldness `mean(max(p, 1−p))` of a set of stated probabilities — distance
+/// from a coin flip, computed without outcomes. `None` for an empty slice.
+#[pyfunction]
+fn mean_boldness(probs: Vec<f64>) -> Option<f64> {
+    scoring::mean_boldness(&probs)
+}
+
+/// Absolute standardized mean difference between two samples — the covariate-balance
+/// / missing-not-at-random diagnostic (`> 0.1` ⇒ the groups differ). `None` when a
+/// group has fewer than two points or there is no spread to standardize against.
+#[pyfunction]
+fn asmd(a: Vec<f64>, b: Vec<f64>) -> Option<f64> {
+    scoring::asmd(&a, &b)
+}
+
 /// The compiled extension module `anamnesis._core`.
 #[pymodule]
 fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
@@ -362,6 +377,8 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(risk_coverage_summary, m)?)?;
     m.add_function(wrap_pyfunction!(risk_coverage_curve, m)?)?;
     m.add_function(wrap_pyfunction!(decide, m)?)?;
+    m.add_function(wrap_pyfunction!(mean_boldness, m)?)?;
+    m.add_function(wrap_pyfunction!(asmd, m)?)?;
     m.add_function(wrap_pyfunction!(dialectical_mean, m)?)?;
     Ok(())
 }

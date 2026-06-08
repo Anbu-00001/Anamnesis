@@ -234,6 +234,15 @@ def test_decide_gate():
     assert d.adjusted_p < 0.5 and d.act == "abstain"
 
 
+def test_mean_boldness_and_asmd():
+    assert ana.mean_boldness([0.9, 0.5, 0.2]) == pytest.approx(2.2 / 3)
+    assert ana.mean_boldness([]) is None
+    # means 0.7 vs 0.8, each sd 0.2, pooled 0.2 → ASMD 0.5.
+    assert ana.asmd([0.5, 0.7, 0.9], [0.6, 0.8, 1.0]) == pytest.approx(0.5)
+    assert ana.asmd([0.5, 0.5], [0.6, 0.6]) is None  # no spread
+    assert ana.asmd([0.5], [0.6, 0.8]) is None  # group too small
+
+
 def test_bools_and_numpy_inputs_work():
     # bools as outcomes
     assert ana.brier([0.9, 0.1], [True, False]) == pytest.approx(0.01)

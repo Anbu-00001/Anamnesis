@@ -477,3 +477,56 @@ fn decision_gate_end_to_end() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// End-to-end proof of the resolution-discipline diagnostic: the report flags
+/// overdue-unresolved claims and a confidence-profile skew between graded and
+/// ungraded calls (the selection-bias / honesty check) — through the real binary.
+#[test]
+fn resolution_discipline_end_to_end() {
+    let dir = std::env::temp_dir().join(format!("ana_disc_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("ledger.json");
+    let data = path.to_str().unwrap();
+
+    // Grade three BOLD calls…
+    add_resolve(data, "0.9", "yes");
+    add_resolve(data, "0.85", "no");
+    add_resolve(data, "0.95", "yes");
+    // …but leave three CAUTIOUS calls open and long past due (the drawer).
+    for p in ["0.55", "0.6", "0.5"] {
+        let (o, _, ok) = ana(
+            data,
+            &["add", "cautious & forgotten", "-p", p, "--by", "2020-01-01"],
+        );
+        assert!(ok, "overdue add failed: {o}");
+    }
+
+    let (o, _, ok) = ana(data, &["report"]);
+    assert!(ok, "report should succeed:\n{o}");
+    assert!(
+        o.contains("Resolution discipline"),
+        "discipline line missing:\n{o}"
+    );
+    assert!(
+        o.contains("3 claim(s) past due"),
+        "overdue warning should name the 3 stale claims:\n{o}"
+    );
+    assert!(
+        o.contains("BOLDER") || o.contains("more CAUTIOUS"),
+        "the boldness-skew caveat should fire (graded calls are bolder):\n{o}"
+    );
+
+    // JSON carries the machine-readable diagnostic.
+    let (o, _, ok) = ana(data, &["--json", "report"]);
+    assert!(ok);
+    assert!(
+        o.contains("\"resolution_discipline\"") && o.contains("\"overdue\": 3"),
+        "JSON must carry resolution_discipline with overdue=3:\n{o}"
+    );
+    assert!(
+        o.contains("\"boldness_asmd\""),
+        "JSON must carry the ASMD:\n{o}"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -2,7 +2,7 @@
 
 This is the project's own ethos turned on itself: don't trust the math because the
 docstring says so — prove it by simulation, against the real compiled engine
-(`import anamnesis`, the same Rust core the CLI runs). Three Monte-Carlo studies:
+(`import anamnesis`, the same Rust core the CLI runs). Four Monte-Carlo studies:
 
   1. The calibration **e-process is anytime-valid** — under the null (perfectly
      calibrated forecasts) the false-alarm rate stays ≤ α *even though you peek
@@ -12,6 +12,9 @@ docstring says so — prove it by simulation, against the real compiled engine
      narrow at small n, exactly as the docstring warns).
   3. The **recalibration map** improves Brier *out-of-sample* on a miscalibrated
      forecaster (train/test split) — it genuinely corrects, not just overfits.
+  4. The **decision gate** (recalibrate, then Chow's stake-aware threshold) incurs
+     lower expected *decision cost* than acting on the raw stated confidence — the
+     operational payoff, proven, not just asserted.
 
 Run locally:   python validation/validate_guarantees.py
 Run in Colab:  upload the wheel, then in a cell:
@@ -137,12 +140,60 @@ def study_3_recalibration_helps_out_of_sample(reps=300, n=400, b_true=2.0):
     return ok
 
 
+# ─────────────────────────────────────────────────────────────────────────────
+def study_4_decision_gate_lowers_cost(reps=300, n=600, b_true=0.4, stake=3.0, verify_cost=0.6):
+    """The decision gate's payoff. An overconfident agent (stated probabilities more
+    extreme than the truth) that *acts on its raw confidence* eats costly wrong
+    actions; correcting the number first, then applying Chow's stake-aware threshold,
+    incurs lower expected decision cost. Cost model matches `scoring::decide`: a wrong
+    PROCEED costs `stake`; any non-proceed (VERIFY/ABSTAIN) costs `verify_cost`."""
+    print("\n[4] the decision gate lowers expected cost  (overconfident agent, stake>1)")
+    naive_costs, gated_costs, wins = [], [], 0
+    for _ in range(reps):
+        # Train split: the agent's resolved calls, to fit the correction.
+        p_tr = RNG.uniform(0.05, 0.95, n)
+        q_tr = _sigmoid(b_true * _logit(p_tr))  # b<1 ⇒ truth less extreme ⇒ overconfident
+        y_tr = (RNG.uniform(size=n) < q_tr).astype(float)
+        rec = ana.fit_recalibration(p_tr.tolist(), y_tr.tolist())
+
+        # Test split: fresh decisions, with the true success probabilities.
+        p_te = RNG.uniform(0.05, 0.95, n)
+        q_te = _sigmoid(b_true * _logit(p_te))
+        success = RNG.uniform(size=n) < q_te  # would the action have succeeded?
+
+        def policy_cost(use_rec):
+            total = 0.0
+            for i in range(n):
+                d = ana.decide(
+                    float(p_te[i]), stake=stake, verify_cost=verify_cost,
+                    recal=rec if use_rec else None,
+                )
+                if d.act == "proceed":
+                    total += 0.0 if success[i] else stake
+                else:  # verify / abstain — pay the check, avoid the risky action
+                    total += verify_cost
+            return total / n
+
+        naive, gated = policy_cost(False), policy_cost(True)
+        naive_costs.append(naive)
+        gated_costs.append(gated)
+        wins += gated < naive
+    win_rate = wins / reps
+    print(f"    reps={reps}, n={n}, agent slope b={b_true}, stake={stake}, verify_cost={verify_cost}")
+    print(f"    mean decision cost  raw-confidence {np.mean(naive_costs):.4f}  →  gated {np.mean(gated_costs):.4f}")
+    print(f"    the gate beats acting on the raw number {win_rate:.1%} of the time")
+    ok = win_rate > 0.9 and np.mean(gated_costs) < np.mean(naive_costs)
+    print(f"    {_ok(ok)} recalibrate-then-threshold genuinely lowers cost")
+    return ok
+
+
 if __name__ == "__main__":
     print(f"anamnesis {ana.__version__} — validating statistical guarantees by simulation")
     results = [
         study_1_eprocess_anytime_validity(),
         study_2_bootstrap_coverage(),
         study_3_recalibration_helps_out_of_sample(),
+        study_4_decision_gate_lowers_cost(),
     ]
     print("\n" + "=" * 60)
     print(f"OVERALL: {_ok(all(results))}  ({sum(results)}/{len(results)} studies passed)")

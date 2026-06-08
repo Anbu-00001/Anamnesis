@@ -43,7 +43,11 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   **decision gate** `decide` (`Act::{Proceed,Verify,Abstain}` + `Decision`) is the
   operational end: recalibrate the stated `p`, then apply Chow's reject threshold
   `τ = 1 − verify_cost/stake` (proceed iff `p̂ ≥ τ`; abstain below even odds) — a
-  number becomes an action, and the bar climbs with the stakes.
+  number becomes an action, and the bar climbs with the stakes. `mean_boldness`
+  (outcome-free `mean(max(p,1−p))`) and `asmd` (absolute standardized mean
+  difference, the covariate-balance / missing-not-at-random effect size) feed the
+  report's **resolution-discipline** check — is the calibration computed on a fair
+  sample of your calls, or a self-selected one?
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
   (forecasts appended, never overwritten). `ClaimKind::{Binary,Numeric}`. `Forecast`
   holds `Option<prob>` xor `Option<interval>`; `Resolution` holds `Option<outcome>`
@@ -57,7 +61,11 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   (`render` = text, `render_json` = JSON). Never compute metrics in a renderer. Also
   home of `earned_recalibration` (the shared evidence gate: fitted map + whether the
   e-process has earned it, next to the `RECAL_*` constants) reused by the CLI and the
-  MCP `recalibrate`/`decide` tools so the gate is defined exactly once.
+  MCP `recalibrate`/`decide` tools so the gate is defined exactly once. `compute`
+  takes `today: NaiveDate` (threaded through `render`/`render_json`; real clock in
+  the CLI/MCP, a fixed date in tests) for the **`ResolutionDiscipline`** selection-bias
+  check — resolution rate, overdue count, and the boldness `asmd` of graded vs
+  ungraded calls — rendered up top as the honesty caveat on every number below.
 - [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/list/show/report/decide/mcp`,
   global `--data` and `--json`. `decide --prob --stake` is the decision gate (below);
   `list --tag` filters by tag; the agent ledger is `~/.anamnesis/agent.json`

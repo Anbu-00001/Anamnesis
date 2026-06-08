@@ -13,6 +13,8 @@ use std::fmt::Write as _;
 
 use serde::Serialize;
 
+use chrono::NaiveDate;
+
 use crate::model::Ledger;
 use crate::scoring::{self, NumericSample, Sample};
 
@@ -132,6 +134,10 @@ const BRIER_CI_SEED: u64 = 0xA11A_5EED_C0FF_EE00;
 /// before a recency trend is worth showing at all.
 const EWMA_HALF_LIFE: f64 = 5.0;
 const TREND_MIN_N: usize = 10;
+/// Standardized-mean-difference threshold above which the graded and ungraded
+/// forecasts count as drawn from different distributions (the conventional
+/// covariate-balance / missing-not-at-random cutoff).
+const SELECTION_ASMD_FLAG: f64 = 0.1;
 
 /// A learned recalibration map, machine-readable: `p ↦ σ(a + b·logit p)` plus a
 /// few worked corrections for the human view.
@@ -144,6 +150,30 @@ pub struct RecalData {
     pub n: usize,
     /// `(stated, recalibrated)` pairs — what your stated confidences *should* be.
     pub examples: Vec<(f64, f64)>,
+}
+
+/// Resolution-discipline / selection-bias diagnostic: is the calibration above
+/// computed on a fair sample of your calls, or a self-selected one? Every metric
+/// rests only on *resolved* claims; if resolution is non-random (you grade your wins
+/// and let your misses rot), the numbers flatter you. This is the honesty check.
+#[derive(Serialize, Clone, Debug)]
+pub struct ResolutionDiscipline {
+    /// Resolved / (resolved + open) across all matching claims. Low ⇒ the report
+    /// rests on a self-selected subset.
+    pub resolution_rate: f64,
+    pub resolved: usize,
+    pub open: usize,
+    /// Open claims already past their `resolve_by` date — rotting in the drawer
+    /// rather than legitimately pending.
+    pub overdue: usize,
+    /// Mean boldness of resolved vs. still-open binary forecasts — the confidence
+    /// profile of what you graded vs. what you didn't. `None` when a side is empty.
+    pub resolved_boldness: Option<f64>,
+    pub open_boldness: Option<f64>,
+    /// Standardized gap (ASMD) between those two boldness profiles — the
+    /// missing-not-at-random diagnostic. `> 0.1` ⇒ your open and graded calls differ
+    /// enough that the split is unlikely to be random. `None` below two per side.
+    pub boldness_asmd: Option<f64>,
 }
 
 /// Selective-prediction summary: how your error falls when you act only on your
@@ -208,12 +238,21 @@ pub struct ReportData {
     /// Stake-weighted Brier — present only when stakes vary; compare with `brier`
     /// to see whether you are worse on the calls that actually matter.
     pub weighted_brier: Option<f64>,
+    /// Resolution-discipline / selection-bias check — whether the metrics above rest
+    /// on a fair sample of your calls or a self-selected one.
+    pub resolution_discipline: Option<ResolutionDiscipline>,
 }
 
 impl ReportData {
     /// Compute every metric once, for the binary and numeric claims that match
-    /// the optional tag filter.
-    pub fn compute(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> ReportData {
+    /// the optional tag filter. `today` anchors the overdue check (real wall-clock
+    /// in the CLI; a fixed date in tests).
+    pub fn compute(
+        ledger: &Ledger,
+        tag_filter: Option<&str>,
+        bins: usize,
+        today: NaiveDate,
+    ) -> ReportData {
         let tag_filter = tag_filter.map(|t| t.to_lowercase());
         let matches_tag = |c: &&crate::model::Claim| match &tag_filter {
             Some(t) => c.tags.iter().any(|x| x == t),
@@ -231,12 +270,13 @@ impl ReportData {
             .iter()
             .filter_map(|c| c.numeric_sample())
             .collect();
-        let open = ledger
+        let open_claims: Vec<&crate::model::Claim> = ledger
             .claims
             .iter()
             .filter(|c| c.is_open())
             .filter(matches_tag)
-            .count();
+            .collect();
+        let open = open_claims.len();
 
         let (first_recorded, last_recorded) = {
             let dates: Vec<_> = resolved_claims
@@ -464,6 +504,36 @@ impl ReportData {
             None
         };
 
+        // Resolution discipline: is the calibration above a fair sample, or only the
+        // calls I bothered to grade? Compares the confidence profile of resolved vs.
+        // still-open binary forecasts (outcome-free, so the open side is usable).
+        let resolution_discipline = {
+            let total = resolved_claims.len() + open_claims.len();
+            (total > 0).then(|| {
+                let overdue = open_claims
+                    .iter()
+                    .filter(|c| matches!(c.resolve_by, Some(d) if d <= today))
+                    .count();
+                let resolved_probs: Vec<f64> = resolved_claims
+                    .iter()
+                    .filter_map(|c| c.current_prob())
+                    .collect();
+                let open_probs: Vec<f64> = open_claims
+                    .iter()
+                    .filter_map(|c| c.current_prob())
+                    .collect();
+                ResolutionDiscipline {
+                    resolution_rate: resolved_claims.len() as f64 / total as f64,
+                    resolved: resolved_claims.len(),
+                    open: open_claims.len(),
+                    overdue,
+                    resolved_boldness: scoring::mean_boldness(&resolved_probs),
+                    open_boldness: scoring::mean_boldness(&open_probs),
+                    boldness_asmd: scoring::asmd(&resolved_probs, &open_probs),
+                }
+            })
+        };
+
         ReportData {
             tag: tag_filter,
             resolved: samples.len(),
@@ -496,6 +566,7 @@ impl ReportData {
             distinct_forecasts,
             selective,
             weighted_brier,
+            resolution_discipline,
         }
     }
 
@@ -508,8 +579,13 @@ impl ReportData {
 // ─────────────────────────── machine view ───────────────────────────────────
 
 /// Pretty-printed JSON of the full [`ReportData`]. The agent-facing surface.
-pub fn render_json(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String {
-    let data = ReportData::compute(ledger, tag_filter, bins);
+pub fn render_json(
+    ledger: &Ledger,
+    tag_filter: Option<&str>,
+    bins: usize,
+    today: NaiveDate,
+) -> String {
+    let data = ReportData::compute(ledger, tag_filter, bins, today);
     serde_json::to_string_pretty(&data).unwrap_or_else(|e| format!("{{\"error\":\"{e}\"}}"))
 }
 
@@ -548,8 +624,8 @@ fn verdict(gap: f64) -> &'static str {
 }
 
 /// Render the full human-readable report.
-pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String {
-    let d = ReportData::compute(ledger, tag_filter, bins);
+pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: NaiveDate) -> String {
+    let d = ReportData::compute(ledger, tag_filter, bins, today);
     let mut out = String::new();
 
     let title = match &d.tag {
@@ -581,6 +657,54 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize) -> String 
         d.first_recorded.as_deref().unwrap_or("—"),
         d.last_recorded.as_deref().unwrap_or("—"),
     );
+
+    // Resolution discipline — the honesty caveat, up top because it qualifies
+    // everything below: do these numbers rest on a fair sample of your calls, or
+    // only the ones you bothered to grade?
+    if let Some(rd) = &d.resolution_discipline {
+        let overdue_tail = if rd.overdue > 0 {
+            format!("  ·  {} overdue", rd.overdue)
+        } else {
+            String::new()
+        };
+        let _ = writeln!(
+            out,
+            "\n  Resolution discipline   {:.0}% graded ({} of {}){overdue_tail}",
+            rd.resolution_rate * 100.0,
+            rd.resolved,
+            rd.resolved + rd.open,
+        );
+        if rd.overdue > 0 {
+            let _ = writeln!(
+                out,
+                "    ⚠ {} claim(s) past due and ungraded — resolve them; until you do, the numbers below rest on a self-selected sample.",
+                rd.overdue
+            );
+        }
+        // Missing-not-at-random check: are the calls you left open a different breed
+        // from the ones you graded? If so, the calibration sample is skewed.
+        if let (Some(rb), Some(ob), Some(asmd)) =
+            (rd.resolved_boldness, rd.open_boldness, rd.boldness_asmd)
+        {
+            if asmd > SELECTION_ASMD_FLAG {
+                let (dir, caveat) = if ob > rb {
+                    (
+                        "BOLDER",
+                        "the confident end, where overconfidence hides, is under-graded — the gap above may understate it",
+                    )
+                } else {
+                    (
+                        "more CAUTIOUS",
+                        "your graded sample leans bold relative to what you actually predicted",
+                    )
+                };
+                let _ = writeln!(
+                    out,
+                    "    Your ungraded calls are {dir} than your graded ones (boldness {ob:.2} vs {rb:.2}, ASMD {asmd:.2}) — {caveat}.",
+                );
+            }
+        }
+    }
 
     // Binary section -------------------------------------------------------
     if d.resolved > 0 {
@@ -981,6 +1105,11 @@ mod tests {
         Utc.with_ymd_and_hms(2025, 1, 1, 12, 0, 0).unwrap()
     }
 
+    /// Fixed "today" for deterministic reports (overdue is relative to this).
+    fn td() -> NaiveDate {
+        NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+    }
+
     fn binary(id: &str, prob: f64, happened: bool, tags: &[&str]) -> Claim {
         Claim {
             id: id.into(),
@@ -1035,10 +1164,10 @@ mod tests {
 
     #[test]
     fn empty_ledger_renders_guidance() {
-        let r = render(&Ledger::default(), None, 10);
+        let r = render(&Ledger::default(), None, 10, td());
         assert!(r.contains("No resolved claims yet"));
         // JSON of an empty ledger is still well-formed with null metrics.
-        let j = render_json(&Ledger::default(), None, 10);
+        let j = render_json(&Ledger::default(), None, 10, td());
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert_eq!(v["resolved"], 0);
         assert!(v["brier"].is_null());
@@ -1054,7 +1183,7 @@ mod tests {
                 binary("d", 0.8, true, &["world"]),
             ],
         };
-        let j = render_json(&ledger, None, 10);
+        let j = render_json(&ledger, None, 10, td());
         // Must be valid JSON and contain no bare NaN/Infinity tokens.
         let v: serde_json::Value = serde_json::from_str(&j).unwrap();
         assert!(!j.contains("NaN") && !j.contains("Infinity"));
@@ -1071,8 +1200,9 @@ mod tests {
         let ledger = Ledger {
             claims: vec![binary("a", 0.7, true, &[]), binary("b", 0.3, false, &[])],
         };
-        let data = ReportData::compute(&ledger, None, 10);
-        let v: serde_json::Value = serde_json::from_str(&render_json(&ledger, None, 10)).unwrap();
+        let data = ReportData::compute(&ledger, None, 10, td());
+        let v: serde_json::Value =
+            serde_json::from_str(&render_json(&ledger, None, 10, td())).unwrap();
         assert_eq!(v["brier"].as_f64().unwrap(), data.brier.unwrap());
     }
 
@@ -1085,10 +1215,11 @@ mod tests {
                 numeric("n2", 10.0, 20.0, 0.8, 40.0), // outside
             ],
         };
-        let r = render(&ledger, None, 10);
+        let r = render(&ledger, None, 10, td());
         assert!(r.contains("Numeric forecasts"));
         assert!(r.contains("TOO NARROW"));
-        let v: serde_json::Value = serde_json::from_str(&render_json(&ledger, None, 10)).unwrap();
+        let v: serde_json::Value =
+            serde_json::from_str(&render_json(&ledger, None, 10, td())).unwrap();
         assert_eq!(v["numeric"]["count"], 2);
         assert_eq!(v["numeric"]["empirical_coverage"].as_f64().unwrap(), 0.5);
     }
@@ -1101,7 +1232,7 @@ mod tests {
                 binary("b", 0.2, false, &["world"]),
             ],
         };
-        let r = render(&ledger, Some("tech"), 10);
+        let r = render(&ledger, Some("tech"), 10, td());
         assert!(r.contains("[tag: tech]"));
         assert!(!r.contains("By domain")); // suppressed when filtered to one tag
     }

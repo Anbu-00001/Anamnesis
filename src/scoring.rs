@@ -335,6 +335,51 @@ pub fn directional_bias(samples: &[Sample]) -> Option<f64> {
     )
 }
 
+// ───────────────── selection / missingness diagnostics ──────────────────────
+
+/// Mean **boldness** `mean(max(p, 1−p))` of a set of stated probabilities — how far
+/// from a 50/50 shrug they sit, computed *without outcomes*. Because it needs no
+/// resolution, it can be taken over your still-*open* claims as well as your graded
+/// ones, which is what lets the report check whether the calls you actually resolved
+/// are a fair sample of the calls you *made*. `None` for an empty slice.
+pub fn mean_boldness(probs: &[f64]) -> Option<f64> {
+    if probs.is_empty() {
+        return None;
+    }
+    let sum: f64 = probs
+        .iter()
+        .map(|&p| {
+            let p = p.clamp(0.0, 1.0);
+            p.max(1.0 - p)
+        })
+        .sum();
+    Some(sum / probs.len() as f64)
+}
+
+/// **Absolute standardized mean difference** between two samples — `|mean_a − mean_b|`
+/// divided by their pooled standard deviation. The standard covariate-balance /
+/// missing-not-at-random diagnostic: a value above `≈ 0.1` means the two groups
+/// differ enough on this variable that their split is unlikely to be random. It is
+/// an *effect size*, not a hypothesis test, so it does not false-alarm at small `n`
+/// the way a t/KS test would. `None` when either group has fewer than two points or
+/// there is no spread to standardize against.
+pub fn asmd(a: &[f64], b: &[f64]) -> Option<f64> {
+    if a.len() < 2 || b.len() < 2 {
+        return None;
+    }
+    let mean = |xs: &[f64]| xs.iter().sum::<f64>() / xs.len() as f64;
+    // Sample variance (Bessel's n−1 correction).
+    let var = |xs: &[f64], m: f64| {
+        xs.iter().map(|x| (x - m).powi(2)).sum::<f64>() / (xs.len() as f64 - 1.0)
+    };
+    let (ma, mb) = (mean(a), mean(b));
+    let pooled_sd = ((var(a, ma) + var(b, mb)) / 2.0).sqrt();
+    if pooled_sd < 1e-12 {
+        return None; // no spread — standardization undefined
+    }
+    Some((ma - mb).abs() / pooled_sd)
+}
+
 // ───────────────────────── numeric / interval forecasts ─────────────────────
 
 /// A resolved *numeric* forecast: a central credible interval `[low, high]`
@@ -1241,6 +1286,25 @@ mod tests {
         // A free check → demand near-certainty; 0.99 still verifies.
         approx(decide(0.99, None, 1.0, 0.0).proceed_threshold, 1.0);
         assert_eq!(decide(0.99, None, 1.0, 0.0).act, Act::Verify);
+    }
+
+    #[test]
+    fn mean_boldness_measures_distance_from_a_coin_flip() {
+        // max(p,1−p) of 0.9, 0.5, 0.2 → 0.9, 0.5, 0.8 → mean 0.7333.
+        approx(mean_boldness(&[0.9, 0.5, 0.2]).unwrap(), 2.2 / 3.0);
+        approx(mean_boldness(&[0.5]).unwrap(), 0.5); // a pure shrug
+        assert!(mean_boldness(&[]).is_none());
+    }
+
+    #[test]
+    fn asmd_is_a_standardized_gap_robust_to_degeneracy() {
+        // means 0.7 vs 0.8, each sd 0.2, pooled 0.2 → ASMD = 0.1/0.2 = 0.5.
+        approx(asmd(&[0.5, 0.7, 0.9], &[0.6, 0.8, 1.0]).unwrap(), 0.5);
+        // Identical groups → zero gap.
+        approx(asmd(&[0.4, 0.6], &[0.4, 0.6]).unwrap(), 0.0);
+        // No spread to standardize against, or a group too small → None, not NaN.
+        assert!(asmd(&[0.5, 0.5], &[0.6, 0.6]).is_none());
+        assert!(asmd(&[0.5], &[0.6, 0.8]).is_none());
     }
 
     #[test]

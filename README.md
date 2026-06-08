@@ -32,6 +32,10 @@ ANAMNESIS — the shape of your judgement
 
 35 resolved  ·  6 open  ·  first recorded 2025-01-19  ·  latest 2025-06-24
 
+  Resolution discipline   88% graded (44 of 50)  ·  2 overdue
+    ⚠ 2 claim(s) past due and ungraded — resolve them; until you do, the numbers below rest on a self-selected sample.
+    Your ungraded calls are more CAUTIOUS than your graded ones (boldness 0.62 vs 0.76, ASMD 0.79) — your graded sample leans bold relative to what you actually predicted.
+
   Brier score      0.268   (0 = perfect · 0.25 = always 50/50 · lower better)
   Log score        0.785   (lower better; punishes confident misses)
   Brier skill      -0.094   (you did WORSE than always guessing the base rate)
@@ -239,6 +243,7 @@ Every metric operates on resolved samples — a probability `p` you assigned and
 | **Shrunk coverage** | `(k + ½) / (n + 1)` (Jeffreys) | A de-noised coverage point that stops a 0-of-3 or 3-of-3 fluke from reading as 0% or 100%. |
 | **Per-kind multicalibration** | the calibration e-value *within each* `kind:` | *Which type* of prediction is genuinely miscalibrated (tests-pass vs. bug-hypothesis vs. estimate). Anytime-valid, so a tiny, fluky subgroup can't trip a false alarm — the classic multicalibration pitfall. |
 | **Decision gate** | proceed iff `p̂ ≥ 1 − verify_cost/stake` (Chow's reject rule) | Not a score — the *action*. Correct your stated `p` through the recalibration map, then threshold by the stakes: **proceed / verify / abstain**. The bar climbs with the stakes, so an irreversible call needs near-certainty to skip a check. This is the step the literature finds agents skip — stating uncertainty yet acting anyway. |
+| **Resolution discipline** | resolution rate + overdue count + boldness `ASMD` of graded vs. ungraded calls | The honesty check on every number above: are they computed on a fair sample of your calls, or only the ones you bothered to grade? Flags overdue-unresolved claims, and uses the standard covariate-balance effect size (`ASMD > 0.1`) to warn when your *open* calls are a different breed from your graded ones — censored outcomes turned into a directional caveat instead of silence. |
 
 **Murphy's decomposition** is the centrepiece: `Brier = Reliability − Resolution + Uncertainty`. Anamnesis groups forecasts by their *exact* probability value, which makes that identity hold to floating-point precision rather than approximately — and the test suite asserts exactly that ([`decomposition_identity_holds_exactly`](src/scoring.rs)). It cleanly separates the two ways to be a good forecaster:
 

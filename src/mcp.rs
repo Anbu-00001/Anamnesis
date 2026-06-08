@@ -340,9 +340,10 @@ fn tool_calibration(args: &Value, ledger: &Path) -> ToolResult {
     let tag = args.get("tag").and_then(Value::as_str);
     let bins = args.get("bins").and_then(Value::as_u64).unwrap_or(10) as usize;
     let led = store::load(ledger).map_err(|e| e.to_string())?;
-    let text = report::render(&led, tag, bins);
+    let today = Utc::now().date_naive();
+    let text = report::render(&led, tag, bins, today);
     let structured: Value =
-        serde_json::from_str(&report::render_json(&led, tag, bins)).unwrap_or(Value::Null);
+        serde_json::from_str(&report::render_json(&led, tag, bins, today)).unwrap_or(Value::Null);
     Ok((text, Some(structured)))
 }
 

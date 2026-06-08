@@ -76,6 +76,8 @@ __all__ = [
     "dialectical_mean",
     "decide",
     "Decision",
+    "mean_boldness",
+    "asmd",
     "report",
     "Calibration",
 ]
@@ -303,6 +305,23 @@ def decide(p: float, stake: float = 1.0, verify_cost: float = 0.2, recal=None) -
     b = recal.b if recal is not None else None
     t = _core.decide(float(p), float(stake), float(verify_cost), a, b)
     return Decision(*t)
+
+
+# ── selection / missingness diagnostics ──────────────────────────────────────
+def mean_boldness(probs: Sequence) -> Optional[float]:
+    """Mean boldness ``mean(max(p, 1−p))`` — how far a set of stated probabilities
+    sits from a coin flip, computed without outcomes (so it works on still-open
+    claims too). ``None`` for an empty sequence."""
+    return _core.mean_boldness(_floats(probs))
+
+
+def asmd(a: Sequence, b: Sequence) -> Optional[float]:
+    """Absolute standardized mean difference between two samples — the
+    covariate-balance / missing-not-at-random effect size (``> 0.1`` ⇒ the groups
+    differ enough that their split is unlikely to be random). An effect size, not a
+    test, so it does not false-alarm at small n. ``None`` when a group has < 2 points
+    or has no spread."""
+    return _core.asmd(_floats(a), _floats(b))
 
 
 # ── convenience ──────────────────────────────────────────────────────────────
