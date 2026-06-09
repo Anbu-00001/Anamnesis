@@ -143,7 +143,7 @@ So what should you do?
     confidence into a clear proceed / verify / abstain.
 ```
 
-The cat's four moods track your calibration, each a 25-point band: 😺 **DIALED IN** (75–100) · 🐱 **CLOSE** (50–75) · 🙀 **DRIFTING** (25–50) · 😿 **WAY OFF** (0–25), plus 😴 **WARMING UP** when there's nothing resolved to judge yet.
+The cat's four moods track your calibration, each a 25-point band: 😺❤️ **DIALED IN** (75–100) · 🐱 **CLOSE** (50–75) · 🙀 **DRIFTING** (25–50) · 😿 **WAY OFF** (0–25), plus 😴 **WARMING UP** when there's nothing resolved to judge yet. In the terminal the top mood wears an ASCII heart — `( ^.^ ) <3` — so you can tell a dialed-in cat from a merely-close one at a glance.
 
 ### …as a card you can share
 

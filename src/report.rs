@@ -1363,7 +1363,7 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
 // Pure ASCII faces, no emoji: emoji width is font-dependent and misaligns or boxes
 // in many terminals (and looks broken inside a Markdown code block). The mood NAME
 // and gloss carry the meaning; the emoji legend lives only in prose docs.
-const CAT_DIALED: &str = "   /\\_/\\\n  ( ^.^ )\n   > ^ <";
+const CAT_DIALED: &str = "   /\\_/\\\n  ( ^.^ ) <3\n   > ^ <";
 const CAT_CLOSE: &str = "   /\\_/\\\n  ( o.o )\n   > . <";
 const CAT_DRIFT: &str = "   /\\_/\\\n  ( ;_; )\n   > _ <";
 const CAT_OFF: &str = "   /\\_/\\\n  ( @_@ )\n   >< ><";
