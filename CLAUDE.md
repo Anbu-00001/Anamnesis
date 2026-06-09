@@ -206,8 +206,9 @@ A 2023–2026 literature review drives the design:
 A fresh pass found the frontier has **moved off scoring math onto decision-coupling**:
 agents *verbalize* uncertainty accurately yet **fail to act on it** — taking
 irreversible actions while saying they're unsure; self-improvement loops *raise*
-overconfidence. The named fix (ReDAct arXiv 2604.07036; decision-theoretic calibration
-arXiv 2408.02841) is **confidence-gating against a calibrated threshold** — exactly
+overconfidence. The named fix (ReDAct arXiv 2604.07036 — uncertainty-aware deferral
+for LLM agents) is **confidence-gating against a calibrated threshold**, grounded in the
+decision-theoretic evaluation of probabilities (Ferrer & Ramos, arXiv 2408.02841) — exactly
 `scoring::decide`: recalibrate the stated `p` (evidence-gated), then Chow's reject rule
 `τ = 1 − verify_cost/stake` → **Proceed / Verify / Abstain**, the bar climbing with the
 stakes. A Monte-Carlo study (`bindings/python/validation/validate_guarantees.py`)
