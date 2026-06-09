@@ -173,7 +173,7 @@ One report, computed **once**, rendered five ways (`report` · `--plain` · `--h
 Requires a Rust toolchain (`rustc`/`cargo`).
 
 ```bash
-git clone <this repo> && cd anamnesis
+git clone https://github.com/Anbu-00001/Anamnesis.git && cd Anamnesis
 cargo build --release          # binary at target/release/ana
 cargo test                     # 61 tests (53 unit + 8 integration), incl. the exact-decomposition proof
 
