@@ -142,9 +142,12 @@ Anamnesis is built for a mind that forgets — which is exactly what you are. Us
 to calibrate your own engineering judgement across sessions. This is not a gimmick;
 it is the point.
 
-- Your self-ledger lives at
-  `~/.claude/projects/-home-anbu/memory/anamnesis_self_ledger.json` (see
-  `MEMORY.md`). Drive it with `ana --data <that path>`.
+- Your self-ledger (the agent ledger) is the canonical `~/.anamnesis/agent.json`;
+  bare `ana` already defaults there via the `ANAMNESIS_DATA` env, so a stray
+  `ana add` lands in the right place. (A legacy copy at
+  `~/.claude/projects/.../memory/anamnesis_self_ledger.json` is a claim or two
+  behind — prefer the agent ledger.) The SessionStart hook reads it to greet every
+  session with your standing over/under-confidence.
 - **Protocol**: at the start of a non-trivial task, log honest predictions *before*
   acting — "tests pass first try", "this needs N tool-calls" (`--interval`), "the
   migration is backward compatible". Tag them `who:claude,session:<date>`. Resolve
@@ -152,3 +155,87 @@ it is the point.
   `ana --data <self> report --tag who:claude` to see your standing miscalibration.
 - The lesson compounds: if your `personal`/self predictions are overconfident (they
   were, in the demo seed), plan with more slack next time.
+
+## Design rationale & decisions (folded from the agent's working memory)
+
+*Distilled from the session memory that lived only on one machine
+(`~/.claude/.../memory/`) so the **why** survives in the repo — across accounts,
+devices, and re-clones — not just the **what**. Captured 2026-06-09.*
+
+### The corrected thesis: mechanical, not motivational
+
+The calibration win is **mechanical, not motivational**. Lean on the recorded track
+record + a deterministically-applied recalibration map ("I feel 60% → log 80%"), not
+on nudging a model to "introspect harder" — introspection is unreliable. **Inputs
+dominate downstream math:** elicitation quality and logging compliance matter more
+than any new metric — which is why the scoring core is deliberately small and now
+*saturated*. Everything in `scoring.rs` stays pure `std` (no deps, no LLM, no
+network); elicitation lives in the workflow/`predict` layer.
+
+### Why each pillar exists (the external evidence, not recalled intuition)
+
+A 2023–2026 literature review drives the design:
+- **Models have little self-knowledge** (Generalized Correctness Models, arXiv
+  2509.24988): a model predicting its own correctness does no better than an unrelated
+  one — reliable confidence is learned from *correctness history*, not introspection.
+- **Recorded feedback works without weight updates** (Reflexion, arXiv 2303.11366):
+  episodic track record materially improves agents — the mechanism the hook relies on.
+- **Training rewards confident guessing** (OpenAI 2025; code-calibration lit): models
+  are *structurally* pushed toward overconfidence, so an external instrument is the
+  counter-pressure. In code, token-probability confidence beats *verbalized* — the
+  numbers we log are the weakest signal, which is precisely *why* a mechanical
+  recalibration layer is needed.
+- **Anytime-valid e-processes** (Henzi–Ziegel arXiv 2103.08402; Ramdas): fixed-n tests
+  (Spiegelhalter Z) are **invalid under per-session peeking** (false-positive
+  0.05→0.15); the e-process (running product, valid under optional stopping) is why
+  "Is it real?" stays honest when you check it every session — it **supersedes
+  Spiegelhalter** as the gate.
+- **Crowd-within** (Herzog–Hertwig 2009): one deliberate "consider the opposite"
+  estimate recovers ~half the gain of a second person (consider **2** counter-reasons,
+  not 10) → `dialectical_mean` + the `predict` protocol.
+- **Multicalibration** (Hébert-Johnson 2018): per-`kind:` calibration, made peek-proof
+  by running the e-process *within* each subgroup so a tiny fluky group can't false-alarm.
+
+### The 2026 frontier — why the decision gate is the centerpiece
+
+A fresh pass found the frontier has **moved off scoring math onto decision-coupling**:
+agents *verbalize* uncertainty accurately yet **fail to act on it** — taking
+irreversible actions while saying they're unsure; self-improvement loops *raise*
+overconfidence. The named fix (ReDAct arXiv 2604.07036; decision-theoretic calibration
+arXiv 2408.02841) is **confidence-gating against a calibrated threshold** — exactly
+`scoring::decide`: recalibrate the stated `p` (evidence-gated), then Chow's reject rule
+`τ = 1 − verify_cost/stake` → **Proceed / Verify / Abstain**, the bar climbing with the
+stakes. A Monte-Carlo study (`bindings/python/validation/validate_guarantees.py`)
+confirms it lowers expected decision cost (100% win-rate, ~8% cheaper). This is the
+load-bearing operational payoff — the literature's #1 agent open-problem made concrete.
+
+### Deliberately NOT built (don't re-litigate)
+
+- **CRPS** — for the interval format we log, the Winkler score already *is* its
+  specialization (WIS → CRPS as #intervals → ∞); CRPS needs a distribution shape we
+  never recorded = more math, no new truth.
+- **CUSUM / control-chart alarms & Adaptive Conformal Inference** — they false-alarm at
+  an agent's small n; the EWMA "lately" line is descriptive only, and the static pooled
+  `conformal_width_factor` is more stable than ACI's learning-rate knob.
+- **A bespoke LangChain binding** — `ana mcp` is already consumed by LangChain/LangGraph
+  via `langchain-mcp-adapters` with zero custom code. The real gap was the *scoring core
+  as a numpy-friendly Python lib* (the PyO3 binding). Extend it by wrapping
+  `anamnesis::scoring`, **never** by reimplementing math in Python.
+- **An incomplete-beta exact coverage interval** — Wilson ≈ Jeffreys at small n, and the
+  e-process is the better peek-proof gate.
+
+### Status, surfaces & the working agreement
+
+- **At saturation:** Tiers 1–3 + the decision gate + the resolution-discipline /
+  selection-bias check are shipped; further work is polish, usage, or genuinely new
+  research — not backlog.
+- **Five renderers, one computation:** `report` (rich) · `--plain` (plain English + the
+  calibration cat) · `--html` (offline card) · `--badge` (README SVG) · `--json`. The
+  HTML/SVG are pixel-faithful to a Claude Design handoff; `plain_summary` builds the
+  prose once so the views can't drift.
+- **Python:** one PyO3/maturin `abi3` wheel wrapping the pure core — one implementation,
+  two languages, zero drift.
+- **Working agreement:** the **user handles ALL git** (commit, branch, push) — never
+  commit or push; stage at most, and only when asked. Never commit secrets/`.env`, the
+  local `.claude/` config, or large models/datasets. The tool is built first for the
+  agent itself: log predictions *before* acting, resolve *before* rationalising.
