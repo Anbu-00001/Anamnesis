@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100" viewBox="0 0 400 100" role="img" aria-label="Anamnesis calibration: Overconfident, Brier 0.27">
+  <title>Anamnesis calibration — Overconfident · Brier 0.27</title>
+
+  <clipPath id="r"><rect x="1" y="1" width="398" height="98" rx="11"></rect></clipPath>
+  <rect class="card" x="1" y="1" width="398" height="98" rx="11" fill="#fbfaf6" stroke="#e2ddd2"></rect>
+  <g clip-path="url(#r)"><rect class="spine" x="0" y="0" width="5" height="100" fill="#c62828"></rect></g>
+
+  <text class="verdict" x="28" y="40" fill="#c62828" font-family="&#39;Iowan Old Style&#39;,Palatino,Georgia,&#39;Times New Roman&#39;,serif" font-size="25" font-weight="600">Overconfident</text>
+  <text class="lab" x="372" y="24" text-anchor="end" fill="#75716a" font-family="system-ui,-apple-system,&#39;Segoe UI&#39;,Roboto,sans-serif" font-size="9.5" font-weight="600" letter-spacing="2">BRIER</text>
+  <text class="brier" x="372" y="45" text-anchor="end" fill="#1d1b16" font-family="system-ui,-apple-system,&#39;Segoe UI&#39;,Roboto,sans-serif" font-size="26" font-weight="600" letter-spacing="-1">0.27</text>
+
+  <line class="track" x1="28" y1="66" x2="372" y2="66" stroke="#e2ddd2" stroke-width="2" stroke-linecap="round"></line>
+  <line class="center" x1="200" y1="59" x2="200" y2="73" stroke="#a39e93" stroke-width="1"></line>
+  <line class="mark" x1="246.7" y1="57" x2="246.7" y2="75" stroke="#c62828" stroke-width="2" stroke-linecap="round"></line>
+  <circle class="dot" cx="246.7" cy="66" r="5" fill="#c62828" stroke="#fbfaf6" stroke-width="3"></circle>
+
+  <text class="foot" x="28" y="90" fill="#75716a" font-family="system-ui,-apple-system,&#39;Segoe UI&#39;,Roboto,sans-serif" font-size="11" letter-spacing="0.3">anamnesis · calibration · offline &amp; local</text>
+</svg>

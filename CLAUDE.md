@@ -57,11 +57,13 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   estimates into the stored `because`. `Ledger::index_of` resolves id prefixes.
 - [src/store.rs](src/store.rs) — one JSON file, atomic write (temp + rename),
   missing file = empty ledger.
-- [src/report.rs](src/report.rs) — **compute once into `ReportData`, render four ways**
+- [src/report.rs](src/report.rs) — **compute once into `ReportData`, render five ways**
   (`render` = rich text, `render_json` = JSON, `render_plain` = plain-English bridge
   with a four-mood **calibration cat** `mood`, `render_html` = self-contained offline
-  card). Never compute metrics in a renderer; `plain_summary` builds the plain prose
-  once so the text and HTML views can't drift. Also
+  card, `render_badge_svg` = embeddable README badge). The HTML/SVG are pixel-faithful
+  to a Claude Design handoff (`CARD_CSS` is verbatim; gauge `pos = 50 + gap·100`).
+  Never compute metrics in a renderer; `plain_summary` builds the plain prose once so
+  the text, HTML, and badge views can't drift. Also
   home of `earned_recalibration` (the shared evidence gate: fitted map + whether the
   e-process has earned it, next to the `RECAL_*` constants) reused by the CLI and the
   MCP `recalibrate`/`decide` tools so the gate is defined exactly once. `compute`
@@ -71,8 +73,8 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   ungraded calls — rendered up top as the honesty caveat on every number below.
 - [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/list/show/report/decide/mcp`,
   global `--data` and `--json`. `decide --prob --stake` is the decision gate (below);
-  `report --plain` (plain-English + cat) and `report --html` (offline card) pick the
-  renderer; `list --tag` filters by tag; the agent ledger is `~/.anamnesis/agent.json`
+  `report --plain` (plain-English + cat), `--html` (offline card), `--badge` (README
+  SVG) pick the renderer; `list --tag` filters by tag; the agent ledger is `~/.anamnesis/agent.json`
   (`ANAMNESIS_AGENT_DATA`).
 - [src/mcp.rs](src/mcp.rs) — `ana mcp`: a hand-rolled Model Context Protocol
   server over newline-delimited JSON-RPC stdio (no new deps), exposing

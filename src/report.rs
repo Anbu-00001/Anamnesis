@@ -1890,6 +1890,59 @@ pub fn render_html(
     )
 }
 
+/// An embeddable 400×100 README badge — the SVG cousin of the card: verdict word,
+/// Brier, and the same undersell↔oversell gauge. Verbatim from the Claude Design
+/// `badge.template.svg`; every colour is a presentation attribute (not CSS) so it
+/// survives GitHub's SVG sanitizer. Gauge marker at `gauge_x = 28 + 344·pos/100`,
+/// the same `pos = 50 + gap·100` scale as the card.
+pub fn render_badge_svg(
+    ledger: &Ledger,
+    tag_filter: Option<&str>,
+    bins: usize,
+    today: NaiveDate,
+) -> String {
+    let d = ReportData::compute(ledger, tag_filter, bins, today);
+    let summary = (!d.is_empty()).then(|| plain_summary(&d));
+    let (verdict_word, verdict_class): (String, &str) = match &summary {
+        Some(s) => (s.verdict_word.clone(), s.verdict_class),
+        None => ("Not enough data".to_string(), "unknown"),
+    };
+    let accent = match verdict_class {
+        "under" => "#1565c0",
+        "over" => "#c62828",
+        "good" => "#2e7d32",
+        _ => "#757575",
+    };
+    let brier = d
+        .brier
+        .map(|b| format!("{b:.2}"))
+        .unwrap_or_else(|| "—".into());
+    let pos = (50.0 + d.confidence_gap.unwrap_or(0.0) * 100.0).clamp(3.0, 97.0);
+    let gauge_x = 28.0 + 344.0 * pos / 100.0;
+    let v = esc(&verdict_word);
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="400" height="100" viewBox="0 0 400 100" role="img" aria-label="Anamnesis calibration: {v}, Brier {brier}">
+  <title>Anamnesis calibration — {v} · Brier {brier}</title>
+
+  <clipPath id="r"><rect x="1" y="1" width="398" height="98" rx="11"></rect></clipPath>
+  <rect class="card" x="1" y="1" width="398" height="98" rx="11" fill="#fbfaf6" stroke="#e2ddd2"></rect>
+  <g clip-path="url(#r)"><rect class="spine" x="0" y="0" width="5" height="100" fill="{accent}"></rect></g>
+
+  <text class="verdict" x="28" y="40" fill="{accent}" font-family="&#39;Iowan Old Style&#39;,Palatino,Georgia,&#39;Times New Roman&#39;,serif" font-size="25" font-weight="600">{v}</text>
+  <text class="lab" x="372" y="24" text-anchor="end" fill="#75716a" font-family="system-ui,-apple-system,&#39;Segoe UI&#39;,Roboto,sans-serif" font-size="9.5" font-weight="600" letter-spacing="2">BRIER</text>
+  <text class="brier" x="372" y="45" text-anchor="end" fill="#1d1b16" font-family="system-ui,-apple-system,&#39;Segoe UI&#39;,Roboto,sans-serif" font-size="26" font-weight="600" letter-spacing="-1">{brier}</text>
+
+  <line class="track" x1="28" y1="66" x2="372" y2="66" stroke="#e2ddd2" stroke-width="2" stroke-linecap="round"></line>
+  <line class="center" x1="200" y1="59" x2="200" y2="73" stroke="#a39e93" stroke-width="1"></line>
+  <line class="mark" x1="{gauge_x:.1}" y1="57" x2="{gauge_x:.1}" y2="75" stroke="{accent}" stroke-width="2" stroke-linecap="round"></line>
+  <circle class="dot" cx="{gauge_x:.1}" cy="66" r="5" fill="{accent}" stroke="#fbfaf6" stroke-width="3"></circle>
+
+  <text class="foot" x="28" y="90" fill="#75716a" font-family="system-ui,-apple-system,&#39;Segoe UI&#39;,Roboto,sans-serif" font-size="11" letter-spacing="0.3">anamnesis · calibration · offline &amp; local</text>
+</svg>
+"##
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2064,6 +2117,14 @@ mod tests {
         // Both views survive an empty ledger without panicking.
         assert!(render_plain(&Ledger::default(), None, 10, td()).contains("Nothing to reflect"));
         assert!(render_html(&Ledger::default(), None, 10, td()).contains("<!DOCTYPE html"));
+
+        // Badge: valid SVG, real verdict + accent, no leftover template placeholders.
+        let svg = render_badge_svg(&ledger, None, 10, td());
+        assert!(svg.contains("<svg") && svg.contains("</svg>"));
+        assert!(svg.contains("Overconfident")); // this ledger is overconfident
+        assert!(svg.contains("#c62828")); // → red accent
+        assert!(!svg.contains("{{")); // every placeholder filled
+        assert!(render_badge_svg(&Ledger::default(), None, 10, td()).contains("Not enough data"));
     }
 
     #[test]

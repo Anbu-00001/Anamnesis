@@ -134,6 +134,9 @@ enum Cmd {
         /// Self-contained, offline HTML card (redirect to a file: `> card.html`)
         #[arg(long)]
         html: bool,
+        /// Embeddable 400×100 README badge as SVG (redirect: `> badge.svg`)
+        #[arg(long)]
+        badge: bool,
     },
     /// Should you act on it? Corrects a stated probability through your earned
     /// recalibration map, then applies a stake-aware threshold: PROCEED / VERIFY / ABSTAIN.
@@ -729,6 +732,7 @@ fn run(cli: Cli) -> Result<(), String> {
             bins,
             plain,
             html,
+            badge,
         } => {
             let today = Utc::now().date_naive();
             let tag = tag.as_deref();
@@ -736,6 +740,8 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!("{}", report::render_json(&ledger, tag, *bins, today));
             } else if *html {
                 print!("{}", report::render_html(&ledger, tag, *bins, today));
+            } else if *badge {
+                print!("{}", report::render_badge_svg(&ledger, tag, *bins, today));
             } else if *plain {
                 print!("{}", report::render_plain(&ledger, tag, *bins, today));
             } else {
