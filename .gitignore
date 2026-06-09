@@ -2,3 +2,4 @@
 *.json.tmp
 # generated demo ledger (recreate with: cargo run --example seed -- seed.json)
 /seed.json
+.claude/
