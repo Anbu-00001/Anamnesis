@@ -1360,12 +1360,14 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
 // A calibration cat whose face is the state of your judgement. Its mood is chosen
 // by a 0–100 calibration score — `|confidence gap|` folded into four 25-point bands
 // — so the agent's standing reads at a glance before a single number is parsed.
-// (ASCII faces only; the emoji rides at the end of a line so width never misaligns.)
-const CAT_DIALED: &str = "   /\\_/\\\n  ( ^.^ )  😺\n   > ^ <";
-const CAT_CLOSE: &str = "   /\\_/\\\n  ( o.o )  🐱\n   > · <";
-const CAT_DRIFT: &str = "   /\\_/\\\n  ( ;_; )  🙀\n   > _ <";
-const CAT_OFF: &str = "   /\\_/\\\n  ( @_@ )  😿\n   >< ><";
-const CAT_SLEEPY: &str = "   /\\_/\\\n  ( -.- )  😴 zzz\n   > ~ <";
+// Pure ASCII faces, no emoji: emoji width is font-dependent and misaligns or boxes
+// in many terminals (and looks broken inside a Markdown code block). The mood NAME
+// and gloss carry the meaning; the emoji legend lives only in prose docs.
+const CAT_DIALED: &str = "   /\\_/\\\n  ( ^.^ )\n   > ^ <";
+const CAT_CLOSE: &str = "   /\\_/\\\n  ( o.o )\n   > . <";
+const CAT_DRIFT: &str = "   /\\_/\\\n  ( ;_; )\n   > _ <";
+const CAT_OFF: &str = "   /\\_/\\\n  ( @_@ )\n   >< ><";
+const CAT_SLEEPY: &str = "   /\\_/\\\n  ( -.- )  zzz\n   > ~ <";
 
 struct Mood {
     art: &'static str,

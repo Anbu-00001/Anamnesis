@@ -116,7 +116,7 @@ That view is for the analytically minded. But a mirror nobody can read is no mir
 
 ```text
    /\_/\
-  ( ;_; )  🙀
+  ( ;_; )
    > _ <
   [DRIFTING]  calibration 46/100 · overconfident — you oversell
 
