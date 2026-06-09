@@ -1,10 +1,17 @@
 {
-  "description": "Anamnesis calibration hooks: inject standing calibration at SessionStart; nudge to resolve overdue predictions at Stop.",
+  "description": "Anamnesis calibration hooks: inject standing calibration at SessionStart; re-surface it as a self-introspection checkpoint every 7th user prompt (UserPromptSubmit); nudge to resolve open predictions after a test/build (PostToolUse) and overdue ones at Stop.",
   "hooks": {
     "SessionStart": [
       {
         "hooks": [
           { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.sh\"" }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "hooks": [
+          { "type": "command", "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/user-prompt.sh\"" }
         ]
       }
     ],

@@ -39,14 +39,15 @@ jq --arg h "$ANA_HOME/hooks" '
     .hooks[ev] = ((.hooks[ev] // [])
       + (if ((.hooks[ev] // []) | tostring | contains($h)) then [] else [entry] end));
   .hooks = (.hooks // {})
-  | addhook("SessionStart"; {hooks:[{type:"command",command:("bash "+$h+"/session-start.sh"),timeout:5}]})
-  | addhook("Stop";         {hooks:[{type:"command",command:("bash "+$h+"/stop.sh"),timeout:5}]})
-  | addhook("PostToolUse";  {matcher:"Bash",hooks:[{type:"command",command:("bash "+$h+"/post-tool.sh"),timeout:5}]})
+  | addhook("SessionStart";    {hooks:[{type:"command",command:("bash "+$h+"/session-start.sh"),timeout:5}]})
+  | addhook("UserPromptSubmit"; {hooks:[{type:"command",command:("bash "+$h+"/user-prompt.sh"),timeout:5}]})
+  | addhook("Stop";            {hooks:[{type:"command",command:("bash "+$h+"/stop.sh"),timeout:5}]})
+  | addhook("PostToolUse";     {matcher:"Bash",hooks:[{type:"command",command:("bash "+$h+"/post-tool.sh"),timeout:5}]})
 ' "$S" > "$tmp"
 jq -e . "$tmp" >/dev/null && mv "$tmp" "$S"
 
 echo "✓ Anamnesis installed."
 echo "  engine : $("$ANA_HOME/bin/ana" --version)"
 echo "  ledger : ${ANAMNESIS_AGENT_DATA:-$ANA_HOME/agent.json}"
-echo "  hooks  : SessionStart, Stop, PostToolUse(Bash) registered in $S"
+echo "  hooks  : SessionStart, UserPromptSubmit(every 7th), Stop, PostToolUse(Bash) registered in $S"
 echo "  → run /hooks (or restart Claude Code) to activate in the current session."

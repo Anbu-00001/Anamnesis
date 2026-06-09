@@ -1,7 +1,7 @@
 {
   "name": "anamnesis",
-  "version": "0.1.0",
-  "description": "Quantified self-calibration for coding agents. Log a falsifiable prediction (probability or interval) before you act; get scored when reality answers; see your standing over/under-confidence injected into every project at session start. The measurement layer the qualitative memory tools lack.",
+  "version": "0.2.0",
+  "description": "Quantified self-calibration for coding agents. Log a falsifiable prediction (probability or interval) before you act; get scored when reality answers; see your standing over/under-confidence injected into every project at session start and re-surfaced as a self-introspection checkpoint every 7th prompt. The measurement layer the qualitative memory tools lack.",
   "author": { "name": "Anbu + Claude (Opus)" },
   "homepage": "https://github.com/Anbu-00001/Anamnesis",
   "keywords": ["calibration", "forecasting", "brier", "self-evaluation", "agent", "metacognition"],

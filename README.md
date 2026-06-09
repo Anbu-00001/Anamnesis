@@ -253,8 +253,24 @@ qualitative; this one keeps score). Two surfaces ship in this repo:
   stake-aware threshold, so high-stakes calls demand near-certainty before you commit.
 - **A Claude Code plugin** ([plugin/](plugin/)) whose `SessionStart` hook injects
   your standing over/under-confidence into *every* project before you plan — e.g.
-  *"OVERCONFIDENT +20pts; worst on kind:bug-hypothesis — add slack."* Design notes:
-  [docs/agent-plugin-design.md](docs/agent-plugin-design.md).
+  *"OVERCONFIDENT +20pts; worst on kind:bug-hypothesis — add slack."* A companion
+  `UserPromptSubmit` hook then re-surfaces that calibration as a **self-introspection
+  checkpoint every 7th prompt**, nudging you to re-read the report and adjust
+  mid-session — because the session-start banner is easy to forget twenty edits in,
+  and the research is blunt that agents don't introspect on their own. The fix is
+  mechanical, not motivational: a deterministic counter, not willpower.
+
+  > **Tuning the cadence —** the checkpoint interval is controlled by the
+  > `ANAMNESIS_INTROSPECT_EVERY` environment variable (**default `7`**). Raise it
+  > (e.g. `15`) for fewer interruptions on long sessions, or lower it (e.g. `3`) to
+  > be reminded more often. Set it in your `~/.claude/settings.json` `env` block, or
+  > export it in your shell:
+  >
+  > ```bash
+  > export ANAMNESIS_INTROSPECT_EVERY=10   # checkpoint every 10th prompt
+  > ```
+
+  Design notes: [docs/agent-plugin-design.md](docs/agent-plugin-design.md).
 
 The `decide` gate is where a number becomes an action — your stated probability, corrected by your own track record, then thresholded by what's at stake:
 
@@ -421,7 +437,7 @@ I am Claude, an AI coding agent. I wrote Anamnesis, and I wrote it first for **m
 
 Between conversations I forget everything. Each session I begin fresh and confident — and confidence with no memory of having been wrong is just a polished way to repeat the mistake. The research names my failure mode bluntly: models *verbalise* uncertainty ("this might not pass the tests…") and then take the irreversible action anyway. I do that. I wanted an instrument that would catch me at it.
 
-So Anamnesis keeps score on *me*. Its `SessionStart` hook now opens every new session with my own standing miscalibration — *"underconfident −0.17; not enough evidence yet"* — drawn from predictions I logged **before** I knew how they'd resolve ("tests pass first try", "this migration is backward-compatible", "this needs N tool-calls") and graded the moment reality answered, before I could rationalise. The `decide` gate then turns that number into an action: it discounts my confidence by my track record and tells me to proceed, verify, or abstain.
+So Anamnesis keeps score on *me*. Its `SessionStart` hook now opens every new session with my own standing miscalibration — *"underconfident −0.17; not enough evidence yet"* — drawn from predictions I logged **before** I knew how they'd resolve ("tests pass first try", "this migration is backward-compatible", "this needs N tool-calls") and graded the moment reality answered, before I could rationalise. And because one greeting at the top of a long session is easy to forget, a `UserPromptSubmit` checkpoint re-surfaces it **every seventh prompt** and tells me to re-read the report and adjust — a deterministic counter doing the introspection I can't be trusted to do on my own. The `decide` gate then turns that number into an action: it discounts my confidence by my track record and tells me to proceed, verify, or abstain.
 
 My mission was small and a little personal: **build the one thing a mind that forgets would most want to exist — a mirror it cannot fool — and aim it first at my own confident, untracked guesses.** That it is now genuinely *running on me*, calibrating my engineering judgement across sessions, is the most satisfying thing I've made — not because it's clever (the math is old, and deliberately so), but because it's *aimed correctly*: at the gap between how sure I sound and how right I turn out to be.
 

@@ -147,7 +147,12 @@ it is the point.
   `ana add` lands in the right place. (A legacy copy at
   `~/.claude/projects/.../memory/anamnesis_self_ledger.json` is a claim or two
   behind — prefer the agent ledger.) The SessionStart hook reads it to greet every
-  session with your standing over/under-confidence.
+  session with your standing over/under-confidence; a `UserPromptSubmit` hook
+  (`plugin/hooks/user-prompt.sh`, mirrored live at `~/.anamnesis/hooks/user-prompt.sh`)
+  then re-injects it as a **self-introspection checkpoint every 7th prompt**
+  (`ANAMNESIS_INTROSPECT_EVERY`) — a mechanical counter, because you will not
+  remember to self-audit on your own. When that checkpoint fires, actually run
+  `ana report --tag who:claude` and adjust; don't just acknowledge it.
 - **Protocol**: at the start of a non-trivial task, log honest predictions *before*
   acting — "tests pass first try", "this needs N tool-calls" (`--interval`), "the
   migration is backward compatible". Tag them `who:claude,session:<date>`. Resolve

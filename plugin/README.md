@@ -13,6 +13,12 @@ start so you actually plan differently.
 - **`SessionStart` hook** — injects your standing calibration (and any predictions
   *due* in this repo) as a system reminder, before the first prompt. This is the
   auto-engagement: your calibration follows you into every folder.
+- **`UserPromptSubmit` hook** — a *self-introspection checkpoint* every **7th** user
+  prompt (override with `ANAMNESIS_INTROSPECT_EVERY`): re-surfaces your standing
+  calibration mid-session and tells you to run `/calibration` and adjust. The
+  SessionStart banner greets once and is easy to forget twenty edits later; a
+  deterministic counter is the mechanical fix for "agents don't introspect on their
+  own." Per-session, fail-open, silent on the other 6 of every 7.
 - **`/predict`** — log a prediction (probability or credible interval) with a
   `kind:` so you learn *per type of call* (estimates vs bug-hypotheses vs …).
 - **`/resolve`** — score it the moment reality answers.
