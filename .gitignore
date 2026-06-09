@@ -4,3 +4,6 @@
 /seed.json
 # guard against the accidental self-referential nested submodule re-appearing
 /anamnesis/
+# local Claude Code config (permissions, env, hooks, allow-lists) — never publish
+.claude/
+.claude/settings.local.json
