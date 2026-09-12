@@ -185,6 +185,15 @@ truthful one, and the reason is given below.
   miscalibration (`validation/ratio.py`). The cat no longer flickers with it
   either.
 
+- **The noise floor is described as what it is.** The report said
+  "the 0.011 a perfectly calibrated forecaster would score"; 0.011 is the *95th
+  percentile* of the null, a ceiling only 1 calibrated forecaster in 20 exceeds,
+  while the typical one scores 0.70–0.80x it. Describing a ceiling as a normal
+  value made every ratio read as less severe than it is — most consequentially in
+  the 1.0–1.5 band, where most real miscalibration sits between n = 200 and
+  n = 1000. Now: "1.92x the 0.011 that only 1 calibrated forecaster in 20
+  exceeds".
+
 - **The breakdown keys off whichever grouping the ledger populates**, not `kind:`
   alone. `kind:` and topic tags are the same feature wearing different names, so
   a human ledger groups by `markets`/`tech` and an agent ledger by
@@ -193,8 +202,11 @@ truthful one, and the reason is given below.
   tag) and 2 ≤ K ≤ 12 (`session:` covered that same ledger 100% and split it into
   66 groups — a 66-fold multiplicity penalty; `who:` covered it with K = 1, which
   is not a breakdown). `K` is printed in the header because it sets the
-  multiplicity-corrected alarm. Selection depends on tagging, never on outcomes,
-  so the evidence guarantee is untouched.
+  multiplicity-corrected alarm. The selection rule is deterministic and written
+  down — `kind:` first, else highest coverage with ties broken by namespace name
+  ascending — so nobody has to wonder whether the grouping showing the best result
+  is the one that got picked. Selection depends on tagging, never on outcomes, so
+  the evidence guarantee is untouched.
   JSON: `group_by`, `group_coverage`, `group_k` (replacing the implicit `kind:`).
 
 - **`scripts/check-banned-phrases.sh`** fails CI if "well calibrated" becomes

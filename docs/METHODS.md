@@ -295,6 +295,28 @@ is reserved for `MCB_RATIO_NOTABLE = 1.5`, measured against the null:
 | ≥ 1.25 | 0.010 | 0.205 | 0.998 |
 | **≥ 1.50** | **0.000** | 0.055 | 0.993 |
 
+Read the floor correctly: it is the **95th percentile** of the null — a ceiling
+only 1 calibrated forecaster in 20 exceeds — *not* what a calibrated forecaster
+typically scores, which is `0.70–0.80x` it across n = 100..1000. Describing it as
+a normal value would make every ratio read as less severe than it is, which
+matters most in the 1.0–1.5 band. The report says "1.92x the 0.011 that only 1
+calibrated forecaster in 20 exceeds" for exactly that reason.
+
+The band below the prose cut is transient, and is meant to stay silent:
+
+| n | median ratio (diffuse) | P(≥ 1.5) prose | P(1.0–1.5) silent | calibrated median |
+|---|---|---|---|---|
+| 100 | 0.87 | 0.025 | 0.258 | 0.70 |
+| 200 | 0.95 | 0.033 | 0.408 | 0.73 |
+| 500 | 1.25 | 0.250 | 0.542 | 0.75 |
+| 1000 | 1.56 | 0.567 | 0.433 | 0.80 |
+
+It peaks around n = 500 and drains upward as cases graduate into prose; by
+n = 1000 the threshold catches about three fifths of diffuse miscalibration with
+**no false prose at any n**. At moderate n the band holds calibrated forecasters
+as well as drifting ones, so annotating it would assert more than the data
+supports — the ratio is printed and the prose stays quiet.
+
 **Consequently the report never renders "no evidence of miscalibration" as "you
 are calibrated."** It used to: at n ≥ 50 the verdict line read `WELL CALIBRATED`,
 the badge read `Well calibrated`, and the cat showed its happiest face. Measured
@@ -330,6 +352,20 @@ Two bars, and the report says which one a collapsed section missed:
   groups — a 66-fold penalty and an unreadable table; `who:` covers 100% with
   `K = 1`, which is not a breakdown at all. Bounding `K` excludes both without a
   hand-maintained list of "bookkeeping" namespaces.
+
+The selection rule, stated so nobody has to wonder whether the grouping showing
+the best result is the one that got picked:
+
+1. `kind:` when it meets both bars.
+2. Otherwise, among namespaces meeting both bars, **highest coverage wins, ties
+   broken by namespace name ascending**.
+3. Otherwise nothing is selected and the section collapses, naming which bar the
+   best candidate missed.
+
+Coverage and `K` are functions of tagging alone, never of outcomes, so validity
+holds either way; writing the rule down and sorting explicitly is what makes that
+checkable rather than merely true. Pinned by the tie-break case in
+`hn_scenarios::the_breakdown_keys_off_whatever_the_ledger_populates_or_says_why_not`.
 
 `K` is printed in the header (`By kind (K=2 groups · 100% covered)`) because it
 sets the multiplicity-corrected alarm, and a threshold nobody can see is a

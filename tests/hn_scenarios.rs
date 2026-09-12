@@ -1370,5 +1370,34 @@ fn the_breakdown_keys_off_whatever_the_ledger_populates_or_says_why_not() {
         )
     });
     assert_eq!(report_json(&both)["group_by"], "kind");
+
+    // (e) Ties are broken by namespace name, ascending — and the rule is pinned,
+    // not merely documented. Two namespaces, both covering the record, both with
+    // K = 2: nobody should have to wonder whether the one showing the nicer
+    // result is the one that got picked.
+    let tied = dir.join("tied.json");
+    build(&tied, 40, &|i| {
+        format!(
+            r#"["zeta:{}","alpha:{}"]"#,
+            if i % 2 == 0 { "p" } else { "q" },
+            if i % 2 == 0 { "x" } else { "y" }
+        )
+    });
+    let d = report_json(&tied);
+    assert_eq!(
+        d["group_by"], "alpha",
+        "equal coverage and equal K must resolve by name, ascending"
+    );
+    assert_eq!(d["group_k"].as_u64().unwrap(), 2);
+    // Order in the file must not change the answer.
+    let flipped = dir.join("flipped.json");
+    build(&flipped, 40, &|i| {
+        format!(
+            r#"["alpha:{}","zeta:{}"]"#,
+            if i % 2 == 0 { "x" } else { "y" },
+            if i % 2 == 0 { "p" } else { "q" }
+        )
+    });
+    assert_eq!(report_json(&flipped)["group_by"], "alpha");
     let _ = fs::remove_dir_all(&dir);
 }

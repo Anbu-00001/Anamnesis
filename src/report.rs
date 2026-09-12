@@ -175,6 +175,13 @@ pub const KIND_MIN_COVERAGE: f64 = 0.5;
 /// How many times its own noise floor the calibration error has to reach before
 /// the report says anything about it in prose.
 ///
+/// Note what the floor *is*: the **95th percentile** of the null, i.e. a ceiling
+/// only 1 calibrated forecaster in 20 exceeds — not what a calibrated forecaster
+/// typically scores: measured, the median calibrated ratio is `0.70-0.80` across
+/// n = 100..1000, never `1.0`. Describing it as a normal value makes every ratio
+/// read as less severe than it is, which matters most in the 1.0–1.5 band where
+/// most real miscalibration sits between n = 200 and n = 1000.
+///
 /// The floor is a **95th percentile**, so `mcb > floor` is a fixed-n test at
 /// α = 0.05: about one calibrated forecaster in twenty crosses it on any given
 /// look, and a well-calibrated user running `ana report` weekly will cross it
@@ -368,10 +375,24 @@ fn group_keys<'a>(c: &'a crate::model::Claim, ns: &'a str) -> impl Iterator<Item
 /// advertising a section it cannot fill. The demo's `markets`/`tech` become its
 /// breakdown; an agent's `tests-pass`/`bug-hypothesis` become its own.
 ///
+/// Selection rule, in full:
+///
+/// 1. `kind:` when it meets both bars — it is the namespace the agent workflow
+///    writes and the one the docs teach.
+/// 2. Otherwise, among namespaces meeting both bars, **highest coverage wins;
+///    ties are broken by namespace name, ascending**.
+/// 3. Otherwise nothing is selected and the section collapses, naming which bar
+///    the best candidate missed.
+///
+/// The bars are coverage ≥ [`KIND_MIN_COVERAGE`] and
+/// [`GROUP_MIN_K`] ≤ K ≤ [`GROUP_MAX_K`].
+///
 /// Selection depends on tagging behaviour, never on outcomes, so the evidence
-/// ordering and its guarantee are untouched. The chosen namespace and the group
-/// count `K` are both reported, because `K` sets the multiplicity-corrected alarm
-/// and a threshold nobody can see is a threshold nobody can check.
+/// ordering and its guarantee are untouched. It is spelled out and deterministic
+/// so that no one has to wonder whether the grouping showing the best result is
+/// the one that got picked. The chosen namespace and the group count `K` are both
+/// reported, because `K` sets the multiplicity-corrected alarm and a threshold
+/// nobody can see is a threshold nobody can check.
 fn pick_grouping(
     claims: &[crate::model::Claim],
     today: NaiveDate,
@@ -432,22 +453,26 @@ fn pick_grouping(
 
     // The best candidate we saw, so a collapsed section can say which of the two
     // bars it missed rather than reporting a number that reads as a contradiction.
-    let best_seen = scored
-        .iter()
-        .cloned()
-        .chain(std::iter::once((
-            "kind".to_string(),
-            kind_cov,
-            k_of("kind"),
-        )))
-        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.2.cmp(&a.2)));
+    let mut seen: Vec<(String, f64, usize)> = scored.clone();
+    seen.push(("kind".to_string(), kind_cov, k_of("kind")));
+    seen.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let best_seen = seen.into_iter().next();
 
-    let pick = scored
+    // **The rule, stated once:** among namespaces meeting both bars, the highest
+    // coverage wins; ties are broken by namespace name, ascending.
+    //
+    // It is written down and sorted explicitly rather than folded through a
+    // `max_by` because the property that matters is not which grouping is best —
+    // it is that nobody has to wonder whether the grouping showing the nicest
+    // result is the one that got picked. Coverage and `K` are both functions of
+    // tagging alone, never of outcomes, so the evidence ordering is untouched
+    // either way; determinism is what makes that checkable instead of merely true.
+    let mut eligible: Vec<(String, f64, usize)> = scored
         .into_iter()
         .filter(|(_, c, k)| *c >= KIND_MIN_COVERAGE && (GROUP_MIN_K..=GROUP_MAX_K).contains(k))
-        // Most coverage wins; between equals, fewer groups, because K is the
-        // multiplicity penalty every per-group e-value pays.
-        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.2.cmp(&a.2)));
+        .collect();
+    eligible.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
+    let pick = eligible.into_iter().next();
 
     match pick {
         Some((ns, c, k)) => (Some(ns), c, k),
@@ -1451,14 +1476,17 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 Some(floor) if floor > 0.0 => {
                     let _ = writeln!(
                         out,
-                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   {:.2}x the {floor:.3} a perfectly calibrated forecaster would score making these same calls",
+                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   {:.2}x the {floor:.3} that only 1 calibrated forecaster in 20 exceeds on these same calls",
                         mcb / floor
                     );
                 }
-                Some(floor) => {
+                // A zero floor means every calibrated resample scored zero
+                // miscalibration — too few calls for the comparison to mean
+                // anything, so no ratio is offered.
+                Some(_) => {
                     let _ = writeln!(
                         out,
-                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   against a {floor:.3} noise floor on these same calls"
+                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   too few graded calls for a meaningful noise floor yet"
                     );
                 }
                 None => {

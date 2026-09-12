@@ -52,3 +52,27 @@ for cut in (1.0, 1.25, 1.5, 2.0, 2.5):
     print(f"  P(ratio >= {cut:.2f}) under the null = {np.mean(c >= cut):.3f}"
           f"   | diffuse = {np.mean(ratios['diffuse'] >= cut):.3f}"
           f"   | sharp = {np.mean(ratios['sharp'] >= cut):.3f}")
+
+
+# ── how the 1.0-1.5 band behaves as the record grows ────────────────────────
+#
+# The band the prose threshold leaves silent is transient: it peaks around
+# n=500 and drains upward as cases graduate into prose. It should stay silent —
+# at moderate n it holds calibrated forecasters as well as drifting ones, so
+# annotating it would assert more than the data supports.
+print()
+print("the silent band as n grows:")
+def ratio(n, mode, rng):
+    p = rng.uniform(0.05, 0.95, n)
+    truth = p if mode == "calibrated" else 0.5 + 0.7*(p-0.5)
+    y = (rng.uniform(size=n) < truth).astype(float)
+    pl, yl = p.tolist(), y.tolist()
+    fl = ana.mcb_null_quantile(pl, yl, DRAWS, Q, SEED)
+    return ana.corp_brier(pl, yl).mcb / fl if fl and fl > 0 else np.nan
+REPS = 120
+print(f"{'n':>6} {'mode':<12} {'median':>7} {'P(>=1.5) prose':>15} {'P(1.0-1.5) silent':>18}")
+for n in (100, 200, 500, 1000):
+    for mode in ("diffuse", "calibrated"):
+        rng = np.random.default_rng(31)
+        r = np.array([ratio(n, mode, rng) for _ in range(REPS)])
+        print(f"{n:>6} {mode:<12} {np.median(r):>7.2f} {np.mean(r>=1.5):>15.3f} {np.mean((r>=1.0)&(r<1.5)):>18.3f}")

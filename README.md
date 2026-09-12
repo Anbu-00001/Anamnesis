@@ -171,7 +171,7 @@ ANAMNESIS — the shape of your judgement
 
   Decomposition  (Brier = Miscalibration − Discrimination + Uncertainty)
     miscalibration 0.065   calibration error      ↓ lower is better
-                   1.16x the 0.056 a perfectly calibrated forecaster would score making these same calls
+                   1.16x the 0.056 that only 1 calibrated forecaster in 20 exceeds on these same calls
     discrimination 0.037   sorting power          ↑ higher is better
     uncertainty    0.245   irreducible difficulty of your questions
     check          0.065 − 0.037 + 0.245 = 0.272  (= Brier, exactly — no bins, no tuning)
