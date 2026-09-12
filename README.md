@@ -1,11 +1,7 @@
 # Anamnesis
 
-<!-- TODO(human): one plain sentence — what this is and who it is for.
-     No "first", no superlatives, no adjectives you would not say out loud.
-     This sentence becomes the GitHub description too, so it has to be yours.
-     Delete this comment when you write it. -->
-
-**TODO(human)** — one-sentence description.
+A local CLI for logging predictions before the outcome and checking whether your
+"80% sure" comes true 80% of the time.
 
 [![CI](https://github.com/Anbu-00001/Anamnesis/actions/workflows/ci.yml/badge.svg)](https://github.com/Anbu-00001/Anamnesis/actions/workflows/ci.yml)
 
@@ -133,7 +129,10 @@ command's actual exit status. See [docs/AGENTS.md](docs/AGENTS.md).
 
 ## How this compares
 
-<!-- TODO(human): a sentence or two of your own around this table. -->
+Fatebook and Metaculus are better choices if you want to forecast with other
+people, and Fatebook is open source. Calibration quizzes are a quick check on
+trivia. This keeps a private record of the calls you make in your own work,
+including the ones your coding agent makes.
 
 | | Anamnesis | Fatebook | Metaculus | calibration quizzes |
 |---|---|---|---|---|
@@ -147,10 +146,23 @@ command's actual exit status. See [docs/AGENTS.md](docs/AGENTS.md).
 
 ## How this was built
 
-<!-- TODO(human): your own words, including an honest note about AI assistance.
-     This section is yours; do not let it be written for you. -->
+I built this with Claude Code. Claude wrote most of the code and most of these
+docs. My part was deciding what it should do and pushing back when Claude got it
+wrong.
 
-**TODO(human)**
+Claude was also the first user. While it worked, it logged its own predictions
+(things like "the tests pass on the first run") and resolved them once the
+answer came in, so the tool spent its development grading the thing that was
+building it.
+
+Before launch it went through a review that ran the binary the way a skeptical
+user would, instead of reading the source. It found three problems the test
+suite never caught. Revising a forecast after the outcome could earn a perfect
+score. A forecaster who was wrong in both directions was reported as calibrated,
+because the two kinds of error cancelled out. And 40 parallel writes could leave
+as few as 7 claims saved. All three are fixed. The CHANGELOG has the numbers
+from before, and `validation/repro.sh` runs each scenario against the current
+build.
 
 ## Documentation
 

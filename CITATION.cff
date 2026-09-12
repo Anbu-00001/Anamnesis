@@ -10,9 +10,6 @@ abstract: >-
   Runs offline with no model in the scoring path.
 type: software
 authors:
-  # TODO(human): confirm how you want to be credited here — this is your name on
-  # anything that cites the project. `alias` is the GitHub handle; add
-  # given-names / family-names, an ORCID, or an email if you want them public.
   - alias: Anbu-00001
     given-names: Anbu
 version: 0.4.0

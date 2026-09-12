@@ -264,3 +264,24 @@ also called `topic`: the selector maps both to one name and groups only the bare
 tags, so a ledger tagged `topic:markets` never gets a breakdown by those tags.
 Fixing it means choosing a display name for bare tags that cannot collide with a
 real prefix, which is a naming decision rather than a bug fix.
+
+---
+
+## Pass 4 (2026-09-13): the TODO(human) sections, written at the author's request
+
+The README's one-sentence description, the framing around the comparison table,
+and "How this was built" are written, and the description is mirrored into
+`FACTS.md` as the GitHub repository description (119 chars). The `CITATION.cff`
+author note is resolved, crediting `Anbu` (`Anbu-00001`). No `TODO(human)` marker
+remains in the README, `CITATION.cff` or `FACTS.md`.
+
+"How this was built" states plainly that Claude wrote most of the code and docs.
+Two things in it are the author's to confirm or correct, because only the author
+knows them: the proportion of the work that was Claude's, and who performed the
+pre-launch review, which the section deliberately leaves unattributed.
+
+The Fatebook facts in the comparison framing were re-checked against its
+repository: MIT-licensed, with Slack and Chrome integrations.
+
+HN's own rules still apply to what gets posted there: the title, the submission
+text and every comment are the author's to write.

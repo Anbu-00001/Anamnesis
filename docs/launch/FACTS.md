@@ -188,10 +188,9 @@ first impression.
 
 ## Repo metadata to set (human applies)
 
-- **Description** (≤ 120 chars) — TODO(human). It should be the same sentence as
-  the one at the top of the README, so the two cannot drift. A neutral fallback,
-  if you want one to edit rather than a blank page (97 chars):
-  `Log a forecast before you act, resolve it after, and see where your confidence is actually wrong.`
+- **Description** (119 chars), the same sentence as the top of the README so
+  the two cannot drift:
+  `A local CLI for logging predictions before the outcome and checking whether your "80% sure" comes true 80% of the time.`
 - **Topics:** `calibration`, `forecasting`, `brier-score`, `decision-making`,
   `cli`, `rust`, `mcp`, `claude-code`, `e-values`.
 - **Social preview:** 1280×640 derived from `docs/assets/card-dark.png`.
@@ -200,8 +199,8 @@ first impression.
 - Issue templates — **done**: `.github/ISSUE_TEMPLATE/bug.md` and
   `verdict-looks-wrong.md`, the latter asking for an `ana export --anonymize`
   ledger.
-- `CITATION.cff` — **done**, but the author block is `TODO(human)`: it carries
-  your name on anything that cites this.
+- `CITATION.cff` — **done**, crediting `Anbu` (`Anbu-00001`). Add a family name or
+  an ORCID if you want them on citations.
 
 ## Prior HN threads the human may choose to link
 
