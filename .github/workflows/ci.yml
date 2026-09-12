@@ -34,6 +34,11 @@ jobs:
         run: ./scripts/check-test-count.sh
       - name: Doc tests
         run: cargo test --doc
+      # Finding B arrived three times by three different routes. The phrase does
+      # not exist in the program; this keeps it that way.
+      - name: Banned phrases
+        if: matrix.os == 'ubuntu-latest'
+        run: ./scripts/check-banned-phrases.sh
 
   msrv:
     name: MSRV 1.89

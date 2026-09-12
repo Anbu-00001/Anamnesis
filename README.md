@@ -171,7 +171,7 @@ ANAMNESIS — the shape of your judgement
 
   Decomposition  (Brier = Miscalibration − Discrimination + Uncertainty)
     miscalibration 0.065   calibration error      ↓ lower is better
-                   above the 0.056 luck alone would produce on these same calls
+                   1.16x the 0.056 a perfectly calibrated forecaster would score making these same calls
     discrimination 0.037   sorting power          ↑ higher is better
     uncertainty    0.245   irreducible difficulty of your questions
     check          0.065 − 0.037 + 0.245 = 0.272  (= Brier, exactly — no bins, no tuning)
@@ -189,9 +189,6 @@ ANAMNESIS — the shape of your judgement
 
   Is it real?      e-value      1.8   (anytime-valid p ≤ 0.556)
                    no evidence of miscalibration in 35 graded calls — the test can still miss patterns; read the calibration error above for the SIZE of any error
-                   but your calibration error IS above its noise floor. the two checks disagree, and they fail in opposite directions:
-                   the e-process is strong on sharp patterns and weak on a gentle drift toward 50/50; the error above measures SIZE but one reading of it is a single look, not an anytime-valid test
-                   treat this as worth watching, not as settled either way — keep logging
                    35 of 35 graded calls counted, 2 ungraded priced in at their worst case (`ana list --due`)
                    that backlog is costing you a factor of 1.392 on the evidence — grading it is how you get it back
                    oldest is [9870c0] — resolve it, or void it if it was never answerable. an ungraded bold call costs more than a cautious one
@@ -219,6 +216,18 @@ ANAMNESIS — the shape of your judgement
     science           4    0.018     -0.125
     sports            3    0.337     +0.300
     crypto            2    0.265     +0.250
+
+  By topic            (K=9 groups · 100% covered · gap~ shrunk toward your overall rate)
+    topic               n    brier       gap      gap~
+    markets            14    0.253    +0.046    +0.058
+    tech                8    0.365    +0.181    +0.159
+    geopolitics         7    0.223    +0.021    +0.053
+    personal            6    0.344    +0.258    +0.207
+    ai                  5    0.381    +0.240    +0.183
+    health              4    0.105    +0.050    +0.111
+    science             4    0.018    -0.125    +0.061
+    sports              3    0.337    +0.300    +0.131
+    crypto              2    0.265    +0.250    +0.164
 
   Mind-changing    4 claim(s) you revised
     Brier of first guess 0.253  (GRADED)  →  Brier of final guess 0.215  (not graded)   (+0.038)

@@ -267,6 +267,34 @@ a statistic to its 95th percentile is a **fixed-n test**, and this program's who
 position is that fixed-n tests are invalid under the per-session peeking users
 actually do. So MCB-above-floor is a reading to watch, never a verdict.
 
+How often they disagree, at n = 200, 400 runs each
+([`validation/ratio.py`](../validation/ratio.py)):
+
+| forecaster | both quiet | MCB only | both fire |
+|---|---|---|---|
+| calibrated | 0.94 | **0.06** | 0.01 |
+| diffuse, ≤13.5 pts off | 0.48 | 0.26 | 0.24 |
+| sharp, 25 pts off | 0.00 | 0.00 | 1.00 |
+
+A disagreement reading is about as likely to come from a calibrated forecaster as
+from a miscalibrated one, so "worth watching, not settled either way" is the
+accurate statement rather than a hedge.
+
+**The 0.06 is arithmetic, not noise.** The floor is a 95th percentile, so a
+calibrated forecaster crosses it one look in twenty *by construction*, and anyone
+running `ana report` weekly crosses it within months with near certainty. That is
+the peeking problem again, in the instrument with no anytime-valid protection. So
+the crossing is not treated as an event at all: the report prints the **ratio** —
+`calibration error 0.019, floor 0.014, 1.35x` — which carries the size, MCB's
+entire job, and removes a threshold that repeated looking trips on its own. Prose
+is reserved for `MCB_RATIO_NOTABLE = 1.5`, measured against the null:
+
+| cut | calibrated | diffuse | sharp |
+|---|---|---|---|
+| ≥ 1.00 | 0.060 | 0.507 | 1.000 |
+| ≥ 1.25 | 0.010 | 0.205 | 0.998 |
+| **≥ 1.50** | **0.000** | 0.055 | 0.993 |
+
 **Consequently the report never renders "no evidence of miscalibration" as "you
 are calibrated."** It used to: at n ≥ 50 the verdict line read `WELL CALIBRATED`,
 the badge read `Well calibrated`, and the cat showed its happiest face. Measured
@@ -276,7 +304,36 @@ called that ledger well calibrated. This is finding B of the pre-launch audit
 arriving by a different road, and the fix is not softer wording: a claim of
 calibration now answers to **both** instruments, and when they disagree the report
 says so and says which is which. Pinned by
-`hn_scenarios::a_quiet_eprocess_never_speaks_for_the_calibration_error_too`.
+`hn_scenarios::a_quiet_eprocess_never_speaks_for_the_calibration_error_too`, and
+by `scripts/check-banned-phrases.sh` in CI: finding B arrived three times by three
+different routes — the confidence gap, the verdict state table via a −1e-15
+direction, and `label()` keying on `n` alone — so the phrase is now absent from
+the program by construction rather than by care.
+
+### 3d. Which grouping the breakdown uses
+
+`kind:` and topic tags are the same feature wearing different names: both answer
+"where in my record am I wrong?". So the per-group breakdown keys off **whichever
+grouping the ledger actually populates** — `kind:` when it qualifies, otherwise the
+best-covered namespace, with bare tags treated as a `topic` pseudo-namespace. A
+human ledger gets `markets`/`tech`; an agent ledger gets
+`tests-pass`/`bug-hypothesis`. Selection depends on tagging behaviour, never on
+outcomes, so the evidence ordering and its guarantee are untouched.
+
+Two bars, and the report says which one a collapsed section missed:
+
+- **Coverage ≥ 50%.** A breakdown over a slice that happens to be tagged is a
+  self-selected sample one level down. Measured: 363 of 422 binary claims on a real
+  agent ledger carried no `kind:` tag.
+- **2 ≤ K ≤ 12.** Every per-group e-value pays a factor of `K` in its alarm
+  threshold. `session:` on that same ledger covers 100% of it and splits it into 66
+  groups — a 66-fold penalty and an unreadable table; `who:` covers 100% with
+  `K = 1`, which is not a breakdown at all. Bounding `K` excludes both without a
+  hand-maintained list of "bookkeeping" namespaces.
+
+`K` is printed in the header (`By kind (K=2 groups · 100% covered)`) because it
+sets the multiplicity-corrected alarm, and a threshold nobody can see is a
+threshold nobody can check.
 
 #### The horizon
 

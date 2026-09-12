@@ -104,12 +104,11 @@ fn pct(v: Option<f64>) -> String {
 /// The worst per-kind slice, but only once it clears the multiplicity-corrected
 /// bar — searching K subgroups for the worst one is K tests, not one.
 fn worst_kind(d: &ReportData) -> Option<String> {
-    // Naming an agent's "worst type" from a slice of the record that happens to
+    // Naming an agent's "worst group" from a slice of the record that happens to
     // be tagged is advice drawn from a self-selected sample. Measured: 363 of 422
-    // claims on a real ledger carried no `kind:` tag at all.
-    if d.kind_coverage < crate::report::KIND_MIN_COVERAGE {
-        return None;
-    }
+    // claims on a real ledger carried no `kind:` tag at all, so no grouping is
+    // selected there and this stays quiet.
+    let ns = d.group_by.as_deref()?;
     let threshold = d.kind_alarm_threshold?;
     let (row, e) = d
         .by_kind
@@ -123,8 +122,10 @@ fn worst_kind(d: &ReportData) -> Option<String> {
         None => "miscalibrated",
     };
     Some(format!(
-        "  worst type: kind:{} is really {dir} (e={e:.0}, n={}) — trust those calls least",
-        row.tag, row.n
+        "  worst group: {ns}:{} is really {dir} (e={e:.0}, n={}, K={}) — trust those calls least",
+        row.tag,
+        row.n,
+        d.by_kind.len()
     ))
 }
 

@@ -174,13 +174,33 @@ truthful one, and the reason is given below.
   JSON/HTML: the card's `data-severity="well-calibrated"` token is now
   `"no-miscalibration-found"` (no stylesheet keys off it).
 
-- **The per-`kind:` breakdown described a self-selected slice.** On a real
-  426-claim ledger, **363 of 422** binary claims carried no `kind:` tag, so the
-  per-kind table, the per-kind e-values and the hook's "worst type" line all keyed
-  off a field 86% of the data did not have. Below 50% coverage the section now
-  collapses to one line naming the coverage and how to fill it, and the hook stays
-  quiet rather than naming a worst type from an eighth of the record.
-  JSON: `kind_coverage`.
+- **The calibration error no longer crosses a threshold; it reports a ratio.**
+  The noise floor is a 95th percentile, so `mcb > floor` is a fixed-n test at
+  α = 0.05 — a calibrated forecaster crosses it one look in twenty (measured
+  0.060), and anyone reading the report weekly crosses it within months with near
+  certainty. That is the peeking problem in the one instrument with no
+  anytime-valid protection. The report now prints `1.35x the 0.014 a perfectly
+  calibrated forecaster would score`, and prose is reserved for ratios ≥ 1.5,
+  whose null rate measured 0.000 against 0.055 for diffuse and 0.993 for sharp
+  miscalibration (`validation/ratio.py`). The cat no longer flickers with it
+  either.
+
+- **The breakdown keys off whichever grouping the ledger populates**, not `kind:`
+  alone. `kind:` and topic tags are the same feature wearing different names, so
+  a human ledger groups by `markets`/`tech` and an agent ledger by
+  `tests-pass`/`bug-hypothesis`. Two bars, and a collapsed section says which it
+  missed: coverage ≥ 50% (363 of 422 claims on a real ledger carried no `kind:`
+  tag) and 2 ≤ K ≤ 12 (`session:` covered that same ledger 100% and split it into
+  66 groups — a 66-fold multiplicity penalty; `who:` covered it with K = 1, which
+  is not a breakdown). `K` is printed in the header because it sets the
+  multiplicity-corrected alarm. Selection depends on tagging, never on outcomes,
+  so the evidence guarantee is untouched.
+  JSON: `group_by`, `group_coverage`, `group_k` (replacing the implicit `kind:`).
+
+- **`scripts/check-banned-phrases.sh`** fails CI if "well calibrated" becomes
+  reachable in non-test code. Finding B arrived three times by three different
+  routes — the confidence gap, the verdict state table via a −1e-15 direction, and
+  `label()` keying on `n` alone. The phrase is now absent by construction.
 
 - **`scripts/check-test-count.sh`** runs the suite and fails if the number of
   tests that *ran* drops below a pinned floor, wired into CI in place of the bare

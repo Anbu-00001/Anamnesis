@@ -140,15 +140,23 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    last. `sample_final` exists for display only. Scoring the final forecast let a
    claim logged at 0.5, updated to 0.99 and resolved YES score 0.000 and be
    congratulated for it.
-7. **One verdict** (`report::verdict`). The plain report, the cat, the badge, the
+7. **Never the words "well calibrated"** — `scripts/check-banned-phrases.sh`
+   fails CI if they become reachable. A quiet e-process is absence of evidence.
+   The two instruments have opposite blind spots: the e-process is strong on sharp
+   patterns and weak on gentle shrinkage toward 0.5; MCB against its floor measures
+   the size of an error but cannot establish it is real, and since that floor is a
+   95th percentile, crossing it is what a calibrated forecaster does one look in
+   twenty. So the report prints the **ratio**, not a crossing, and reserves prose
+   for `MCB_RATIO_NOTABLE`. This defect has arrived three times by three routes.
+8. **One verdict** (`report::verdict`). The plain report, the cat, the badge, the
    card, `--json`, the MCP `calibration` tool and the hooks all read it. They used
    to each key off the confidence gap, in which over- and under-confidence cancel:
    a ledger with a −0.520 Brier skill had a gap of −1e-15 and was announced as
    `[DIALED IN] · well calibrated`. Never derive a pass/fail from the gap.
-8. **Every mutating command holds the lock** across load and save
+9. **Every mutating command holds the lock** across load and save
    (`Cmd::mutates()`, `store::lock`). Without it, 40 parallel `ana add` calls left
    7–19 claims of 40, almost silently.
-9. **Tests as oracles**: the fast `auc` is validated against a self-evidently
+10. **Tests as oracles**: the fast `auc` is validated against a self-evidently
    correct `O(n²)` `auc_pairwise` in tests. When optimising a metric, keep the slow
    version as a test oracle rather than deleting it.
 

@@ -171,6 +171,49 @@ pub const EVIDENCE_ALARM: f64 = 20.0;
 /// a new user's first report showed the same emptiness. Below this bar the
 /// section collapses to one line saying what is missing and how to fill it.
 pub const KIND_MIN_COVERAGE: f64 = 0.5;
+
+/// How many times its own noise floor the calibration error has to reach before
+/// the report says anything about it in prose.
+///
+/// The floor is a **95th percentile**, so `mcb > floor` is a fixed-n test at
+/// α = 0.05: about one calibrated forecaster in twenty crosses it on any given
+/// look, and a well-calibrated user running `ana report` weekly will cross it
+/// within months with near certainty. That is the peeking problem again, in the
+/// one instrument with no anytime-valid protection — so the crossing is not
+/// treated as an event. The **ratio** is printed instead, because reporting the
+/// size is MCB's entire job, and prose is reserved for ratios large enough that
+/// repeated looking will not produce them.
+///
+/// Measured at n = 200, 400 runs each (`validation/ratio.py`):
+///
+/// | cut | calibrated | diffuse (≤13.5 pts) | sharp (25 pts) |
+/// |---|---|---|---|
+/// | ≥ 1.00 | 0.060 | 0.507 | 1.000 |
+/// | ≥ 1.25 | 0.010 | 0.205 | 0.998 |
+/// | ≥ 1.50 | 0.000 | 0.055 | 0.993 |
+pub const MCB_RATIO_NOTABLE: f64 = 1.5;
+
+/// A breakdown needs at least two groups to be a breakdown, and few enough that
+/// the multiplicity correction leaves any power.
+///
+/// Every per-group e-value pays a factor of `K` in its alarm threshold, so a
+/// grouping with `K = 66` — which is what `session:` produces on a real agent
+/// ledger, at 100% coverage — buys a 66-fold penalty and an unreadable table.
+/// `who:` sits at the other end with `K = 1`, which is not a breakdown at all.
+/// Bounding `K` excludes both without a hand-maintained list of "bookkeeping"
+/// namespaces, and the bound is a property of the correction rather than a taste.
+pub const GROUP_MIN_K: usize = 2;
+pub const GROUP_MAX_K: usize = 12;
+
+/// The calibration error as a multiple of its own noise floor, when both exist.
+/// One definition, so the report, the cat and the plain view cannot disagree
+/// about how big the error is.
+fn mcb_ratio(d: &ReportData) -> Option<f64> {
+    match (d.mcb, d.mcb_null_q95) {
+        (Some(m), Some(f)) if f > 0.0 => Some(m / f),
+        _ => None,
+    }
+}
 /// How far a directional (yes/no) lean has to run before it is the headline
 /// rather than a footnote.
 const BIAS_DOMINATES: f64 = 0.1;
@@ -289,19 +332,132 @@ fn kind_evidence_order<'a>(
     claims: &'a [crate::model::Claim],
     today: NaiveDate,
     tag: Option<&str>,
+    ns: &'a str,
 ) -> Vec<Vec<(&'a str, Sample)>> {
     crate::evidence::binary_evidence_claims(claims, today, tag)
         .into_iter()
         .filter_map(|c| {
             let s = c.evidence_sample()?;
-            Some(
-                c.tags
-                    .iter()
-                    .filter_map(|t| t.strip_prefix("kind:").map(|k| (k, s)))
-                    .collect(),
-            )
+            Some(group_keys(c, ns).map(|k| (k, s)).collect())
         })
         .collect()
+}
+
+/// The pseudo-namespace for bare tags — ones with no `prefix:`. A human ledger
+/// tags `markets` and `tech`; an agent ledger tags `kind:tests-pass`. Both answer
+/// "where in my record am I wrong", so both can drive the same breakdown.
+pub const TOPIC_NS: &str = "topic";
+
+/// The group keys a claim contributes under namespace `ns`.
+fn group_keys<'a>(c: &'a crate::model::Claim, ns: &'a str) -> impl Iterator<Item = &'a str> {
+    c.tags.iter().filter_map(move |t| {
+        if ns == TOPIC_NS {
+            (!t.contains(':')).then_some(t.as_str())
+        } else {
+            t.strip_prefix(ns).and_then(|r| r.strip_prefix(':'))
+        }
+    })
+}
+
+/// Which grouping this ledger can actually support, and how well it covers it.
+///
+/// `kind:` is preferred because it is the namespace the agent workflow writes and
+/// the one the docs teach. When it is not there — measured on a real 426-claim
+/// ledger, **363 of 422** binary claims carried no `kind:` tag — the breakdown
+/// falls back to whichever namespace the ledger *does* populate, rather than
+/// advertising a section it cannot fill. The demo's `markets`/`tech` become its
+/// breakdown; an agent's `tests-pass`/`bug-hypothesis` become its own.
+///
+/// Selection depends on tagging behaviour, never on outcomes, so the evidence
+/// ordering and its guarantee are untouched. The chosen namespace and the group
+/// count `K` are both reported, because `K` sets the multiplicity-corrected alarm
+/// and a threshold nobody can see is a threshold nobody can check.
+fn pick_grouping(
+    claims: &[crate::model::Claim],
+    today: NaiveDate,
+    tag: Option<&str>,
+) -> (Option<String>, f64, usize) {
+    let graded: Vec<&crate::model::Claim> =
+        crate::evidence::binary_evidence_claims(claims, today, tag)
+            .into_iter()
+            .filter(|c| c.evidence_sample().is_some())
+            .collect();
+    if graded.is_empty() {
+        return (None, 0.0, 0);
+    }
+    let coverage = |ns: &str| -> f64 {
+        graded
+            .iter()
+            .filter(|c| group_keys(c, ns).next().is_some())
+            .count() as f64
+            / graded.len() as f64
+    };
+
+    let k_of = |ns: &str| -> usize {
+        let mut keys: Vec<&str> = graded.iter().flat_map(|c| group_keys(c, ns)).collect();
+        keys.sort_unstable();
+        keys.dedup();
+        keys.len()
+    };
+    let usable = |ns: &str| -> bool {
+        let k = k_of(ns);
+        (GROUP_MIN_K..=GROUP_MAX_K).contains(&k)
+    };
+
+    let kind_cov = coverage("kind");
+    if kind_cov >= KIND_MIN_COVERAGE && usable("kind") {
+        return (Some("kind".to_string()), kind_cov, k_of("kind"));
+    }
+
+    // Otherwise the best-covered namespace present, bare tags included.
+    let mut namespaces: Vec<String> = graded
+        .iter()
+        .flat_map(|c| c.tags.iter())
+        .map(|t| match t.split_once(':') {
+            Some((ns, _)) => ns.to_string(),
+            None => TOPIC_NS.to_string(),
+        })
+        .collect();
+    namespaces.sort();
+    namespaces.dedup();
+
+    let scored: Vec<(String, f64, usize)> = namespaces
+        .into_iter()
+        .map(|ns| {
+            let c = coverage(&ns);
+            let k = k_of(&ns);
+            (ns, c, k)
+        })
+        .collect();
+
+    // The best candidate we saw, so a collapsed section can say which of the two
+    // bars it missed rather than reporting a number that reads as a contradiction.
+    let best_seen = scored
+        .iter()
+        .cloned()
+        .chain(std::iter::once((
+            "kind".to_string(),
+            kind_cov,
+            k_of("kind"),
+        )))
+        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.2.cmp(&a.2)));
+
+    let pick = scored
+        .into_iter()
+        .filter(|(_, c, k)| *c >= KIND_MIN_COVERAGE && (GROUP_MIN_K..=GROUP_MAX_K).contains(k))
+        // Most coverage wins; between equals, fewer groups, because K is the
+        // multiplicity penalty every per-group e-value pays.
+        .max_by(|a, b| a.1.total_cmp(&b.1).then(b.2.cmp(&a.2)));
+
+    match pick {
+        Some((ns, c, k)) => (Some(ns), c, k),
+        // Nothing usable; report the best candidate so the message can say which
+        // bar it missed — coverage, or a group count the correction cannot carry.
+        None => match best_seen {
+            Some((_, c, k)) => (None, c, k),
+            None => (None, kind_cov, 0),
+        },
+    }
 }
 
 /// Decide the verdict from evidence alone.
@@ -475,10 +631,19 @@ pub struct ReportData {
     /// Per-`kind:` breakdown — calibration by *type* of prediction
     /// (estimate / tests-pass / bug-hypothesis …): the agent-facing view.
     pub by_kind: Vec<TagStat>,
-    /// Fraction of graded binary calls carrying a `kind:` tag. The per-kind
-    /// surfaces are suppressed below [`KIND_MIN_COVERAGE`] rather than describing
-    /// a self-selected slice as if it were the record.
-    pub kind_coverage: f64,
+    /// Which tag namespace the breakdown is grouped by — `"kind"` when that covers
+    /// the record, else the best-covered namespace, `"topic"` for bare tags.
+    /// `None` when nothing reaches [`KIND_MIN_COVERAGE`] and the section collapses.
+    pub group_by: Option<String>,
+    /// Fraction of graded binary calls carrying a tag in the chosen namespace (or
+    /// the best candidate's coverage when none qualified). The breakdown is
+    /// suppressed below [`KIND_MIN_COVERAGE`] rather than describing a
+    /// self-selected slice as if it were the record.
+    pub group_coverage: f64,
+    /// `K`, the number of groups. It sets the multiplicity-corrected alarm in
+    /// [`Self::kind_alarm_threshold`], so it is reported rather than implied — a
+    /// threshold nobody can see is a threshold nobody can check.
+    pub group_k: usize,
     pub mind_changing: Option<MindChange>,
     pub numeric: Option<NumericData>,
     /// Anytime-valid calibration e-value — evidence that you are *mis*calibrated,
@@ -686,13 +851,21 @@ impl ReportData {
             rows
         };
 
-        // By prediction kind (the `kind:` tag namespace) — shown regardless of any
-        // project/tag filter, because calibration-per-type is the agent's lever.
+        // The per-group breakdown, keyed off whichever grouping this ledger
+        // actually populates — `kind:` when it covers the record, otherwise the
+        // best-covered namespace, bare topic tags included. Shown regardless of
+        // any project/tag filter, because calibration-per-group is the lever.
+        let (group_by, group_coverage, group_k) =
+            pick_grouping(&ledger.claims, today, tag_filter.as_deref());
+        // No grouping selected means no rows: a table built from a namespace the
+        // selector rejected would be exactly the self-selected slice it rejected.
+        let group_ns = group_by.clone().unwrap_or_default();
         let by_kind = {
             let mut map: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
             // Built from the same outcome-independent order as the headline test,
-            // so a per-kind e-value carries the same guarantee the overall one does.
-            for kind in kind_evidence_order(&ledger.claims, today, tag_filter.as_deref()) {
+            // so a per-group e-value carries the same guarantee the overall one does.
+            for kind in kind_evidence_order(&ledger.claims, today, tag_filter.as_deref(), &group_ns)
+            {
                 for (k, s) in kind {
                     map.entry(k).or_default().push(s);
                 }
@@ -924,31 +1097,6 @@ impl ReportData {
             })
         };
 
-        // What fraction of the graded record is actually typed. Computed over the
-        // same claims the headline score uses, so it answers "of the calls being
-        // scored, how many could this breakdown see".
-        let kind_coverage = {
-            let graded: Vec<&crate::model::Claim> = ledger
-                .claims
-                .iter()
-                .filter(|c| {
-                    c.kind == crate::model::ClaimKind::Binary
-                        && tag_filter
-                            .as_deref()
-                            .is_none_or(|t| c.tags.iter().any(|x| x == t))
-                        && c.evidence_sample().is_some()
-                })
-                .collect();
-            if graded.is_empty() {
-                0.0
-            } else {
-                let typed = graded
-                    .iter()
-                    .filter(|c| c.tags.iter().any(|t| t.starts_with("kind:")))
-                    .count();
-                typed as f64 / graded.len() as f64
-            }
-        };
         let by_kind_len = by_kind.len();
         let by_kind_len_zero = by_kind_len == 0;
 
@@ -977,7 +1125,9 @@ impl ReportData {
             calibration,
             by_tag,
             by_kind,
-            kind_coverage,
+            group_by,
+            group_coverage,
+            group_k,
             mind_changing,
             numeric,
             eprocess,
@@ -1294,16 +1444,21 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             // on the same data it scores, so it is never zero even for a perfect
             // forecaster; this says how large it would be for one.
             match d.mcb_null_q95 {
-                Some(floor) if mcb <= floor => {
+                // One number, always in the same shape: the size, the floor it is
+                // measured against, and their ratio. No threshold to cross, because
+                // the floor is a 95th percentile and crossing it is what a
+                // calibrated forecaster does one look in twenty.
+                Some(floor) if floor > 0.0 => {
                     let _ = writeln!(
                         out,
-                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   at or below the {floor:.3} a perfectly calibrated forecaster would score making these same calls — nothing to see"
+                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   {:.2}x the {floor:.3} a perfectly calibrated forecaster would score making these same calls",
+                        mcb / floor
                     );
                 }
                 Some(floor) => {
                     let _ = writeln!(
                         out,
-                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   above the {floor:.3} luck alone would produce on these same calls"
+                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   against a {floor:.3} noise floor on these same calls"
                     );
                 }
                 None => {
@@ -1458,11 +1613,12 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         // cannot establish that it is real. When they disagree, say which is which
         // rather than letting the quiet one speak for both.
         if d.resolved_binary > 0 && d.verdict == Verdict::NoEvidenceOfMiscalibration {
-            let above_floor = matches!((d.mcb, d.mcb_null_q95), (Some(m), Some(f)) if m > f);
-            if above_floor {
+            let notable = mcb_ratio(&d).is_some_and(|r| r >= MCB_RATIO_NOTABLE);
+            if notable {
                 let _ = writeln!(
                     out,
-                    "                   but your calibration error IS above its noise floor. the two checks disagree, and they fail in opposite directions:"
+                    "                   but your calibration error is {:.2}x its noise floor. the two checks disagree, and they fail in opposite directions:",
+                    mcb_ratio(&d).unwrap_or(1.0)
                 );
                 let _ = writeln!(
                     out,
@@ -1605,34 +1761,71 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         // A breakdown over a self-selected slice is the same defect as a score
         // over a self-selected sample, so it stays collapsed until the tag
         // actually covers the record.
-        if !d.by_kind.is_empty() && d.kind_coverage < KIND_MIN_COVERAGE {
-            let _ = writeln!(
-                out,
-                "\n  By prediction kind   hidden: only {:.0}% of your graded calls carry a `kind:` tag,",
-                d.kind_coverage * 100.0
-            );
-            let _ = writeln!(
-                out,
-                "                       so a per-type breakdown would describe a self-selected slice."
-            );
-            let _ = writeln!(
-                out,
-                "                       add `--tags kind:<type>` when you log (tests-pass, estimate,"
-            );
-            let _ = writeln!(
-                out,
-                "                       bug-hypothesis, approach, compat) and this fills in at {:.0}%.",
-                KIND_MIN_COVERAGE * 100.0
-            );
+        if d.group_by.is_none() && d.resolved_binary > 0 {
+            if d.group_coverage < KIND_MIN_COVERAGE {
+                let _ = writeln!(
+                    out,
+                    "\n  By group             hidden: your best-covered tag reaches only {:.0}% of your graded",
+                    d.group_coverage * 100.0
+                );
+                let _ = writeln!(
+                    out,
+                    "                       calls, so a breakdown would describe a self-selected slice."
+                );
+                let _ = writeln!(
+                    out,
+                    "                       tag as you log — `--tags kind:<type>` (tests-pass, estimate,"
+                );
+                let _ = writeln!(
+                    out,
+                    "                       bug-hypothesis, approach, compat) or any topic tag — and this"
+                );
+                let _ = writeln!(
+                    out,
+                    "                       fills in at {:.0}% coverage.",
+                    KIND_MIN_COVERAGE * 100.0
+                );
+            } else {
+                let _ = writeln!(
+                    out,
+                    "\n  By group             hidden: your tags cover the record but split it into {} group{}.",
+                    d.group_k,
+                    if d.group_k == 1 { "" } else { "s" }
+                );
+                let _ = writeln!(
+                    out,
+                    "                       every group pays a factor of K in its alarm, so {}-{} is the usable",
+                    GROUP_MIN_K, GROUP_MAX_K
+                );
+                let _ = writeln!(
+                    out,
+                    "                       range — a per-session or per-user tag is bookkeeping, not a grouping."
+                );
+                let _ = writeln!(
+                    out,
+                    "                       add a `kind:` tag (tests-pass, estimate, bug-hypothesis, approach,"
+                );
+                let _ = writeln!(
+                    out,
+                    "                       compat) and the breakdown keys off that instead."
+                );
+            }
         } else if !d.by_kind.is_empty() {
             let _ = writeln!(
                 out,
-                "\n  By prediction kind   (gap~ = shrunk toward your overall rate; trust it at small n)"
+                "\n  By {:<17}(K={} groups · {:.0}% covered · gap~ shrunk toward your overall rate)",
+                d.group_by.as_deref().unwrap_or("group"),
+                d.by_kind.len(),
+                d.group_coverage * 100.0
             );
             let _ = writeln!(
                 out,
                 "    {:<16} {:>4}  {:>7}  {:>8}  {:>8}",
-                "kind", "n", "brier", "gap", "gap~"
+                d.group_by.as_deref().unwrap_or("group"),
+                "n",
+                "brier",
+                "gap",
+                "gap~"
             );
             for t in &d.by_kind {
                 let br = t
@@ -2054,9 +2247,12 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         }
         Verdict::NoEvidenceOfMiscalibration
             if n >= VERDICT_CONFIDENT_N
-                && matches!((d.mcb, d.mcb_null_q95), (Some(m), Some(f)) if m > f) =>
+                && mcb_ratio(d).is_some_and(|r| r >= MCB_RATIO_NOTABLE) =>
         {
-            "The 'is it real' test is quiet, but the SIZE of your calibration error is above what luck alone produces. The two checks disagree — worth watching, not settled.".to_string()
+            format!(
+                "The 'is it real' test is quiet, but the SIZE of your calibration error is {:.1}x its noise floor. The two checks disagree — worth watching, not settled.",
+                mcb_ratio(d).unwrap_or(1.0)
+            )
         }
         Verdict::NoEvidenceOfMiscalibration if n >= VERDICT_CONFIDENT_N => {
             "Neither check finds your confidence off — which is not the same as proof that it is right.".to_string()
@@ -2121,7 +2317,9 @@ const MOOD_WORST_EXCESS: f64 = 0.10;
 /// cancelled to a gap of −1e-15. A cat is the most screenshot-able thing this
 /// program produces, so it is the last place a cancelling statistic belongs.
 fn mood(d: &ReportData) -> Mood {
-    let above_floor = matches!((d.mcb, d.mcb_null_q95), (Some(m), Some(f)) if m > f);
+    // Not "is it over the floor": that happens to one calibrated forecaster in
+    // twenty on any given look, and the cat should not flicker with it.
+    let notable = mcb_ratio(d).is_some_and(|r| r >= MCB_RATIO_NOTABLE);
     let excess = match (d.mcb, d.mcb_null_q95) {
         (Some(m), Some(f)) => Some((m - f).max(0.0)),
         (Some(m), None) => Some(m.max(0.0)),
@@ -2158,7 +2356,7 @@ fn mood(d: &ReportData) -> Mood {
         // overconfident at n = 160 scored 90/100 and drew the happiest face in the
         // program while MCB was twice the floor. The friendliest cat answers to
         // BOTH instruments.
-        Some(s) if s >= 75 && d.evidence_n >= VERDICT_CONFIDENT_N && !above_floor => {
+        Some(s) if s >= 75 && d.evidence_n >= VERDICT_CONFIDENT_N && !notable => {
             (CAT_DIALED, "DIALED IN")
         }
         Some(s) if s >= 75 => (CAT_CLOSE, "NOTHING OFF YET"),

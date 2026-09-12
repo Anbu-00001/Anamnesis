@@ -402,9 +402,12 @@ fn tier3_multicalibration_and_conformal_recalibration() {
 
     let (o, _, ok) = ana(data, &["report"]);
     assert!(ok, "report should succeed:\n{o}");
+    // The breakdown keys off whichever grouping the ledger populates; here every
+    // claim carries a `kind:` tag, so it picks that one and says so, with K.
+    assert!(o.contains("By kind"), "per-kind table missing:\n{o}");
     assert!(
-        o.contains("By prediction kind"),
-        "per-kind table missing:\n{o}"
+        o.contains("K=2 groups"),
+        "K sets the multiplicity threshold, so it must be visible:\n{o}"
     );
     assert!(
         o.contains("'bug-hypothesis' is really overconfident"),

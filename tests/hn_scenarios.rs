@@ -1187,28 +1187,33 @@ fn revising_then_resolving_reports_the_first_forecast_score() {
 /// A forecaster drifting gently toward 50/50 is the e-process's blind spot, and
 /// the report used to let the quiet instrument speak for both.
 ///
-/// 10 points overconfident at n = 120: MCB 0.019 against a 0.014 noise floor,
-/// while the e-process sits at 5.4 — far under the alarm at 20. Every surface
-/// called such a ledger **"well calibrated"**: the verdict line, the badge, the
-/// card, and the happiest cat in the program. (At 11 points and n = 160 the
-/// numbers were 0.022 against 0.011 with e = 16.5 — same story, still quiet.)
+/// 12 points overconfident at n = 120: the calibration error is **1.78x** its own
+/// noise floor while the e-process sits at 14.5, under the alarm at 20. Every
+/// surface called such a ledger **"well calibrated"**: the verdict line, the
+/// badge, the card, and the happiest cat in the program.
 ///
 /// This is finding B of the original audit arriving by a different road. The fix
 /// is not softer wording, it is that a claim of calibration answers to BOTH
 /// checks: the e-process is strong on sharp patterns and weak on gentle
 /// shrinkage, while MCB-against-floor measures the size of an error but cannot
 /// establish it is real.
+/// Mirror of `report::MCB_RATIO_NOTABLE`. Kept here so the scenario fails loudly
+/// if the prose cut moves and this ledger stops exercising the disagreement.
+fn report_ratio_cut() -> f64 {
+    1.5
+}
+
 #[test]
 fn a_quiet_eprocess_never_speaks_for_the_calibration_error_too() {
     let dir = workdir("blindspot");
     let ledger = dir.join("ledger.json");
 
     // Deterministic: stated p cycles, truth is 11 points lower.
-    let mut st = 0xABCD_u64;
+    let mut st = 0x42_u64;
     let claims: Vec<(f64, bool)> = (0..120)
         .map(|i| {
             let p = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90][i % 7];
-            (p, splitmix(&mut st) < p - 0.10)
+            (p, splitmix(&mut st) < p - 0.12)
         })
         .collect();
     write_ledger(&ledger, &claims);
@@ -1222,8 +1227,17 @@ fn a_quiet_eprocess_never_speaks_for_the_calibration_error_too() {
 
     // The construction has to actually land in the blind spot, or the test is
     // vacuous: magnitude above noise, sequential test still quiet.
-    assert!(mcb > floor, "MCB {mcb} must exceed the floor {floor}");
+    assert!(
+        mcb / floor >= report_ratio_cut(),
+        "MCB {mcb} must reach the prose cut against the floor {floor} (ratio {:.2})",
+        mcb / floor
+    );
     assert!(e < 20.0, "the e-process must still be quiet, got {e}");
+    // And the ratio must be shown on its own, always — the size is MCB's job.
+    assert!(
+        run(&ledger, &["report"]).0.contains("x the "),
+        "the calibration error must be reported as a multiple of its floor"
+    );
     assert_eq!(d["verdict"], "no_evidence_of_miscalibration");
 
     // No surface may call this calibrated.
@@ -1247,7 +1261,7 @@ fn a_quiet_eprocess_never_speaks_for_the_calibration_error_too() {
     // And the disagreement is stated, not hidden behind the quiet check.
     let text = run(&ledger, &["report"]).0;
     assert!(
-        text.contains("above its noise floor"),
+        text.contains("its noise floor. the two checks disagree"),
         "the report must say the other instrument disagrees:\n{text}"
     );
     let plain = run(&ledger, &["report", "--plain"]).0;
@@ -1258,65 +1272,103 @@ fn a_quiet_eprocess_never_speaks_for_the_calibration_error_too() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// The per-kind breakdown describes only the calls that happen to be tagged, so
-/// below real coverage it describes a self-selected slice — the same defect as a
-/// calibration computed on a self-selected sample, one level down.
+/// The breakdown describes only the calls that happen to be tagged, so below real
+/// coverage it describes a self-selected slice — the same defect as a calibration
+/// computed on a self-selected sample, one level down.
 ///
 /// Measured on a real 426-claim agent ledger: 363 of 422 binary claims carried no
-/// `kind:` tag at all, so the per-kind table, the per-kind e-values and the hook's
-/// "worst type" line were all keyed off a field 86% of the data did not have.
+/// `kind:` tag, so the table, the per-group e-values and the hook's "worst group"
+/// line were keyed off a field 86% of the data did not have. It also carried
+/// `session:` on every claim, which covers the record perfectly and splits it into
+/// 66 groups — a 66-fold multiplicity penalty and an unreadable table. Both are
+/// refusals, for different reasons, and the report says which.
 #[test]
-fn the_per_kind_breakdown_stays_collapsed_until_the_tag_covers_the_record() {
-    let build = |path: &Path, tagged: usize, total: usize| {
+fn the_breakdown_keys_off_whatever_the_ledger_populates_or_says_why_not() {
+    // `tags` is the JSON array literal for each claim, by index.
+    let build = |path: &Path, total: usize, tags: &dyn Fn(usize) -> String| {
         let mut out = String::from("{\"claims\":[");
         for i in 0..total {
             if i > 0 {
                 out.push(',');
             }
             let day = 1 + (i % 27);
-            let tags = if i < tagged {
-                r#"["who:test","kind:tests-pass"]"#
-            } else {
-                r#"["who:test"]"#
-            };
             out.push_str(&format!(
-                r#"{{"id":"k{i:05}","statement":"claim {i}","created_at":"2024-01-{day:02}T00:00:00Z","resolve_by":"2024-03-{day:02}","tags":{tags},"kind":"binary","forecasts":[{{"at":"2024-01-{day:02}T00:00:00Z","prob":0.7}}],"resolution":{{"at":"2024-04-{day:02}T00:00:00Z","outcome":"{}"}}}}"#,
+                r#"{{"id":"k{i:05}","statement":"claim {i}","created_at":"2024-01-{day:02}T00:00:00Z","resolve_by":"2024-03-{day:02}","tags":{},"kind":"binary","forecasts":[{{"at":"2024-01-{day:02}T00:00:00Z","prob":0.7}}],"resolution":{{"at":"2024-04-{day:02}T00:00:00Z","outcome":"{}"}}}}"#,
+                tags(i),
                 if i % 10 < 7 { "true" } else { "false" }
             ));
         }
         out.push_str("]}");
         fs::write(path, out).unwrap();
     };
+    let dir = workdir("grouping");
 
-    let dir = workdir("kindcov");
-
-    // 5 of 40 typed — a breakdown here would speak for an eighth of the record.
+    // (a) Thin coverage: 5 of 40 typed. A breakdown would speak for an eighth of
+    // the record, so it collapses and names the coverage.
     let sparse = dir.join("sparse.json");
-    build(&sparse, 5, 40);
+    build(&sparse, 40, &|i| {
+        if i < 5 {
+            format!(r#"["kind:{}"]"#, if i % 2 == 0 { "alpha" } else { "beta" })
+        } else {
+            "[]".to_string()
+        }
+    });
     let d = report_json(&sparse);
-    assert!((d["kind_coverage"].as_f64().unwrap() - 0.125).abs() < 1e-9);
+    assert!(d["group_by"].is_null(), "nothing should be selected");
+    assert!((d["group_coverage"].as_f64().unwrap() - 0.125).abs() < 1e-9);
+    assert_eq!(d["by_kind"].as_array().unwrap().len(), 0, "and no rows");
     let text = run(&sparse, &["report"]).0;
+    assert!(text.contains("By group             hidden"), "{text}");
     assert!(
-        text.contains("By prediction kind   hidden"),
-        "the table must stay collapsed:\n{text}"
+        text.contains("% of your graded"),
+        "names the coverage:\n{text}"
     );
-    assert!(
-        text.contains("% of your graded calls carry a `kind:` tag"),
-        "and say how thin the coverage is:\n{text}"
-    );
-    assert!(text.contains("--tags kind:"), "and how to fix it:\n{text}");
 
-    // 30 of 40 typed — now it is describing the record, so it opens.
-    let dense = dir.join("dense.json");
-    build(&dense, 30, 40);
-    let text = run(&dense, &["report"]).0;
+    // (b) Full coverage, useless K: `session:` tags every claim and splits it 40
+    // ways. Every group pays a factor of K in its alarm, so this is a refusal too
+    // — but for the opposite reason, and the report must not say "coverage".
+    let shattered = dir.join("shattered.json");
+    build(&shattered, 40, &|i| format!(r#"["session:day-{i}"]"#));
+    let d = report_json(&shattered);
+    assert!(d["group_by"].is_null());
+    assert_eq!(d["group_coverage"].as_f64().unwrap(), 1.0, "fully covered");
+    assert_eq!(d["group_k"].as_u64().unwrap(), 40);
+    let text = run(&shattered, &["report"]).0;
     assert!(
-        text.contains("By prediction kind   (gap~"),
-        "past the coverage bar the breakdown appears:\n{text}"
+        text.contains("split it into 40 groups"),
+        "the K reason, not the coverage one:\n{text}"
     );
     assert!(
-        !text.contains("hidden"),
-        "and no longer apologises for itself:\n{text}"
+        !text.contains("% of your graded"),
+        "must not blame coverage when coverage is perfect:\n{text}"
     );
+
+    // (c) A human ledger with bare topic tags and no `kind:` at all still gets a
+    // breakdown — the demo's `markets`/`tech` are the same feature wearing a
+    // different name.
+    let topical = dir.join("topical.json");
+    build(&topical, 40, &|i| {
+        format!(r#"["{}"]"#, ["markets", "tech", "sports"][i % 3])
+    });
+    let d = report_json(&topical);
+    assert_eq!(d["group_by"], "topic", "falls back to bare tags");
+    assert_eq!(d["group_k"].as_u64().unwrap(), 3);
+    let text = run(&topical, &["report"]).0;
+    assert!(text.contains("By topic"), "{text}");
+    assert!(
+        text.contains("K=3 groups"),
+        "K sets the alarm, so it is shown:\n{text}"
+    );
+
+    // (d) `kind:` wins whenever it qualifies, even against a fully-covering topic.
+    let both = dir.join("both.json");
+    build(&both, 40, &|i| {
+        format!(
+            r#"["{}","kind:{}"]"#,
+            ["markets", "tech", "sports"][i % 3],
+            if i % 2 == 0 { "estimate" } else { "approach" }
+        )
+    });
+    assert_eq!(report_json(&both)["group_by"], "kind");
     let _ = fs::remove_dir_all(&dir);
 }
