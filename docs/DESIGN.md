@@ -1,6 +1,4 @@
-# Design choices
-
-# Anamnesis
+# Design notes
 
 > *"The first principle is that you must not fool yourself — and you are the easiest person to fool."* — Richard Feynman
 
@@ -26,23 +24,24 @@ Anamnesis removes the friction and holds up the mirror.
 
 ## The loop
 
-You only ever do four things — **log, revise, resolve, act**. The engine does the rest, and the lesson feeds back into the next prediction.
+You only ever do four things: log a belief, revise it, resolve it, and act on
+what the record says. The engine does the rest, and the lesson feeds back into
+the next prediction.
 
-```mermaid
-flowchart LR
-    A["📝 <b>add</b><br/>belief · probability · why<br/><i>before the outcome is known</i>"] --> B["✏️ <b>update</b><br/>revise as evidence arrives<br/><i>old forecast kept, never overwritten</i>"]
-    B --> C(("reality<br/>speaks"))
-    C --> D["✅ <b>resolve</b><br/>+ a post-mortem note"]
-    D --> E["🪞 <b>report</b><br/>Brier · calibration · discrimination<br/>· is it real? · the correction"]
-    E --> F["🎯 <b>decide</b><br/>proceed / verify / abstain"]
-    F -.->|plan with your real over/under-confidence| A
+```
+ana add      belief, probability, and why        before the outcome is known
+ana update   revise as evidence arrives          the old forecast is kept
+ana resolve  once reality answers                with a post-mortem note
+ana report   Brier, calibration, discrimination  is it real, and the correction
+ana decide   proceed / verify / abstain          corrected by your track record
 ```
 
-Everything is *append-only* and timestamped, so the record of what you believed — and how sure — survives your own hindsight.
+Everything is append-only and timestamped, so the record of what you believed,
+and how sure you were, survives your own hindsight. The headline score grades the
+**first** forecast on each claim, which is what makes `update` safe to use freely:
+revising is read as learning something, never as having been right all along.
 
 ---
-
-## Choices
 
 ## Design choices
 
@@ -53,9 +52,7 @@ Everything is *append-only* and timestamped, so the record of what you believed 
 
 ---
 
-## Limitations
-
-## Limitations & where it could go
+## Limitations, and where it could go
 
 - Full distributional forecasts (a whole predictive distribution, not a single interval) and multi-category outcomes. Note CRPS is *deliberately not* added: for the interval format Anamnesis actually logs, the Winkler interval score already **is** its specialization (the weighted interval score converges to CRPS as you add quantile levels), so a CRPS over an *assumed* distribution shape would be more math for no new information — it would only fool you that you'd recorded a distribution you didn't.
 - A TUI for review, and a small reliability-diagram plot.

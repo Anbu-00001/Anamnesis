@@ -1401,3 +1401,478 @@ fn the_breakdown_keys_off_whatever_the_ledger_populates_or_says_why_not() {
     assert_eq!(report_json(&flipped)["group_by"], "alpha");
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ──────────────────────────── the flagship output ───────────────────────────
+
+/// `ana demo` is the most-viewed output this project has, and it lands at
+/// **1.16x** the noise floor — inside the 1.0–1.5 band where the report
+/// deliberately prints the ratio and says nothing further.
+///
+/// That is a decision, not an accident, and this test is where the decision
+/// lives so it cannot quietly stop being true:
+///
+/// 1. The corrected phrasing carries the meaning on its own — "1.16x the 0.056
+///    that only 1 calibrated forecaster in 20 exceeds" is not a number a reader
+///    can mistake for normal, which is precisely what the old "a perfectly
+///    calibrated forecaster would score" wording got wrong.
+/// 2. A ratio between 1.0 and 1.5 around n = 500 is the *modal* presentation of
+///    real drift (`validation/ratio.py`). A demo tuned to read cleanly would be
+///    less representative of what a user actually sees, not more.
+/// 3. The fictional forecaster reading worse (1.16x) than this repo's own author
+///    (0.50x) is the right way round for a tool about not flattering yourself.
+///
+/// The numbers are stable: the demo ledger is fixed, `MCB_NULL_SEED` is fixed,
+/// and the four claims still open on 2026-12-31 are *unresolved*, so when they
+/// come due they become priced gaps contributing no samples — MCB, the floor and
+/// the ratio are unchanged, and only the backlog cost moves (1.39x → 2.61x).
+#[test]
+fn the_demo_sits_in_the_silent_band_on_purpose() {
+    let out = Command::new(ANA)
+        .args(["--json", "demo"])
+        .output()
+        .expect("run ana demo");
+    assert!(out.status.success(), "ana demo must succeed");
+    let d: serde_json::Value = serde_json::from_slice(&out.stdout).expect("demo --json");
+
+    let (mcb, floor) = (
+        d["mcb"].as_f64().unwrap(),
+        d["mcb_null_q95"].as_f64().unwrap(),
+    );
+    let ratio = mcb / floor;
+    assert!(
+        (1.0..1.5).contains(&ratio),
+        "the flagship first-run output moved out of the silent band (ratio {ratio:.3}).\n\
+         That is a product decision, not a test to relax: either restore the demo\n\
+         ledger, or update this test and the reasoning above to say what the new\n\
+         state is and why it is better."
+    );
+    assert!((ratio - 1.157).abs() < 0.01, "ratio drifted: {ratio:.4}");
+
+    // Being in the band means the report prints the ratio and declines to
+    // interpret it. Both halves of that have to hold.
+    let text = String::from_utf8_lossy(
+        &Command::new(ANA)
+            .arg("demo")
+            .output()
+            .expect("run ana demo")
+            .stdout,
+    )
+    .to_string();
+    assert!(
+        text.contains("that only 1 calibrated forecaster in 20 exceeds"),
+        "the floor must be described as a ceiling, not a typical score:\n{text}"
+    );
+    assert!(
+        !text.contains("the two checks disagree"),
+        "no prose fires inside the band — annotating it would assert more than\n\
+         the data supports at this n:\n{text}"
+    );
+    assert_eq!(d["verdict"], "no_evidence_of_miscalibration");
+}
+
+// ─────────────── one grouping, one K: partitions, not names ───────────────
+
+/// Write `total` resolved, already-due claims, each tagged by `tags(i)` (a JSON
+/// array literal).
+fn write_tagged_ledger(path: &Path, total: usize, tags: &dyn Fn(usize) -> String) {
+    let mut out = String::from("{\"claims\":[");
+    for i in 0..total {
+        if i > 0 {
+            out.push(',');
+        }
+        let day = 1 + (i % 27);
+        out.push_str(&format!(
+            r#"{{"id":"g{i:05}","statement":"claim {i}","created_at":"2024-01-{day:02}T00:00:00Z","resolve_by":"2024-03-{day:02}","tags":{},"kind":"binary","forecasts":[{{"at":"2024-01-{day:02}T00:00:00Z","prob":0.7}}],"resolution":{{"at":"2024-04-{day:02}T00:00:00Z","outcome":"{}"}}}}"#,
+            tags(i),
+            if i % 10 < 7 { "true" } else { "false" }
+        ));
+    }
+    out.push_str("]}");
+    fs::write(path, out).unwrap();
+}
+
+/// The per-group section headings a report printed, in order: "By domain",
+/// "By kind", "By group" and so on.
+fn breakdown_headings(text: &str) -> Vec<String> {
+    text.lines()
+        .filter(|l| l.starts_with("  By "))
+        .map(|l| l.split_whitespace().take(2).collect::<Vec<_>>().join(" "))
+        .collect()
+}
+
+/// "By domain" and "By topic" once printed identical rows one after the other,
+/// because two code paths each fell back to bare tags independently. The first
+/// fix suppressed the table in the renderer when the chosen namespace was
+/// *named* `topic` — which missed the same duplication under any other name:
+/// `kind:alpha` alongside a bare `alpha` printed "By domain" and "By kind" with
+/// the same rows. Duplication is a property of the partition, not the label, so
+/// the selector now compares partitions, and one selector call feeds the table,
+/// `K` and the alarm.
+#[test]
+fn one_partition_is_one_breakdown_with_one_k_whatever_its_tags_are_called() {
+    let dir = workdir("partition");
+    let half = |i: usize| if i.is_multiple_of(2) { "alpha" } else { "beta" };
+
+    // (a) `kind:` and bare tags inducing the same split of every claim.
+    let a = dir.join("kind_and_bare.json");
+    write_tagged_ledger(&a, 40, &|i| format!(r#"["kind:{0}","{0}"]"#, half(i)));
+    let d = report_json(&a);
+    assert_eq!(d["group_by"], "kind", "kind represents its own partition");
+    assert_eq!(d["by_tag_merged_into_group"], true);
+    assert!(
+        d["by_tag"].as_array().unwrap().is_empty(),
+        "no second copy of the rows in JSON either"
+    );
+    let k = d["group_k"].as_u64().unwrap();
+    assert_eq!(k, 2);
+    assert_eq!(
+        k as usize,
+        d["by_kind"].as_array().unwrap().len(),
+        "K is the number of rows, not a separate recount"
+    );
+    assert_eq!(
+        d["kind_alarm_threshold"].as_f64().unwrap(),
+        20.0 * k as f64,
+        "and the multiplicity-corrected alarm uses that same K"
+    );
+    let text = run(&a, &["report"]).0;
+    assert_eq!(
+        breakdown_headings(&text),
+        vec!["By kind"],
+        "exactly one section:\n{text}"
+    );
+    assert!(text.contains("K=2 groups"), "{text}");
+
+    // (b) Two prefixed namespaces that always agree, and no `kind:`. `team` comes
+    // first in every claim, so file order cannot be what decides.
+    let b = dir.join("team_and_area.json");
+    write_tagged_ledger(&b, 40, &|i| {
+        format!(r#"["team:{0}-t","area:{0}-a"]"#, half(i))
+    });
+    let d = report_json(&b);
+    assert_eq!(d["group_by"], "area", "one partition, so the name decides");
+    assert_eq!(d["group_k"].as_u64().unwrap(), 2);
+    let text = run(&b, &["report"]).0;
+    assert_eq!(breakdown_headings(&text), vec!["By area"], "{text}");
+
+    // (c) Genuinely different partitions are both worth printing.
+    let c = dir.join("different.json");
+    write_tagged_ledger(&c, 42, &|i| {
+        format!(r#"["kind:{}","{}"]"#, half(i), ["p", "q", "r"][i % 3])
+    });
+    let d = report_json(&c);
+    assert_eq!(d["group_by"], "kind");
+    assert_eq!(d["by_tag_merged_into_group"], false);
+    assert_eq!(d["by_tag"].as_array().unwrap().len(), 3);
+    let text = run(&c, &["report"]).0;
+    assert_eq!(
+        breakdown_headings(&text),
+        vec!["By domain", "By kind"],
+        "{text}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ───────────────────── the hooks, and the engine behind them ─────────────────
+
+/// A ledger that gives every hook something to say: 30 graded `who:claude` calls
+/// for a standing line, one overdue ungraded call for Stop, and one open
+/// `kind:tests-pass` call in project `verify-slug` for the post-tool grader.
+fn write_hook_ledger(path: &Path) {
+    let mut claims = Vec::new();
+    for i in 0..30usize {
+        let day = 1 + (i % 27);
+        claims.push(format!(
+            r#"{{"id":"h{i:04}","statement":"call {i}","created_at":"2024-01-{day:02}T00:00:00Z","resolve_by":"2024-03-{day:02}","tags":["who:claude"],"kind":"binary","forecasts":[{{"at":"2024-01-{day:02}T00:00:00Z","prob":0.7}}],"resolution":{{"at":"2024-04-{day:02}T00:00:00Z","outcome":"{}"}}}}"#,
+            if i % 10 < 7 { "true" } else { "false" }
+        ));
+    }
+    claims.push(
+        r#"{"id":"overdue1","statement":"an overdue call","created_at":"2024-01-01T00:00:00Z","resolve_by":"2024-02-01","tags":["who:claude"],"kind":"binary","forecasts":[{"at":"2024-01-01T00:00:00Z","prob":0.6}]}"#
+            .to_string(),
+    );
+    claims.push(
+        r#"{"id":"testspass1","statement":"the suite passes","created_at":"2024-01-01T00:00:00Z","resolve_by":"2099-01-01","tags":["who:claude","kind:tests-pass","project:verify-slug"],"kind":"binary","forecasts":[{"at":"2024-01-01T00:00:00Z","prob":0.8}]}"#
+            .to_string(),
+    );
+    fs::write(path, format!("{{\"claims\":[{}]}}", claims.join(","))).unwrap();
+}
+
+/// Run `ana hook <event>` with `stdin` as the hook payload; return its stdout.
+fn drive_hook(
+    event: &str,
+    stdin: &str,
+    ledger: &Path,
+    home: &Path,
+    env: &[(&str, &str)],
+) -> String {
+    use std::io::Write;
+    use std::process::Stdio;
+    let mut cmd = Command::new(ANA);
+    cmd.args(["hook", event])
+        .env("ANAMNESIS_AGENT_DATA", ledger)
+        .env("HOME", home)
+        .env("USERPROFILE", home)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    let mut child = cmd.spawn().expect("spawn ana hook");
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().expect("ana hook");
+    String::from_utf8_lossy(&out.stdout).to_string()
+}
+
+/// For a whole release cycle, the hooks on the machine this was built on ran a
+/// 0.3.0 engine behind June-era scripts and greeted the agent in wording 0.4.0
+/// had removed — and nothing said so, because nothing in the output named the
+/// binary that wrote it. Every hook's first line now does.
+#[test]
+fn every_hook_names_the_engine_version_that_wrote_it() {
+    let dir = workdir("hookversion");
+    let home = dir.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let ledger = dir.join("agent.json");
+    write_hook_ledger(&ledger);
+    let cwd = dir.join("verify-slug");
+    fs::create_dir_all(&cwd).unwrap();
+    let cwd = cwd.display().to_string();
+    let stamp = format!("(ana {})", env!("CARGO_PKG_VERSION"));
+
+    let payload = |sid: &str, extra: serde_json::Value| {
+        let mut v = serde_json::json!({ "session_id": sid, "cwd": cwd.as_str() });
+        if let (Some(o), Some(e)) = (v.as_object_mut(), extra.as_object()) {
+            for (k, x) in e {
+                o.insert(k.clone(), x.clone());
+            }
+        }
+        v.to_string()
+    };
+    type HookCase<'a> = (&'a str, String, Vec<(&'a str, &'a str)>);
+    let cases: Vec<HookCase<'_>> = vec![
+        (
+            "session-start",
+            payload("v1", serde_json::json!({})),
+            vec![],
+        ),
+        (
+            "user-prompt",
+            payload("v2", serde_json::json!({})),
+            vec![("ANAMNESIS_INTROSPECT_EVERY", "1")],
+        ),
+        ("stop", payload("v3", serde_json::json!({})), vec![]),
+        // Last: grading the tests-pass claim changes the ledger.
+        (
+            "post-tool",
+            payload(
+                "v4",
+                serde_json::json!({
+                    "tool_input": { "command": "cargo test" },
+                    "tool_result_exit_code": 0
+                }),
+            ),
+            vec![],
+        ),
+    ];
+    for (event, input, env) in cases {
+        let out = drive_hook(event, &input, &ledger, &home, &env);
+        let v: serde_json::Value = serde_json::from_str(out.trim())
+            .unwrap_or_else(|e| panic!("{event} did not emit JSON ({e}):\n{out}"));
+        let ctx = v["hookSpecificOutput"]["additionalContext"]
+            .as_str()
+            .unwrap_or_else(|| panic!("{event} emitted no context:\n{out}"));
+        let first = ctx.lines().next().unwrap_or("");
+        assert!(
+            first.contains(&stamp),
+            "{event}: the first line must name the engine {stamp}:\n{ctx}"
+        );
+        let lower = ctx.to_lowercase();
+        assert!(
+            !lower.contains("well calibrated") && !lower.contains("well-calibrated"),
+            "{event}:\n{ctx}"
+        );
+    }
+
+    // And the post-tool hook really did grade from the exit status.
+    let after: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&ledger).unwrap()).unwrap();
+    let graded = after["claims"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|c| c["id"] == "testspass1")
+        .unwrap();
+    assert_eq!(graded["resolution"]["outcome"], "true");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Upgrading the plugin over an older binary used to reinstall the older binary:
+/// the installer copied whatever `ana` came first on PATH. And even with the right
+/// engine vendored, the hook launcher also took the first `ana` on PATH, so a
+/// stale binary there still won at run time. Both are exercised here the way a
+/// user meets them: install, then run the installed hook with the stale engine
+/// still first on PATH.
+#[cfg(unix)]
+#[test]
+fn an_upgrade_never_runs_a_stale_engine_from_path() {
+    use std::io::Write;
+    use std::os::unix::fs::PermissionsExt;
+    use std::process::Stdio;
+
+    let installer = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin/install.sh");
+    if !installer.exists() {
+        return;
+    }
+    let has = |tool: &str| {
+        Command::new("sh")
+            .arg("-c")
+            .arg(format!("command -v {tool} >/dev/null 2>&1"))
+            .status()
+            .map(|s| s.success())
+            .unwrap_or(false)
+    };
+    if !has("jq") || !has("curl") || !(has("sha256sum") || has("shasum")) {
+        return; // the installer itself requires these
+    }
+    let target = match (std::env::consts::OS, std::env::consts::ARCH) {
+        ("linux", "x86_64") => "x86_64-unknown-linux-gnu",
+        ("linux", "aarch64") => "aarch64-unknown-linux-gnu",
+        ("macos", "x86_64") => "x86_64-apple-darwin",
+        ("macos", "aarch64") => "aarch64-apple-darwin",
+        _ => return,
+    };
+
+    let dir = workdir("stale-engine");
+    let (rel, home, stale) = (dir.join("rel"), dir.join("home"), dir.join("stalebin"));
+    for d in [&rel, &home, &stale] {
+        fs::create_dir_all(d).unwrap();
+    }
+    // An old engine, first on PATH. It answers every invocation with its version
+    // and nothing else, so if a hook ever runs it the output is not JSON.
+    let stub = stale.join("ana");
+    fs::write(&stub, "#!/bin/sh\necho 'ana 0.3.0'\n").unwrap();
+    fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    // The current engine, published as a release asset with its checksum.
+    let asset = format!("ana-{target}");
+    fs::copy(ANA, rel.join(&asset)).unwrap();
+    let sum = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "cd '{}' && (sha256sum {asset} 2>/dev/null || shasum -a 256 {asset})",
+            rel.display()
+        ))
+        .output()
+        .unwrap();
+    assert!(sum.status.success(), "could not hash the release asset");
+    fs::write(rel.join("sha256.sum"), sum.stdout).unwrap();
+
+    let path = format!(
+        "{}:{}",
+        stale.display(),
+        std::env::var("PATH").unwrap_or_default()
+    );
+    let out = Command::new("bash")
+        .arg(&installer)
+        .arg("--yes")
+        .env("HOME", &home)
+        .env("PATH", &path)
+        .env(
+            "ANAMNESIS_RELEASE_BASE",
+            format!("file://{}", rel.display()),
+        )
+        .output()
+        .unwrap();
+    let (so, se) = (
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr),
+    );
+    assert!(out.status.success(), "installer failed:\n{so}\n{se}");
+    assert!(
+        se.contains("not reusing it"),
+        "the installer must say why it ignored the engine on PATH:\n{se}"
+    );
+
+    let version = format!("ana {}", env!("CARGO_PKG_VERSION"));
+    let vendored = Command::new(home.join(".anamnesis/bin/ana"))
+        .arg("--version")
+        .output()
+        .unwrap();
+    assert_eq!(
+        String::from_utf8_lossy(&vendored.stdout).trim(),
+        version,
+        "the installer reinstalled the stale engine"
+    );
+
+    // Through the installed hook, with the stale engine STILL first on PATH.
+    let ledger = dir.join("agent.json");
+    write_hook_ledger(&ledger);
+    let mut child = Command::new("bash")
+        .arg(home.join(".anamnesis/hooks/session-start.sh"))
+        .env("HOME", &home)
+        .env("PATH", &path)
+        .env("ANAMNESIS_AGENT_DATA", &ledger)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(br#"{"session_id":"upgrade1"}"#)
+        .unwrap();
+    let hook = child.wait_with_output().unwrap();
+    let text = String::from_utf8_lossy(&hook.stdout);
+    assert!(
+        text.contains(&format!("(ana {})", env!("CARGO_PKG_VERSION"))),
+        "the installed hook ran the stale engine from PATH:\n{text}"
+    );
+
+    // The MCP launcher resolved its engine the same first-on-PATH way, so an
+    // agent's tools ran the stale engine too: no `update` tool, 0.3.0 wording.
+    let mut mcp = Command::new("bash")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin/mcp-server.sh"))
+        .env("HOME", &home)
+        .env("PATH", &path)
+        .env("ANAMNESIS_AGENT_DATA", &ledger)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    let init = serde_json::json!({
+        "jsonrpc": "2.0",
+        "id": 1,
+        "method": "initialize",
+        "params": {
+            "protocolVersion": "2025-06-18",
+            "clientInfo": { "name": "upgrade-test", "version": "1" },
+            "capabilities": {}
+        }
+    });
+    mcp.stdin
+        .take()
+        .unwrap()
+        .write_all(format!("{init}\n").as_bytes())
+        .unwrap();
+    let mcp_out = mcp.wait_with_output().unwrap();
+    let reply = String::from_utf8_lossy(&mcp_out.stdout);
+    let first: serde_json::Value = serde_json::from_str(reply.lines().next().unwrap_or(""))
+        .unwrap_or_else(|e| {
+            panic!("the MCP launcher did not run the current engine ({e}):\n{reply}")
+        });
+    assert_eq!(
+        first["result"]["serverInfo"]["version"],
+        env!("CARGO_PKG_VERSION"),
+        "the MCP launcher ran the stale engine from PATH:\n{reply}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

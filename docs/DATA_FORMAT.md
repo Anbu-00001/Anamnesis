@@ -4,10 +4,6 @@ One JSON file. Greppable, diffable, git-friendly, and intelligible without this
 program — a record of your own judgement should never be trapped in a format only
 one tool can read.
 
-## Data format
-
-One human-readable JSON file. Greppable, diffable, git-friendly, and intelligible without this program — because a record of your own mind should never be trapped in a format only one tool can read.
-
 ```json
 {
   "claims": [

@@ -17,7 +17,16 @@ Last verified: **2026-09-12**.
   them — it is `std` only.
 - **MSRV:** Rust 1.89 (`File::lock` is std from there).
 - **Release binary size:** 2.2 MB, x86_64 Linux, `--release` (measured 2026-09-12; it was 2.1 MB before this release's additions).
-- **Tests:** 119 — 86 unit, 8 CLI integration, 25 hostile-review scenarios, pinned by
+- **The demo's headline calibration error is `1.16x` its noise floor** — inside
+  the 1.0–1.5 band where the report prints the ratio and deliberately says nothing
+  more. Kept on purpose: the phrasing carries the meaning without prose, a ratio
+  in that band is the modal presentation of real drift, and the fictional
+  forecaster reading worse than this repo's author (`0.50x`) is the right way
+  round. Stable — the four claims open past 2026-12-31 are unresolved, so they
+  become priced gaps and move only the backlog cost (1.39x → 2.61x), not the
+  ratio. Pinned by `hn_scenarios::the_demo_sits_in_the_silent_band_on_purpose`.
+
+- **Tests:** 120 — 86 unit, 8 CLI integration, 26 hostile-review scenarios, pinned by
   `scripts/check-test-count.sh` in CI so a test that stops running is noticed, and
   `scripts/check-banned-phrases.sh` so "well calibrated" cannot come back. Plus
   36 Python binding tests. Verified 2026-09-12: wheel built with
@@ -88,6 +97,11 @@ Each has a script; none is from memory.
 
 ## Package names — RE-CHECK BEFORE PUBLISHING
 
+**Both manifests currently declare a name that is taken on both registries.**
+`Cargo.toml` and `bindings/python/pyproject.toml` both say `name = "anamnesis"`,
+so a publish of either cannot succeed as they stand. This has to be decided and
+changed before the tag, not at publish time.
+
 Checked 2026-09-12; 404 means free.
 
 | name | crates.io | PyPI |
@@ -106,6 +120,59 @@ curl -s -o /dev/null -w "%{http_code}\n" https://pypi.org/pypi/NAME/json
 Also avoid the Python **import** name `anamnesis`: it collides at import time with
 the existing PyPI project if a user has both installed.
 
+## Renaming the packages — what it touches
+
+`anamnesis-calibration` was still free on both registries on 2026-09-13.
+
+**Renaming only the distribution is not enough on PyPI.** The existing `anamnesis`
+1.0.4 ("Object serialisation to/from HDF5 and via MPI") installs a top-level module
+named exactly `anamnesis`. Verified from its wheel: `top_level.txt` reads
+`anamnesis`, and that is the wheel's only package directory. Two distributions both
+writing `site-packages/anamnesis/` means whichever installs second wins, and
+`import anamnesis` silently resolves to a serialisation library with the scoring
+functions gone.
+
+**Must change**
+
+| What | Where |
+|---|---|
+| crates.io package name | `Cargo.toml` `[package] name` |
+| Rust library name | every `anamnesis::` path (`src/main.rs`, `examples/`, `bindings/python/src/lib.rs`, a few docs) — or keep them by adding `[lib] name = "anamnesis"`. A library name may differ from its package name; a clash with the crates.io `anamnesis` crate would then fail loudly at build time rather than silently |
+| path dependency | `bindings/python/Cargo.toml`: `anamnesis = { path = "../.." }`, or `anamnesis = { package = "anamnesis-calibration", path = "../.." }` |
+| PyPI distribution name | `bindings/python/pyproject.toml` `[project] name` |
+| Python import name | `[tool.maturin] module-name = "anamnesis._core"`, the directory `bindings/python/python/anamnesis/`, `_core.pyi`, and the cdylib `[lib] name` in `bindings/python/Cargo.toml` |
+| `import anamnesis` | `bindings/python/tests/test_scoring.py`, `bindings/python/validation/validate_guarantees.py`, `validation/ratio.py`, `bindings/python/README.md`, `docs/PYTHON.md` |
+| `pip install anamnesis` | `bindings/python/README.md`, `bindings/python/validation/validate_guarantees.py` |
+| later | registry version badges, and the MCP registry's `server.json`, when they exist |
+
+**Must not change**
+
+- `ana`, the binary. It is a `[[bin]]` target, registered nowhere.
+- `~/.anamnesis/`, `~/.anamnesis.json` and every `ANAMNESIS_*` variable. These are
+  user data and its configuration; renaming them orphans every existing ledger.
+- The GitHub repository URL, the plugin and marketplace `name`, and the MCP
+  `serverInfo` name. Separate namespaces, not registry packages.
+
+`scripts/check-versions.sh` compares versions, not names, and is unaffected.
+
+**Why this stayed hidden:** `cargo install --git … --locked` installs from a path,
+not a registry name, so the one install command that was verified by running it
+would have kept working whatever the manifest said.
+
+## Release order — fixed, because the prebuilt install line 404s until a release exists
+
+1. Tag `v0.4.0-rc.1` and let the release pipeline run.
+2. Three-runner smoke test (fresh ubuntu, macos, windows) against **that exact
+   release**: the README's install line, then `ana demo`, then `ana report`.
+3. Tag `v0.4.0`; the pipeline runs again.
+4. Smoke test again, against `v0.4.0`.
+5. Post.
+
+Do not post on the day of the first successful release unless step 4 has run
+against that release. If the pipeline fails after the final tag, the README is
+wrong at the worst possible moment, and a fail-closed installer does not rescue a
+first impression.
+
 ## Comparison facts
 
 - **Fatebook** — open-source web app, Slack integration, Chrome extension, public
@@ -115,16 +182,26 @@ the existing PyPI project if a user has both installed.
 - **Calibration quizzes** — trivia-based, instant feedback, no record kept.
 - **Anamnesis** — local JSON ledger, CLI, agent hooks and MCP, a sequential
   evidence test, stake-aware `decide`.
-- **PredictionBook** — verify its current status before mentioning it. Not checked.
+- **PredictionBook** — **retired.** Read-only from 2024-01-10, and the site now
+  points visitors at Fatebook. Checked 2026-09-12. Do not put it in the
+  comparison table as if it were a live alternative.
 
 ## Repo metadata to set (human applies)
 
-- **Description** (≤ 120 chars) — TODO(human).
+- **Description** (≤ 120 chars) — TODO(human). It should be the same sentence as
+  the one at the top of the README, so the two cannot drift. A neutral fallback,
+  if you want one to edit rather than a blank page (97 chars):
+  `Log a forecast before you act, resolve it after, and see where your confidence is actually wrong.`
 - **Topics:** `calibration`, `forecasting`, `brier-score`, `decision-making`,
   `cli`, `rust`, `mcp`, `claude-code`, `e-values`.
 - **Social preview:** 1280×640 derived from `docs/assets/card-dark.png`.
-- Discussions on. `CONTRIBUTING.md`. Issue templates for "bug" and "the verdict
-  looks wrong" (asking for an anonymized ledger).
+- Discussions: still to enable.
+- `CONTRIBUTING.md` — **done**.
+- Issue templates — **done**: `.github/ISSUE_TEMPLATE/bug.md` and
+  `verdict-looks-wrong.md`, the latter asking for an `ana export --anonymize`
+  ledger.
+- `CITATION.cff` — **done**, but the author block is `TODO(human)`: it carries
+  your name on anything that cites this.
 
 ## Prior HN threads the human may choose to link
 

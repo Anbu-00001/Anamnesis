@@ -9,6 +9,31 @@ The scoring changes in this release are **breaking**: the same ledger will produ
 different numbers than 0.3.0 did. In every case the new number is the more
 truthful one, and the reason is given below.
 
+### Upgrading from 0.3.0
+
+Each of these went wrong on the machine this release was built on, and each will
+go wrong for anyone who upgrades the same way.
+
+- **`cargo install` does not replace an existing binary without `--force`**, and
+  it installs into `~/.cargo/bin`, which an older `ana` earlier on `PATH` (in
+  `~/.local/bin`, say) silently shadows. After upgrading, check `command -v ana`
+  and `ana --version`, not merely that the install succeeded.
+- **The 0.3.0 hook scripts computed their own verdict** from `confidence_gap`
+  with `jq`, and printed "well-calibrated overall" whenever the gap was small.
+  Every field they read is still in 0.4.0's JSON, so they keep working against a
+  0.4.0 engine and keep printing wording this release removed — upgrading the
+  binary does not change what the hooks say. Re-run `bash plugin/install.sh --yes`
+  so the hooks call `ana hook`. The installer recognises existing entries by the
+  expanded path of `~/.anamnesis/hooks`; if you registered hooks by hand under
+  another path or with a literal `$HOME`, remove those entries first, or each hook
+  will fire twice.
+- **The installer used to put the old engine back**: it copied whatever `ana`
+  came first on `PATH`. It now reuses a `PATH` engine only when its version
+  matches the plugin's, and says so when it does not.
+
+Every line a hook writes now starts with `(ana X.Y.Z)`, so whichever engine is
+actually running is visible in the session rather than inferred.
+
 ### Breaking — scoring
 
 - **The headline score now grades your FIRST forecast, not your last.**
@@ -159,6 +184,30 @@ truthful one, and the reason is given below.
   evidence bar as its happiest words: no `[DIALED IN]` below 50 graded calls.
 
 ### Fixed
+
+- **The same breakdown could print twice under two headings.** The descriptive
+  by-domain table and the tested breakdown each carried their own rule for "bare
+  tag", so a ledger grouped by bare tags printed "By domain" and "By topic" with
+  identical rows. A first fix suppressed the table when the chosen namespace was
+  *named* `topic`, which missed the same duplication under any other name: `kind:alpha`
+  alongside a bare `alpha` still printed "By domain" and "By kind" with the same
+  rows. Duplication is a property of the partition, not the label. The selector now
+  materialises each candidate grouping once, collapses candidates that induce the
+  same partition of the record before choosing, and one selector call feeds the
+  table, `K`, the multiplicity-corrected alarm and the hook. `K` is the chosen
+  grouping's row count and has no second definition.
+  JSON: `by_tag_merged_into_group`.
+
+- **Both launchers ran the first `ana` on `PATH`, not the right one.** The hook
+  launcher and the MCP launcher took the first engine they found, so an older
+  binary earlier on `PATH` shadowed the vendored one — the agent's session hooks
+  ran 0.3.0 wording and its MCP tools had no `update`. Both now run the newest
+  engine available; a newer engine always reads an older ledger.
+
+- **`scripts/check-banned-phrases.sh` now covers what ships under `plugin/`**, not
+  only `src/`: the 0.3.0 hook scripts are where "well-calibrated overall" actually
+  reached users, and the guard's `src/` scope could not have caught them.
+
 
 - **"No evidence of miscalibration" was rendered as "well calibrated."** At n ≥ 50
   the verdict line read `WELL CALIBRATED`, the badge read `Well calibrated`, the

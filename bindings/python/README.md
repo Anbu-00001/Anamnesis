@@ -12,8 +12,10 @@ implementation, cross-checked by the Rust unit tests, surfaced here.
 of the mainstream Python libraries bundle, in one place and with the
 calibration-vs-discrimination framing:
 
-- the **exact** Murphy decomposition `brier = reliability − resolution + uncertainty`
-  (grouped by *unique forecast value*, not range-binned — so the identity is exact, not approximate);
+- the **CORP decomposition** `brier = MCB − DSC + UNC`, fitted by isotonic
+  regression (pool-adjacent-violators), so the identity is exact with no bins and
+  no tuning parameter — plus the noise floor a perfectly calibrated forecaster
+  would produce on the same calls, which is what makes MCB readable;
 - the **Winkler interval score** + empirical **coverage** for numeric/credible intervals;
 - a **Wilson** score interval and **empirical-Bayes shrinkage** — the small-sample
   tools you actually want when an eval has *tens*, not thousands, of datapoints.

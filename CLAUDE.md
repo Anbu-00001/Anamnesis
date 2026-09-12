@@ -69,7 +69,11 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   comes from `report::verdict` so the hooks cannot disagree with the report. The
   PostToolUse hook auto-resolves `kind:tests-pass` claims **from the command's exit
   status**, recording `resolved_by: "auto"` — the part of a self-graded ledger that
-  does not rest on the agent's word.
+  does not rest on the agent's word. Every hook's first line names the engine that
+  wrote it (`(ana X.Y.Z)`), and both launchers (`plugin/hooks/_run.sh`,
+  `plugin/mcp-server.sh`) run the newest engine available rather than the first on
+  `PATH` — an older `ana` earlier on `PATH` once made every hook on a machine run
+  0.3.0 for a whole release cycle, silently.
 - [src/demo.rs](src/demo.rs) — the fictional demo ledger, shared by `ana demo` and
   `examples/seed.rs` so they cannot drift.
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
@@ -81,6 +85,12 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   estimates into the stored `because`. `Ledger::index_of` resolves id prefixes.
 - [src/store.rs](src/store.rs) — one JSON file, atomic write (temp + rename),
   missing file = empty ledger.
+- **Grouping** (in `src/report.rs`) — `pick_grouping` materialises each candidate
+  tag namespace once, collapses candidates that induce the same partition of the
+  record, then applies the documented rule. One selector result feeds the
+  breakdown table, `K`, the alarm threshold and the hook; `by_tag` is emptied when
+  it would repeat the chosen partition. Duplication is a property of the partition,
+  never of the namespace's name.
 - [src/report.rs](src/report.rs) — **compute once into `ReportData`, render five ways**
   (`render` = rich text, `render_json` = JSON, `render_plain` = plain-English bridge
   with a four-mood **calibration cat** `mood`, `render_html` = self-contained offline
@@ -141,7 +151,8 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    claim logged at 0.5, updated to 0.99 and resolved YES score 0.000 and be
    congratulated for it.
 7. **Never the words "well calibrated"** — `scripts/check-banned-phrases.sh`
-   fails CI if they become reachable. A quiet e-process is absence of evidence.
+   fails CI if they become reachable, in `src/` or in anything shipped under
+   `plugin/` (the 0.3.0 hook scripts are where the phrase actually reached users). A quiet e-process is absence of evidence.
    The two instruments have opposite blind spots: the e-process is strong on sharp
    patterns and weak on gentle shrinkage toward 0.5; MCB against its floor measures
    the size of an error but cannot establish it is real, and since that floor is a

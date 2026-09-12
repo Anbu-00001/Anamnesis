@@ -132,6 +132,12 @@ fn ymd(y: i32, m: u32, d: u32) -> NaiveDate {
 // scaffolding, not a hot path, so the clarity wins.
 #[allow(clippy::vec_init_then_push)]
 /// Build the demo ledger. Deterministic: the same claims, dates and ids every time.
+/// The demo ledger reports a calibration error of **1.16x** its noise floor,
+/// which sits inside the 1.0-1.5 band where the report prints the ratio and says
+/// nothing further. That is deliberate — see
+/// `hn_scenarios::the_demo_sits_in_the_silent_band_on_purpose` for the reasoning
+/// and the guard. Editing the claims below moves the most-viewed number this
+/// project has, so that test will tell you if you do.
 pub fn ledger() -> Ledger {
     let base = Utc.with_ymd_and_hms(2025, 1, 15, 10, 0, 0).unwrap();
 

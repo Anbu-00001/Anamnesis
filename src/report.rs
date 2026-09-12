@@ -333,29 +333,17 @@ impl Verdict {
     }
 }
 
-/// The per-`kind:` samples, in the same outcome-independent order the headline
-/// evidence test uses, so a per-kind e-value carries the same guarantee.
-fn kind_evidence_order<'a>(
-    claims: &'a [crate::model::Claim],
-    today: NaiveDate,
-    tag: Option<&str>,
-    ns: &'a str,
-) -> Vec<Vec<(&'a str, Sample)>> {
-    crate::evidence::binary_evidence_claims(claims, today, tag)
-        .into_iter()
-        .filter_map(|c| {
-            let s = c.evidence_sample()?;
-            Some(group_keys(c, ns).map(|k| (k, s)).collect())
-        })
-        .collect()
-}
-
 /// The pseudo-namespace for bare tags — ones with no `prefix:`. A human ledger
 /// tags `markets` and `tech`; an agent ledger tags `kind:tests-pass`. Both answer
 /// "where in my record am I wrong", so both can drive the same breakdown.
 pub const TOPIC_NS: &str = "topic";
 
 /// The group keys a claim contributes under namespace `ns`.
+///
+/// The one definition of "which groups is this claim in". The descriptive
+/// by-domain table and the tested breakdown both read it; they used to carry
+/// separate copies of the bare-tag rule, which is how the same rows came to be
+/// printed twice under two headings.
 fn group_keys<'a>(c: &'a crate::model::Claim, ns: &'a str) -> impl Iterator<Item = &'a str> {
     c.tags.iter().filter_map(move |t| {
         if ns == TOPIC_NS {
@@ -366,20 +354,101 @@ fn group_keys<'a>(c: &'a crate::model::Claim, ns: &'a str) -> impl Iterator<Item
     })
 }
 
-/// Which grouping this ledger can actually support, and how well it covers it.
+/// A grouping, materialised once: its namespace, how much of the record it
+/// covers, and the groups themselves, each holding its samples in evidence order
+/// so a per-group e-value carries the same guarantee as the headline one.
+///
+/// The table, `K`, the multiplicity-corrected alarm and the hook's "worst group"
+/// all read this one value. `K` is `groups.len()` and has no other definition, so
+/// the correction and the display cannot come from two different groupings.
+#[derive(Clone, Debug)]
+struct Grouping {
+    ns: String,
+    coverage: f64,
+    groups: BTreeMap<String, Vec<Sample>>,
+    /// The partition this grouping induces on the graded claims, with the labels
+    /// thrown away: each group as the sorted indices of its claims, and the groups
+    /// sorted. Two namespaces that tag the same claims together have the same
+    /// signature, whatever they call their groups.
+    signature: Vec<Vec<usize>>,
+}
+
+impl Grouping {
+    fn k(&self) -> usize {
+        self.groups.len()
+    }
+
+    fn usable(&self) -> bool {
+        self.coverage >= KIND_MIN_COVERAGE && (GROUP_MIN_K..=GROUP_MAX_K).contains(&self.k())
+    }
+}
+
+/// Materialise the grouping namespace `ns` induces on `graded`, which must already
+/// be in evidence order. `None` when no graded claim carries a tag in `ns`.
+fn materialise(graded: &[&crate::model::Claim], ns: &str) -> Option<Grouping> {
+    let mut groups: BTreeMap<String, Vec<Sample>> = BTreeMap::new();
+    let mut members: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    let mut covered = 0usize;
+    for (i, c) in graded.iter().enumerate() {
+        let Some(s) = c.evidence_sample() else {
+            continue;
+        };
+        let mut any = false;
+        for key in group_keys(c, ns) {
+            any = true;
+            groups.entry(key.to_string()).or_default().push(s);
+            members.entry(key.to_string()).or_default().push(i);
+        }
+        covered += usize::from(any);
+    }
+    if groups.is_empty() {
+        return None;
+    }
+    let mut signature: Vec<Vec<usize>> = members.into_values().collect();
+    for m in &mut signature {
+        m.sort_unstable();
+        m.dedup();
+    }
+    signature.sort();
+    Some(Grouping {
+        ns: ns.to_string(),
+        coverage: covered as f64 / graded.len() as f64,
+        groups,
+        signature,
+    })
+}
+
+/// What the selector decided, and enough about the best candidate for a
+/// collapsed section to say which bar it missed.
+#[derive(Clone, Debug, Default)]
+struct GroupingChoice {
+    chosen: Option<Grouping>,
+    /// Coverage and `K` of the chosen grouping, or of the best rejected one.
+    coverage: f64,
+    k: usize,
+    /// The bare-tag partition over the same claims. When it equals the chosen
+    /// partition, the descriptive by-domain table would repeat the breakdown.
+    topic_signature: Option<Vec<Vec<usize>>>,
+}
+
+/// Which grouping this ledger can actually support.
 ///
 /// `kind:` is preferred because it is the namespace the agent workflow writes and
 /// the one the docs teach. When it is not there — measured on a real 426-claim
 /// ledger, **363 of 422** binary claims carried no `kind:` tag — the breakdown
 /// falls back to whichever namespace the ledger *does* populate, rather than
-/// advertising a section it cannot fill. The demo's `markets`/`tech` become its
-/// breakdown; an agent's `tests-pass`/`bug-hypothesis` become its own.
+/// advertising a section it cannot fill.
 ///
 /// Selection rule, in full:
 ///
-/// 1. `kind:` when it meets both bars — it is the namespace the agent workflow
-///    writes and the one the docs teach.
-/// 2. Otherwise, among namespaces meeting both bars, **highest coverage wins;
+/// 0. Candidates that induce the **same partition** of the record are one
+///    candidate, represented by the first in preference order (`kind` first, then
+///    namespace name ascending). `kind:alpha` alongside a bare `alpha` on every
+///    claim is one grouping, not two; so are `area:` and `team:` when they always
+///    agree. Duplicates have identical coverage and `K`, so this changes no
+///    decision — it guarantees there is exactly one grouping to report, and one `K`.
+/// 1. `kind:` when it meets both bars.
+/// 2. Otherwise, among candidates meeting both bars, **highest coverage wins;
 ///    ties are broken by namespace name, ascending**.
 /// 3. Otherwise nothing is selected and the section collapses, naming which bar
 ///    the best candidate missed.
@@ -390,47 +459,19 @@ fn group_keys<'a>(c: &'a crate::model::Claim, ns: &'a str) -> impl Iterator<Item
 /// Selection depends on tagging behaviour, never on outcomes, so the evidence
 /// ordering and its guarantee are untouched. It is spelled out and deterministic
 /// so that no one has to wonder whether the grouping showing the best result is
-/// the one that got picked. The chosen namespace and the group count `K` are both
-/// reported, because `K` sets the multiplicity-corrected alarm and a threshold
-/// nobody can see is a threshold nobody can check.
+/// the one that got picked.
 fn pick_grouping(
     claims: &[crate::model::Claim],
     today: NaiveDate,
     tag: Option<&str>,
-) -> (Option<String>, f64, usize) {
-    let graded: Vec<&crate::model::Claim> =
-        crate::evidence::binary_evidence_claims(claims, today, tag)
-            .into_iter()
-            .filter(|c| c.evidence_sample().is_some())
-            .collect();
+) -> GroupingChoice {
+    let graded = crate::evidence::binary_evidence_claims(claims, today, tag);
     if graded.is_empty() {
-        return (None, 0.0, 0);
-    }
-    let coverage = |ns: &str| -> f64 {
-        graded
-            .iter()
-            .filter(|c| group_keys(c, ns).next().is_some())
-            .count() as f64
-            / graded.len() as f64
-    };
-
-    let k_of = |ns: &str| -> usize {
-        let mut keys: Vec<&str> = graded.iter().flat_map(|c| group_keys(c, ns)).collect();
-        keys.sort_unstable();
-        keys.dedup();
-        keys.len()
-    };
-    let usable = |ns: &str| -> bool {
-        let k = k_of(ns);
-        (GROUP_MIN_K..=GROUP_MAX_K).contains(&k)
-    };
-
-    let kind_cov = coverage("kind");
-    if kind_cov >= KIND_MIN_COVERAGE && usable("kind") {
-        return (Some("kind".to_string()), kind_cov, k_of("kind"));
+        return GroupingChoice::default();
     }
 
-    // Otherwise the best-covered namespace present, bare tags included.
+    // Every namespace present, bare tags included, in the preference order the
+    // rule fixes before any result is looked at: `kind` first, then by name.
     let mut namespaces: Vec<String> = graded
         .iter()
         .flat_map(|c| c.tags.iter())
@@ -439,48 +480,55 @@ fn pick_grouping(
             None => TOPIC_NS.to_string(),
         })
         .collect();
-    namespaces.sort();
+    namespaces.sort_by(|a, b| {
+        (a.as_str() != "kind")
+            .cmp(&(b.as_str() != "kind"))
+            .then(a.cmp(b))
+    });
     namespaces.dedup();
 
-    let scored: Vec<(String, f64, usize)> = namespaces
-        .into_iter()
-        .map(|ns| {
-            let c = coverage(&ns);
-            let k = k_of(&ns);
-            (ns, c, k)
-        })
-        .collect();
+    // One representative per induced partition: the first in preference order.
+    let mut candidates: Vec<Grouping> = Vec::new();
+    let mut topic_signature = None;
+    for ns in &namespaces {
+        let Some(g) = materialise(&graded, ns) else {
+            continue;
+        };
+        if ns.as_str() == TOPIC_NS {
+            topic_signature = Some(g.signature.clone());
+        }
+        if candidates.iter().all(|c| c.signature != g.signature) {
+            candidates.push(g);
+        }
+    }
 
-    // The best candidate we saw, so a collapsed section can say which of the two
-    // bars it missed rather than reporting a number that reads as a contradiction.
-    let mut seen: Vec<(String, f64, usize)> = scored.clone();
-    seen.push(("kind".to_string(), kind_cov, k_of("kind")));
-    seen.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    let best_seen = seen.into_iter().next();
+    // Ranking by coverage, then name, serves both rule 2 and the collapsed
+    // section's "best candidate".
+    let mut ranked: Vec<&Grouping> = candidates.iter().collect();
+    ranked.sort_by(|a, b| b.coverage.total_cmp(&a.coverage).then(a.ns.cmp(&b.ns)));
 
-    // **The rule, stated once:** among namespaces meeting both bars, the highest
-    // coverage wins; ties are broken by namespace name, ascending.
-    //
-    // It is written down and sorted explicitly rather than folded through a
-    // `max_by` because the property that matters is not which grouping is best —
-    // it is that nobody has to wonder whether the grouping showing the nicest
-    // result is the one that got picked. Coverage and `K` are both functions of
-    // tagging alone, never of outcomes, so the evidence ordering is untouched
-    // either way; determinism is what makes that checkable instead of merely true.
-    let mut eligible: Vec<(String, f64, usize)> = scored
-        .into_iter()
-        .filter(|(_, c, k)| *c >= KIND_MIN_COVERAGE && (GROUP_MIN_K..=GROUP_MAX_K).contains(k))
-        .collect();
-    eligible.sort_by(|a, b| b.1.total_cmp(&a.1).then(a.0.cmp(&b.0)));
-    let pick = eligible.into_iter().next();
+    let chosen = candidates
+        .iter()
+        .find(|g| g.ns == "kind" && g.usable())
+        .or_else(|| ranked.iter().copied().find(|g| g.usable()))
+        .cloned();
 
-    match pick {
-        Some((ns, c, k)) => (Some(ns), c, k),
-        // Nothing usable; report the best candidate so the message can say which
-        // bar it missed — coverage, or a group count the correction cannot carry.
-        None => match best_seen {
-            Some((_, c, k)) => (None, c, k),
-            None => (None, kind_cov, 0),
+    match (chosen, ranked.first()) {
+        (Some(g), _) => GroupingChoice {
+            coverage: g.coverage,
+            k: g.k(),
+            chosen: Some(g),
+            topic_signature,
+        },
+        (None, Some(best)) => GroupingChoice {
+            chosen: None,
+            coverage: best.coverage,
+            k: best.k(),
+            topic_signature,
+        },
+        (None, None) => GroupingChoice {
+            topic_signature,
+            ..GroupingChoice::default()
         },
     }
 }
@@ -653,6 +701,10 @@ pub struct ReportData {
     pub directional_bias: Option<f64>,
     pub calibration: Vec<BinData>,
     pub by_tag: Vec<TagStat>,
+    /// True when `by_tag` was emptied because the chosen breakdown induces the
+    /// same partition of the record, so there is one table rather than the same
+    /// rows twice under two headings.
+    pub by_tag_merged_into_group: bool,
     /// Per-`kind:` breakdown — calibration by *type* of prediction
     /// (estimate / tests-pass / bug-hypothesis …): the agent-facing view.
     pub by_kind: Vec<TagStat>,
@@ -838,11 +890,9 @@ impl ReportData {
             let mut map: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
             for c in &chrono {
                 if let Some(s) = c.sample() {
-                    for t in &c.tags {
-                        if t.contains(':') {
-                            continue; // structural tags (kind:/project:/who:/session:) live elsewhere
-                        }
-                        map.entry(t.as_str()).or_default().push(s);
+                    // Bare tags, by the same definition the breakdown uses.
+                    for t in group_keys(c, TOPIC_NS) {
+                        map.entry(t).or_default().push(s);
                     }
                 }
             }
@@ -877,24 +927,37 @@ impl ReportData {
         };
 
         // The per-group breakdown, keyed off whichever grouping this ledger
-        // actually populates — `kind:` when it covers the record, otherwise the
-        // best-covered namespace, bare topic tags included. Shown regardless of
-        // any project/tag filter, because calibration-per-group is the lever.
-        let (group_by, group_coverage, group_k) =
-            pick_grouping(&ledger.claims, today, tag_filter.as_deref());
-        // No grouping selected means no rows: a table built from a namespace the
-        // selector rejected would be exactly the self-selected slice it rejected.
-        let group_ns = group_by.clone().unwrap_or_default();
+        // actually populates. ONE selector call decides the namespace, builds the
+        // groups and fixes K; the table, the alarm threshold and the hook all read
+        // that one result, so K and the rows cannot come from different groupings.
+        let choice = pick_grouping(&ledger.claims, today, tag_filter.as_deref());
+        let group_by = choice.chosen.as_ref().map(|g| g.ns.clone());
+        let group_coverage = choice.coverage;
+        // The descriptive by-domain table is the bare-tag partition. When the tested
+        // breakdown already induces that same partition — under any name, `kind:`
+        // included — it would print the same rows under a second heading. Decided
+        // here, by comparing partitions over the graded evidence claims, and not in
+        // a renderer by comparing names.
+        let by_tag_merged_into_group = matches!(
+            (&choice.chosen, &choice.topic_signature),
+            (Some(g), Some(t)) if &g.signature == t
+        );
+        let by_tag = if by_tag_merged_into_group {
+            Vec::new()
+        } else {
+            by_tag
+        };
         let by_kind = {
-            let mut map: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
-            // Built from the same outcome-independent order as the headline test,
-            // so a per-group e-value carries the same guarantee the overall one does.
-            for kind in kind_evidence_order(&ledger.claims, today, tag_filter.as_deref(), &group_ns)
-            {
-                for (k, s) in kind {
-                    map.entry(k).or_default().push(s);
-                }
-            }
+            let map: BTreeMap<&str, Vec<Sample>> = choice
+                .chosen
+                .as_ref()
+                .map(|g| {
+                    g.groups
+                        .iter()
+                        .map(|(k, s)| (k.as_str(), s.clone()))
+                        .collect()
+                })
+                .unwrap_or_default();
             let mut rows: Vec<TagStat> = map
                 .into_iter()
                 .map(|(tag, s)| {
@@ -1123,6 +1186,13 @@ impl ReportData {
         };
 
         let by_kind_len = by_kind.len();
+        // K, defined once: the number of groups the chosen grouping produced or,
+        // when none was chosen, the group count of the best rejected candidate.
+        let group_k = if choice.chosen.is_some() {
+            by_kind_len
+        } else {
+            choice.k
+        };
         let by_kind_len_zero = by_kind_len == 0;
 
         ReportData {
@@ -1149,6 +1219,7 @@ impl ReportData {
             directional_bias: scoring::directional_bias(&samples),
             calibration,
             by_tag,
+            by_tag_merged_into_group,
             by_kind,
             group_by,
             group_coverage,
@@ -1766,6 +1837,8 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             );
         }
 
+        // Emptied at compute time when the breakdown below induces the same
+        // partition, so the two can never print the same rows twice.
         if !d.by_tag.is_empty() {
             let _ = writeln!(out, "\n  By domain");
             let _ = writeln!(
@@ -1843,7 +1916,7 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 out,
                 "\n  By {:<17}(K={} groups · {:.0}% covered · gap~ shrunk toward your overall rate)",
                 d.group_by.as_deref().unwrap_or("group"),
-                d.by_kind.len(),
+                d.group_k,
                 d.group_coverage * 100.0
             );
             let _ = writeln!(

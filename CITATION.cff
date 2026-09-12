@@ -1,0 +1,56 @@
+cff-version: 1.2.0
+message: If you use Anamnesis in your work, please cite it.
+title: "Anamnesis: a local-first calibration ledger for forecasts and agents"
+abstract: >-
+  A command-line tool that records a falsifiable belief with a probability or a
+  credible interval before the outcome is known, then scores the forecast made
+  first rather than the one revised afterwards. Reports the CORP decomposition of
+  the Brier score against its own noise floor, an anytime-valid calibration
+  e-process valid under repeated inspection, and a stake-aware decision gate.
+  Runs offline with no model in the scoring path.
+type: software
+authors:
+  # TODO(human): confirm how you want to be credited here — this is your name on
+  # anything that cites the project. `alias` is the GitHub handle; add
+  # given-names / family-names, an ORCID, or an email if you want them public.
+  - alias: Anbu-00001
+    given-names: Anbu
+version: 0.4.0
+date-released: "2026-09-12"
+license: MIT
+repository-code: "https://github.com/Anbu-00001/Anamnesis"
+keywords:
+  - calibration
+  - forecasting
+  - brier-score
+  - proper-scoring-rules
+  - e-values
+  - anytime-valid-inference
+  - decision-making
+  - command-line-tool
+references:
+  - type: article
+    title: >-
+      Stable reliability diagrams for probabilistic classifiers
+    authors:
+      - family-names: Dimitriadis
+        given-names: Timo
+      - family-names: Gneiting
+        given-names: Tilmann
+      - family-names: Jordan
+        given-names: Alexander I.
+    journal: Proceedings of the National Academy of Sciences
+    year: 2021
+    doi: 10.1073/pnas.2016191118
+  - type: article
+    title: Sequentially valid tests for forecast calibration
+    authors:
+      - family-names: Arnold
+        given-names: Sebastian
+      - family-names: Henzi
+        given-names: Alexander
+      - family-names: Ziegel
+        given-names: Johanna F.
+    journal: The Annals of Applied Statistics
+    year: 2023
+    doi: 10.1214/22-AOAS1697

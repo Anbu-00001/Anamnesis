@@ -17,8 +17,35 @@ set -uo pipefail
 
 event="${1:?usage: _run.sh <event>}"
 
-ANA="$(command -v ana 2>/dev/null || true)"
-[ -z "$ANA" ] && [ -x "$HOME/.anamnesis/bin/ana" ] && ANA="$HOME/.anamnesis/bin/ana"
+# Run the NEWEST engine available, not merely the first one on PATH.
+#
+# First-on-PATH is how every hook on the machine this was written on ran a 0.3.0
+# engine for a whole release cycle: an old binary earlier on PATH shadowed the
+# vendored copy, and nothing said so. A newer engine always reads an older
+# ledger, so preferring the newest is safe, and every line a hook writes now
+# names the engine version, so whichever one runs is visible.
+version_of() { "$1" --version 2>/dev/null | awk 'NR==1{print $2}'; }
+newer() {   # is dotted version $1 strictly newer than $2?
+  awk -v a="$1" -v b="$2" 'BEGIN {
+    n = split(a, x, "."); m = split(b, y, "."); k = (n > m) ? n : m
+    for (i = 1; i <= k; i++) {
+      if ((x[i] + 0) > (y[i] + 0)) exit 0
+      if ((x[i] + 0) < (y[i] + 0)) exit 1
+    }
+    exit 1
+  }'
+}
+ANA=""
+best=""
+for cand in "$HOME/.anamnesis/bin/ana" "$(command -v ana 2>/dev/null || true)"; do
+  { [ -n "$cand" ] && [ -x "$cand" ]; } || continue
+  v="$(version_of "$cand")"
+  [ -n "$v" ] || continue
+  if [ -z "$ANA" ] || newer "$v" "$best"; then
+    ANA="$cand"
+    best="$v"
+  fi
+done
 
 if [ ! -x "${ANA:-}" ]; then
   stamp="$HOME/.anamnesis/.missing-engine-warned"

@@ -34,12 +34,26 @@ readme = pathlib.Path("README.md")
 text = readme.read_text()
 
 def run(name):
+    base = ["./target/release/ana", "--data", f"{tmp}/demo.json", "report"]
     cmd = {
-        "report": ["./target/release/ana", "--data", f"{tmp}/demo.json", "report"],
-        "plain":  ["./target/release/ana", "--data", f"{tmp}/demo.json", "report", "--plain"],
+        "report": base,
+        "report_head": base,
+        "plain":  base + ["--plain"],
         "help":   ["./target/release/ana", "--help"],
     }[name]
-    return subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.rstrip("\n")
+    out = subprocess.run(cmd, capture_output=True, text=True, check=True).stdout.rstrip("\n")
+    if name == "report_head":
+        # The README carries the top of the report -- through the decomposition
+        # identity -- not all 86 lines of it. Cut at a landmark rather than a line
+        # count, so the excerpt cannot silently start cutting mid-section when the
+        # report above it grows.
+        lines = out.split("\n")
+        end = next(
+            (i for i, l in enumerate(lines) if l.strip().startswith("check ")),
+            len(lines) - 1,
+        )
+        out = "\n".join(lines[: end + 1])
+    return out
 
 def repl(m):
     name = m.group(1)

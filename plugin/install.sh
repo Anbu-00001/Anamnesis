@@ -98,14 +98,25 @@ fi
 
 mkdir -p "$ANA_HOME/bin" "$ANA_HOME/hooks"
 
-# 1) engine — reuse ana on PATH, else an already-vendored one, else fetch prebuilt.
-if command -v ana >/dev/null 2>&1; then
-  cp "$(command -v ana)" "$ANA_HOME/bin/ana"
-elif [ -x "$ANA_HOME/bin/ana" ]; then
+# 1) engine — the version this plugin was written for, and no other.
+#
+# This used to copy whatever `ana` came first on PATH. Upgrading the plugin over
+# an older binary therefore put the OLD engine back into the hook directory, and
+# the new hooks ran against it. It is now checked against the plugin's version.
+want="$(jq -r '.version // empty' "$HERE/.claude-plugin/plugin.json" 2>/dev/null || true)"
+[ -n "$want" ] || { echo "cannot read the plugin version from $HERE/.claude-plugin/plugin.json" >&2; exit 1; }
+version_of() { "$1" --version 2>/dev/null | awk 'NR==1{print $2}'; }
+path_ana="$(command -v ana 2>/dev/null || true)"
+if [ -n "$path_ana" ] && [ "$(version_of "$path_ana")" = "$want" ]; then
+  [ "$path_ana" -ef "$ANA_HOME/bin/ana" ] || cp "$path_ana" "$ANA_HOME/bin/ana"
+elif [ -x "$ANA_HOME/bin/ana" ] && [ "$(version_of "$ANA_HOME/bin/ana")" = "$want" ]; then
   :
 else
-  bash "$HERE/install-ana.sh" || {
-    echo "Could not obtain ana — build it: cargo install --git https://github.com/Anbu-00001/Anamnesis --locked" >&2
+  if [ -n "$path_ana" ]; then
+    echo "  note: $path_ana is ana $(version_of "$path_ana"), not $want — not reusing it." >&2
+  fi
+  bash "$HERE/install-ana.sh" "v$want" || {
+    echo "Could not obtain ana $want — build it: cargo install --git https://github.com/Anbu-00001/Anamnesis --locked --force" >&2
     exit 1
   }
 fi

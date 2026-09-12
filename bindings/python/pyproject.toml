@@ -5,7 +5,7 @@ build-backend = "maturin"
 [project]
 name = "anamnesis"
 version = "0.4.0"
-description = "Calibration & proper-scoring metrics — exact Murphy decomposition, AUC, Winkler interval score, Wilson interval, empirical-Bayes shrinkage — backed by a trustworthy Rust core."
+description = "Calibration and proper-scoring metrics: CORP decomposition, anytime-valid calibration e-processes, AUC, Winkler interval score, Wilson interval, empirical-Bayes shrinkage. Thin bindings over a pure-std Rust core."
 readme = "README.md"
 requires-python = ">=3.8"
 license = { text = "MIT" }

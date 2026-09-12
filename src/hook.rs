@@ -48,6 +48,15 @@ const MIN_N: usize = 6;
 /// willpower: nobody remembers to audit themselves unprompted.
 const DEFAULT_EVERY: u64 = 7;
 
+/// The engine's own version, stamped on the first line of everything a hook
+/// injects.
+///
+/// On the machine this was built on, the session hooks ran a 0.3.0 engine behind
+/// June-era scripts for a whole release cycle, and greeted the agent in wording
+/// the repo had already deleted. Nothing said so, because nothing in the output
+/// named the binary that wrote it. A stale engine now announces itself.
+const VERSION: &str = env!("CARGO_PKG_VERSION");
+
 fn env_usize(key: &str, default: u64) -> u64 {
     std::env::var(key)
         .ok()
@@ -123,9 +132,7 @@ fn worst_kind(d: &ReportData) -> Option<String> {
     };
     Some(format!(
         "  worst group: {ns}:{} is really {dir} (e={e:.0}, n={}, K={}) — trust those calls least",
-        row.tag,
-        row.n,
-        d.by_kind.len()
+        row.tag, row.n, d.group_k
     ))
 }
 
@@ -233,10 +240,12 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                     return Ok(()); // silent on the other six prompts in seven
                 }
                 context.push(format!(
-                    "⟢ Anamnesis — self-introspection checkpoint (prompt #{n})"
+                    "⟢ Anamnesis (ana {VERSION}) — self-introspection checkpoint (prompt #{n})"
                 ));
             } else {
-                context.push("⟢ Anamnesis — your standing calibration".into());
+                context.push(format!(
+                    "⟢ Anamnesis (ana {VERSION}) — your standing calibration"
+                ));
             }
 
             let d = ReportData::compute(&ledger, Some("who:claude"), 10, today);
@@ -283,7 +292,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                     }
                     let happened = code == 0;
                     context.push(format!(
-                        "⟢ Anamnesis: resolved {} prediction(s) from the command's exit status ({code}) — {}, not self-reported: {}",
+                        "⟢ Anamnesis (ana {VERSION}): resolved {} prediction(s) from the command's exit status ({code}) — {}, not self-reported: {}",
                         resolved.len(),
                         if happened { "it passed" } else { "it failed" },
                         resolved.join(", ")
@@ -328,7 +337,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 return Ok(());
             }
             context.push(format!(
-                "⟢ Anamnesis: {} prediction(s) are past their due date and ungraded. Until they are resolved the calibration numbers rest on a self-selected sample, and the evidence test stops at the first of them.",
+                "⟢ Anamnesis (ana {VERSION}): {} prediction(s) are past their due date and ungraded. Until they are resolved the calibration numbers rest on a self-selected sample, and each one is priced into the evidence test at the worst factor it could have contributed.",
                 overdue.len()
             ));
             for c in overdue.iter().take(5) {

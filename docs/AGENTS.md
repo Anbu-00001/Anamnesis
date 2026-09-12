@@ -39,19 +39,42 @@ this repo:
 
   Design notes: [docs/agent-plugin-design.md](docs/agent-plugin-design.md).
 
-The `decide` gate is where a number becomes an action — your stated probability, corrected by your own track record, then thresholded by what's at stake:
+Three surfaces reach the same binary. Hooks fire on the session lifecycle, MCP
+tools are called deliberately by the agent, and both read and write one local JSON
+file; the current verdict is fed back into the session context so the next
+estimate is made in light of the last hundred. Nothing leaves the machine.
 
 ```mermaid
-flowchart TD
-    P["stated probability <b>p</b>"] --> G{"has a correction<br/>been <i>earned</i>?<br/>e-value ≥ 3 and n ≥ 6"}
-    G -->|no — not enough evidence| H["p̂ = p<br/><i>unchanged · never correct on noise</i>"]
-    G -->|yes| R["p̂ = σ(a + b·logit p)<br/><i>your track record applied</i>"]
-    H --> T{"is p̂ ≥ τ ?<br/>τ = 1 − verify_cost / stake"}
-    R --> T
-    T -->|p̂ ≥ τ| Proceed["✅ <b>PROCEED</b>"]
-    T -->|between ½ and τ| Verify["🔍 <b>VERIFY</b> first"]
-    T -->|below ½| Abstain["✋ <b>ABSTAIN</b>"]
+flowchart LR
+    accTitle: How Anamnesis attaches to a Claude Code session
+    accDescr: Four lifecycle hooks and nine MCP tools all invoke the same ana binary. It reads and writes one local append-only JSON ledger and returns the current calibration verdict into the session context. No network is involved.
+
+    subgraph S["Claude Code session"]
+        H1["SessionStart hook<br/>injects standing calibration"]
+        H2["UserPromptSubmit hook<br/>re-injects every 7th prompt"]
+        T["MCP tools<br/>predict · update · resolve<br/>decide · recalibrate · calibration<br/>void · amend · list"]
+        H3["PostToolUse hook on Bash<br/>auto-resolves tests-pass claims<br/>from the command exit status"]
+        H4["Stop hook<br/>names overdue ungraded claims"]
+    end
+    H1 --> ANA["ana"]
+    H2 --> ANA
+    T --> ANA
+    H3 --> ANA
+    H4 --> ANA
+    ANA --> L[("~/.anamnesis/agent.json<br/>append-only · local · no network")]
+    L --> ANA
+    ANA --> V["verdict written back<br/>into the session context"]
+    V --> S
 ```
+
+Hooks are implemented in `src/hook.rs` (`ana hook <event>`), the tool surface in
+`src/mcp.rs` (`ana mcp`). Both read the verdict from `report::verdict`, so a hook
+cannot disagree with the report.
+
+The `decide` gate is where a number becomes an action: your stated probability,
+corrected by your own track record, then thresholded by what is at stake. The
+mechanism, including what happens when the correction collapses, is in
+[docs/METHODS.md](METHODS.md#5-the-decision-gate).
 
 The bar **climbs with the stakes**: an ordinary call needs ≥ 80% to proceed; an irreversible one (`--stake 5`) needs ~96% — below that, the gate sends you to verify instead of letting you act on a hunch.
 

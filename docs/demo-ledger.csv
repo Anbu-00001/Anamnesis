@@ -1,0 +1,23 @@
+statement,prob,created,resolve_by,outcome,resolved_at,tags
+the migration runs clean on staging,0.85,2026-03-02,2026-03-09,yes,2026-03-08,deploy
+the p99 regression is in the cache layer,0.70,2026-03-04,2026-03-11,no,2026-03-10,debug
+we ship the search rewrite before April,0.60,2026-03-05,2026-04-01,no,2026-04-01,deploy
+the flaky suite is a fixture ordering bug,0.75,2026-03-07,2026-03-14,yes,2026-03-12,debug
+the vendor API keeps its rate limit,0.90,2026-03-08,2026-03-22,yes,2026-03-21,deploy
+switching to the pooled client cuts latency,0.80,2026-03-10,2026-03-24,no,2026-03-23,deploy
+the memory leak is in the worker rather than the router,0.65,2026-03-11,2026-03-18,yes,2026-03-17,debug
+the index rebuild finishes inside the window,0.95,2026-03-12,2026-03-19,yes,2026-03-18,deploy
+the intermittent 502s are upstream,0.55,2026-03-14,2026-03-21,no,2026-03-20,debug
+we can drop the legacy endpoint with no fallout,0.70,2026-03-15,2026-03-29,no,2026-03-28,deploy
+the race only shows under connection reuse,0.80,2026-03-17,2026-03-24,yes,2026-03-23,debug
+the new serializer is backward compatible,0.90,2026-03-18,2026-03-25,yes,2026-03-24,deploy
+the crash is a null in the retry path,0.60,2026-03-19,2026-03-26,yes,2026-03-25,debug
+the rollout needs no schema change,0.85,2026-03-21,2026-03-28,no,2026-03-27,deploy
+the slow query is missing an index,0.75,2026-03-22,2026-03-29,yes,2026-03-28,debug
+the cache stampede explains the spike,0.70,2026-03-24,2026-03-31,no,2026-03-30,debug
+the build stays under ten minutes,0.80,2026-03-25,2026-04-01,yes,2026-03-31,deploy
+the timeout is client side,0.65,2026-03-26,2026-04-02,no,2026-04-01,debug
+the config reload is safe to hot-swap,0.90,2026-03-28,2026-04-04,yes,2026-04-03,deploy
+the duplicate writes come from the retry loop,0.75,2026-03-29,2026-04-05,yes,2026-04-04,debug
+the failover drill passes without manual steps,0.60,2026-03-30,2026-04-06,no,2026-04-05,deploy
+the regression landed in the 3.2 bump,0.85,2026-04-01,2026-04-08,yes,2026-04-07,debug

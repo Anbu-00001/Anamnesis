@@ -165,6 +165,31 @@ creation date plus a horizon **stored on the claim when it is created** (per
 known. A claim that is due but still ungraded is **priced**, not skipped and not
 fatal: it contributes the smallest factor it could possibly have contributed.
 
+Three mechanisms interact, and the diagram below is the whole of it: a key fixed
+when the claim is written, a gate that admits nothing before that key has passed,
+and a worst-case factor for anything admitted but still ungraded.
+
+```mermaid
+flowchart TD
+    accTitle: How a claim enters the evidence sequence
+    accDescr: Claims are ordered by a key fixed when they are created. A claim contributes nothing until its due key has passed. Once admitted it contributes its true betting factor if it has been graded, or the smallest factor it could possibly have contributed if it has not.
+
+    A["claim logged"] --> B["due key = resolve_by,<br/>else created_at + stored horizon<br/>fixed at creation, never outcome-dependent"]
+    B --> C{"due key<br/>in the past?"}
+    C -->|"no"| D["not in the sequence<br/>contributes nothing"]
+    C -->|"yes"| E{"graded?"}
+    E -->|"yes"| F["true factor<br/>1 + lambda * h(p) * (y - p)"]
+    E -->|"no"| G["worst-case factor<br/>min over y in 0,1<br/>always &lt;= 1"]
+    F --> H["running e-value<br/>always a prefix of one fixed sequence"]
+    G --> H
+```
+
+Implemented in `evidence_sequence`, [`src/evidence.rs`](../src/evidence.rs); the
+factors are `calibration_log_eprocess_seq`, [`src/scoring.rs`](../src/scoring.rs).
+The caption for the whole thing is Ville: every value this ever reports is bounded
+by one fixed process, so how far along the sequence you happen to be looking, and
+why you looked then, cannot matter.
+
 #### Why that is sufficient
 
 The reported e-value is always `M_k`, a **prefix product of one fixed sequence**.
@@ -332,45 +357,6 @@ different routes — the confidence gap, the verdict state table via a −1e-15
 direction, and `label()` keying on `n` alone — so the phrase is now absent from
 the program by construction rather than by care.
 
-### 3d. Which grouping the breakdown uses
-
-`kind:` and topic tags are the same feature wearing different names: both answer
-"where in my record am I wrong?". So the per-group breakdown keys off **whichever
-grouping the ledger actually populates** — `kind:` when it qualifies, otherwise the
-best-covered namespace, with bare tags treated as a `topic` pseudo-namespace. A
-human ledger gets `markets`/`tech`; an agent ledger gets
-`tests-pass`/`bug-hypothesis`. Selection depends on tagging behaviour, never on
-outcomes, so the evidence ordering and its guarantee are untouched.
-
-Two bars, and the report says which one a collapsed section missed:
-
-- **Coverage ≥ 50%.** A breakdown over a slice that happens to be tagged is a
-  self-selected sample one level down. Measured: 363 of 422 binary claims on a real
-  agent ledger carried no `kind:` tag.
-- **2 ≤ K ≤ 12.** Every per-group e-value pays a factor of `K` in its alarm
-  threshold. `session:` on that same ledger covers 100% of it and splits it into 66
-  groups — a 66-fold penalty and an unreadable table; `who:` covers 100% with
-  `K = 1`, which is not a breakdown at all. Bounding `K` excludes both without a
-  hand-maintained list of "bookkeeping" namespaces.
-
-The selection rule, stated so nobody has to wonder whether the grouping showing
-the best result is the one that got picked:
-
-1. `kind:` when it meets both bars.
-2. Otherwise, among namespaces meeting both bars, **highest coverage wins, ties
-   broken by namespace name ascending**.
-3. Otherwise nothing is selected and the section collapses, naming which bar the
-   best candidate missed.
-
-Coverage and `K` are functions of tagging alone, never of outcomes, so validity
-holds either way; writing the rule down and sorting explicitly is what makes that
-checkable rather than merely true. Pinned by the tie-break case in
-`hn_scenarios::the_breakdown_keys_off_whatever_the_ledger_populates_or_says_why_not`.
-
-`K` is printed in the header (`By kind (K=2 groups · 100% covered)`) because it
-sets the multiplicity-corrected alarm, and a threshold nobody can see is a
-threshold nobody can check.
-
 #### The horizon
 
 The horizon answers "when is an answer fair to expect"; gap-pricing answers "what
@@ -455,7 +441,46 @@ Per-`kind:` e-values search K subgroups for the worst one, which is K tests, not
 one. A row must clear `20 × K` — Ville plus a union bound — before it is reported
 as a finding. Below that the per-kind numbers are shown as descriptive only.
 
-### 3d. The assumption, stated plainly
+### 3d. Which grouping the breakdown uses
+
+`kind:` and topic tags are the same feature wearing different names: both answer
+"where in my record am I wrong?". So the per-group breakdown keys off **whichever
+grouping the ledger actually populates** — `kind:` when it qualifies, otherwise the
+best-covered namespace, with bare tags treated as a `topic` pseudo-namespace. A
+human ledger gets `markets`/`tech`; an agent ledger gets
+`tests-pass`/`bug-hypothesis`. Selection depends on tagging behaviour, never on
+outcomes, so the evidence ordering and its guarantee are untouched.
+
+Two bars, and the report says which one a collapsed section missed:
+
+- **Coverage ≥ 50%.** A breakdown over a slice that happens to be tagged is a
+  self-selected sample one level down. Measured: 363 of 422 binary claims on a real
+  agent ledger carried no `kind:` tag.
+- **2 ≤ K ≤ 12.** Every per-group e-value pays a factor of `K` in its alarm
+  threshold. `session:` on that same ledger covers 100% of it and splits it into 66
+  groups — a 66-fold penalty and an unreadable table; `who:` covers 100% with
+  `K = 1`, which is not a breakdown at all. Bounding `K` excludes both without a
+  hand-maintained list of "bookkeeping" namespaces.
+
+The selection rule, stated so nobody has to wonder whether the grouping showing
+the best result is the one that got picked:
+
+1. `kind:` when it meets both bars.
+2. Otherwise, among namespaces meeting both bars, **highest coverage wins, ties
+   broken by namespace name ascending**.
+3. Otherwise nothing is selected and the section collapses, naming which bar the
+   best candidate missed.
+
+Coverage and `K` are functions of tagging alone, never of outcomes, so validity
+holds either way; writing the rule down and sorting explicitly is what makes that
+checkable rather than merely true. Pinned by the tie-break case in
+`hn_scenarios::the_breakdown_keys_off_whatever_the_ledger_populates_or_says_why_not`.
+
+`K` is printed in the header (`By kind (K=2 groups · 100% covered)`) because it
+sets the multiplicity-corrected alarm, and a threshold nobody can see is a
+threshold nobody can check.
+
+### 3e. The assumption, stated plainly
 
 The guarantee needs each outcome to be calibrated **given the earlier ones**.
 Several claims about one underlying event are correlated and can trip the test
@@ -479,8 +504,8 @@ whether you are calibrated. The plain report, the cat, the badge, the HTML card,
 | `biased_yes` / `biased_no` | as above, with a directional lean dominating |
 | `miscalibrated_both_ways` | as above, but the gap is too small to name a direction |
 
-The words "well calibrated" never appear below 50 graded calls, and no verdict at
-all appears below 20.
+The words "well calibrated" never appear at all — see 3b, "why there are two
+numbers" — and no verdict appears below 20 graded calls.
 
 **Why the confidence gap is not the verdict.** The gap is `mean(boldness) −
 accuracy`, an aggregate — and aggregates cancel. A ledger of 50 calls at 0.9 on
@@ -503,6 +528,37 @@ Recalibrate the stated probability, then apply Chow's reject rule:
 ```
 τ = 1 − verify_cost / stake      proceed iff p̂ ≥ τ ;  abstain below even odds
 ```
+
+The correction is evidence-gated: until the e-process has found real evidence
+(`e ≥ 3` over at least 6 graded calls) the identity map applies and your number is
+used exactly as stated. Once it has, the fitted map moves the level but cannot
+invert your ranking, because the slope is constrained to be non-negative. When
+that constraint binds, the map collapses to a constant and every stated
+probability returns the same act — which is correct, looks exactly like a bug, and
+is therefore reported as `map_kind`.
+
+```mermaid
+flowchart TD
+    accTitle: How decide converts a stated probability into an action
+    accDescr: The stated probability passes an evidence gate. If the gate is closed, the identity map applies and the number is unchanged. If it is open, a slope-constrained logistic map applies, collapsing to a constant base rate when the fitted slope hits its lower bound of zero. The adjusted probability is then compared against a threshold set by the stake and the verification cost.
+
+    P["stated probability p"] --> G{"evidence gate<br/>e &gt;= 3 and at least<br/>6 graded calls?"}
+    G -->|"no"| I["identity map<br/>map_kind = identity<br/>p is used as stated"]
+    G -->|"yes"| M{"fitted slope b"}
+    M -->|"b &gt; 0"| LG["logistic map<br/>map_kind = logistic<br/>level moved, ranking kept"]
+    M -->|"b projects to 0"| CN["constant map = your base rate<br/>map_kind = constant<br/>every input returns the same act"]
+    I --> A["adjusted probability"]
+    LG --> A
+    CN --> A
+    A --> D{"adjusted vs<br/>threshold 1 - verify_cost / stake"}
+    D -->|"at or above threshold"| R1["proceed"]
+    D -->|"below threshold,<br/>at or above even odds"| R2["verify"]
+    D -->|"below even odds"| R3["abstain"]
+```
+
+Implemented in `decide` and `gate_recalibration_seq`,
+[`src/scoring.rs`](../src/scoring.rs); the gate the CLI and the MCP tools share is
+`earned_recalibration`, [`src/report.rs`](../src/report.rs).
 
 - Ferrer & Ramos, *Evaluating Posterior Probabilities: Decision Theory, Proper
   Scoring Rules, and Calibration*, TMLR 2025
