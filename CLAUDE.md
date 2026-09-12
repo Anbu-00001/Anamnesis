@@ -50,14 +50,20 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   sample of your calls, or a self-selected one?
 - [src/evidence.rs](src/evidence.rs) — **the order the sequential test consumes
   claims in**, and the single most subtle thing in the repo. Claims enter by a
-  *due key* fixed at creation (`resolve_by`, else the creation date) and the
-  sequence STOPS at the first due-but-ungraded claim. That stopping rule is what
-  keeps the anytime-valid guarantee: the result is always a true prefix of a fixed
-  order, so only the stopping point varies with the outcomes, and Ville holds at
-  any stopping time. Ordering by *resolution time* — which shipped before, and
+  *due key* fixed at creation (`resolve_by`, else creation + a per-kind horizon
+  stored on the claim). Ordering by *resolution time* — which shipped before, and
   looks chronological — is not a prefix of any fixed order, and made a perfectly
   calibrated forecaster false-alarm in 100% of simulated runs when the report was
   re-read as claims resolved (0% now). Do not "simplify" this back.
+  A due-but-ungraded claim is **priced, not skipped and not fatal**: it multiplies
+  in the smallest factor it could possibly have contributed. It used to halt the
+  sequence, which was safe but useless — any prefix rule gives `(1−g)/g` usable
+  claims, so a 35%-ungraded ledger got 23 of 309 graded calls into the test, and
+  partitioning cannot fix that (K short sequences, K-fold mixture penalty).
+  Pricing keeps all 236 and reports what the backlog costs. Validity is unchanged:
+  the two possible factors average to exactly 1 under the null, so the min is ≤ 1
+  and ≤ the true factor, making the wealth a non-negative supermartingale that
+  Ville still bounds. Gaps can only *lower* the e-value, never invent an alarm.
 - [src/hook.rs](src/hook.rs) — `ana hook <session-start|user-prompt|post-tool|stop>`.
   The Claude Code hooks, in the binary: one code path, no `jq`, and the wording
   comes from `report::verdict` so the hooks cannot disagree with the report. The
@@ -96,7 +102,7 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   (`ANAMNESIS_AGENT_DATA`).
 - [src/mcp.rs](src/mcp.rs) — `ana mcp`: a hand-rolled Model Context Protocol
   server over newline-delimited JSON-RPC stdio (no new deps), exposing
-  predict/resolve/calibration/**recalibrate**/**decide**/list as tools for any MCP
+  predict/**update**/resolve/calibration/**recalibrate**/**decide**/list as tools for any MCP
   agent. `recalibrate` returns a stated probability unchanged until the e-process
   finds real evidence; `decide` corrects it through that map then applies a
   stake-aware threshold (proceed/verify/abstain) — the operational end of

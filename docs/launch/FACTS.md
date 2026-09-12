@@ -17,8 +17,12 @@ Last verified: **2026-09-12**.
   them — it is `std` only.
 - **MSRV:** Rust 1.89 (`File::lock` is std from there).
 - **Release binary size:** 2.2 MB, x86_64 Linux, `--release` (measured 2026-09-12; it was 2.1 MB before this release's additions).
-- **Tests:** 104 — 76 unit, 8 CLI integration, 20 hostile-review scenarios. Plus
-  35 Python binding tests.
+- **Tests:** 117 — 86 unit, 8 CLI integration, 23 hostile-review scenarios. Plus
+  36 Python binding tests. Verified 2026-09-12: wheel built with
+  `maturin develop --release` (abi3, Python ≥ 3.8), `pytest` 36/36 green, and the
+  wheel cross-checked against the CLI on the same ledger — `brier`, `mcb`, `dsc`,
+  `unc`, `log_score`, `auc` and the e-process agree to 1e-9.
+
 - **Platforms built in CI:** x86_64 and aarch64 Linux (gnu), x86_64 linux-musl,
   x86_64 and aarch64 macOS, x86_64 Windows.
 - **Install:** `cargo install --git https://github.com/Anbu-00001/Anamnesis --locked`,
@@ -45,7 +49,7 @@ Last verified: **2026-09-12**.
   via the legacy `initialize` handshake. The server is dual-era.
 - Unsupported versions return `UnsupportedProtocolVersionError`, code `-32022`,
   listing what is supported.
-- **Tools:** predict, resolve, calibration, recalibrate, decide, void, amend, list.
+- **Tools:** predict, update, resolve, calibration, recalibrate, decide, void, amend, list.
 
 ## The measurements
 

@@ -130,7 +130,7 @@ pub fn earned_recalibration(
         .filter_map(|c| c.sample())
         .collect();
     let n = evidence.samples.len();
-    let (recal, earned, e) = scoring::gate_recalibration(&all, &evidence.samples, RECAL_RIDGE);
+    let (recal, earned, e) = scoring::gate_recalibration_seq(&all, &evidence.steps, RECAL_RIDGE);
     (recal, earned, n, e)
 }
 
@@ -512,13 +512,18 @@ pub struct ReportData {
     /// Claims in the evidence sequence (due, graded, in deadline order).
     pub evidence_n: usize,
     /// Id of the first overdue, ungraded claim — the evidence pauses there.
-    pub evidence_blocked_by: Option<String>,
+    pub evidence_oldest_gap: Option<String>,
     /// Id of the first claim whose due date has passed and which is still
-    /// ungraded. The evidence test stops there, on purpose.
-    pub evidence_waiting: usize,
+    /// How much wealth the ungraded backlog is costing, as a natural-log factor
+    /// on the e-value. Gaps only ever shrink it, so this is a price, not a risk.
+    pub evidence_gap_cost_log: Option<f64>,
     /// Whether the blocking claim has no `--by` date, in which case adding one is
     /// the other way to unblock the sequence.
-    pub evidence_blocked_without_deadline: bool,
+    pub evidence_gap_without_deadline: bool,
+    /// How many due claims are ungraded in total, not just the first. Reported
+    /// beside `evidence_n` so "22 of 301" reads as a backlog with an exit rather
+    /// than as a broken metric.
+    pub evidence_ungraded_due: usize,
     /// Claims voided *after* they had already resolved — outcomes deleted from
     /// the record after being seen. They stay in the evidence sequence; this
     /// count exists so the edit is never silent.
@@ -791,8 +796,18 @@ impl ReportData {
         // Anytime-valid calibration test, over the outcome-independent evidence
         // sequence, mixing betting strategies so that symmetric overconfidence
         // (too sure at 0.9 AND too sure at 0.1) cannot cancel itself out.
-        let eprocess = scoring::calibration_eprocess_v2(&chrono_samples);
-        let eprocess_log = scoring::calibration_log_eprocess(&chrono_samples);
+        // Gaps are priced at their worst case rather than halting the sequence:
+        // stopping gave a 35%-ungraded ledger ~2 usable claims however much it
+        // held. `gap_cost_log` is what that backlog is costing, in log e.
+        let eprocess = scoring::calibration_eprocess_seq(&evidence.steps);
+        let eprocess_log = scoring::calibration_log_eprocess_seq(&evidence.steps);
+        let gap_cost_log = match (
+            eprocess_log,
+            scoring::calibration_log_eprocess(&chrono_samples),
+        ) {
+            (Some(with_gaps), Some(graded_only)) => Some(graded_only - with_gaps),
+            _ => None,
+        };
         let eprocess_pvalue = eprocess.map(scoring::eprocess_pvalue);
 
         // CORP decomposition and the noise floor its value has to clear.
@@ -939,9 +954,10 @@ impl ReportData {
             mcb_null_q95,
 
             evidence_n: evidence.samples.len(),
-            evidence_blocked_by: evidence.blocked_by.clone(),
-            evidence_waiting: evidence.waiting,
-            evidence_blocked_without_deadline: evidence.blocked_without_deadline,
+            evidence_oldest_gap: evidence.oldest_gap.clone(),
+            evidence_gap_cost_log: gap_cost_log,
+            evidence_gap_without_deadline: evidence.oldest_gap_without_deadline,
+            evidence_ungraded_due: evidence.ungraded_due,
             voided_after_resolution: evidence.voided_after_resolution,
             eprocess_log,
             kind_alarm_threshold: (!by_kind_len_zero)
@@ -1357,6 +1373,10 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 .is_some_and(|l| l >= scoring::EPROCESS_LOG_CAP)
             {
                 "> 10^12".to_string()
+            } else if e < 0.1 {
+                // A well-priced backlog drives the e-value well below 1, where
+                // one decimal place prints "0.0" and reads as a broken metric.
+                format!("{e:.3}")
             } else {
                 format!("{e:.1}")
             };
@@ -1383,33 +1403,33 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             let _ = writeln!(out, "\n  Is it real?      no evidence sequence yet");
         }
 
-        // What the evidence test could and could not use. The test needs an order
-        // fixed before the outcomes were known, and `--by` is what fixes it.
-        if d.resolved_binary > 0 {
-            if let Some(id) = &d.evidence_blocked_by {
-                let fix = if d.evidence_blocked_without_deadline {
-                    "resolve it, or give it a --by date so it sorts later"
+        // What the backlog is costing. It no longer halts the test, so this is a
+        // price to be read, not a wall to be cleared.
+        if d.resolved_binary > 0 && d.evidence_ungraded_due > 0 {
+            let _ = writeln!(
+                out,
+                "                   {} of {} graded calls counted, {} ungraded priced in at their worst case (`ana list --due`)",
+                d.evidence_n, d.resolved_binary, d.evidence_ungraded_due
+            );
+            if let Some(cost) = d.evidence_gap_cost_log {
+                if cost > 0.0 {
+                    let _ = writeln!(
+                        out,
+                        "                   that backlog is costing you a factor of {:.3} on the evidence — grading it is how you get it back",
+                        cost.min(scoring::EPROCESS_LOG_CAP).exp()
+                    );
+                }
+            }
+            if let Some(id) = &d.evidence_oldest_gap {
+                let fix = if d.evidence_gap_without_deadline {
+                    "resolve it, or give it a --by date"
                 } else {
                     "resolve it, or void it if it was never answerable"
                 };
-                if d.evidence_waiting > 0 {
-                    let _ = writeln!(
-                        out,
-                        "                   evidence uses {} of {} graded calls: it stops at [{id}], which is due and ungraded — {fix}.",
-                        d.evidence_n, d.resolved_binary
-                    );
-                    let _ = writeln!(
-                        out,
-                        "                   the {} graded call(s) after it are waiting, not lost — skipping ahead is what would let the record be picked after the fact",
-                        d.evidence_waiting
-                    );
-                } else {
-                    let _ = writeln!(
-                        out,
-                        "                   [{id}] is due and ungraded; {fix} — until then the test cannot grow past {} call(s)",
-                        d.evidence_n
-                    );
-                }
+                let _ = writeln!(
+                    out,
+                    "                   oldest is [{id}] — {fix}. an ungraded bold call costs more than a cautious one",
+                );
             }
         }
 
@@ -2630,6 +2650,7 @@ mod tests {
             // A past due date, so the claim enters the evidence sequence. The
             // sequential test orders by resolve-by precisely because that date is
             // chosen before the outcome is known.
+            horizon_days: None,
             resolve_by: Some(NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             kind: crate::model::ClaimKind::Binary,
@@ -2661,6 +2682,7 @@ mod tests {
             id: id.into(),
             statement: format!("num {id}"),
             created_at: now(),
+            horizon_days: None,
             resolve_by: None,
             tags: vec![],
             kind: crate::model::ClaimKind::Numeric,

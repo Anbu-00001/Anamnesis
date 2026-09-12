@@ -322,6 +322,21 @@ def calibration_eprocess_v2(probs: Sequence, outcomes: Sequence) -> Optional[flo
     return _core.calibration_eprocess_v2(_floats(probs), _floats(outcomes))
 
 
+def calibration_eprocess_seq(probs: Sequence, outcomes: Sequence) -> Optional[float]:
+    """The mixture e-process over a sequence that may contain **gaps**. Pass
+    ``None`` in ``outcomes`` for a claim that is due but still ungraded; it
+    contributes the smallest factor it could possibly have contributed.
+
+    This is what lets a record with an ungraded backlog still be tested. Stopping
+    at the first gap yields only about ``(1-g)/g`` usable claims for an ungraded
+    rate ``g`` — two claims at 35% ungraded, no matter how long the record is.
+    Gaps can only lower the e-value, never raise it, so a backlog hides
+    miscalibration rather than inventing it."""
+    ps = _floats(probs)
+    os_ = [None if o is None else float(o) for o in outcomes]
+    return _core.calibration_eprocess_seq(ps, os_)
+
+
 def calibration_log_eprocess(probs: Sequence, outcomes: Sequence) -> Optional[float]:
     """``ln`` of the mixture e-process."""
     return _core.calibration_log_eprocess(_floats(probs), _floats(outcomes))
@@ -390,7 +405,7 @@ def dialectical_mean(p1: float, p2: float) -> float:
 
 
 # ── decision gate ────────────────────────────────────────────────────────────
-Decision = namedtuple("Decision", "act adjusted_p proceed_threshold margin")
+Decision = namedtuple("Decision", "act adjusted_p proceed_threshold margin map_kind")
 
 
 def decide(p: float, stake: float = 1.0, verify_cost: float = 0.2, recal=None) -> Decision:
@@ -400,7 +415,13 @@ def decide(p: float, stake: float = 1.0, verify_cost: float = 0.2, recal=None) -
     ``act`` is ``"proceed"``, ``"verify"`` (check first), or ``"abstain"`` (replan).
     Raise ``stake`` for consequential or irreversible calls — the bar to proceed,
     ``1 − verify_cost/stake``, climbs with it. Pass ``recal`` only once a correction
-    has been earned (real e-process evidence)."""
+    has been earned (real e-process evidence).
+
+    ``map_kind`` reports which correction was applied: ``"identity"`` (none earned,
+    your number used as stated), ``"logistic"`` (the ordinary fitted map), or
+    ``"constant"`` — the slope collapsed to zero because your stated confidence did
+    not track outcomes, so every ``p`` now returns the same answer. Check it before
+    presenting a decision as though it depended on the number you passed in."""
     a = recal.a if recal is not None else None
     b = recal.b if recal is not None else None
     t = _core.decide(float(p), float(stake), float(verify_cost), a, b)

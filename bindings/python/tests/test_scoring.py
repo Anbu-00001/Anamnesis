@@ -232,6 +232,33 @@ def test_decide_gate():
     overconf = ana.Recalibration(-1.5, 1.0, 12)
     d = ana.decide(0.70, recal=overconf)
     assert d.adjusted_p < 0.5 and d.act == "abstain"
+    assert d.map_kind == "logistic"
+    # No correction passed → the number is used as stated, and says so.
+    assert ana.decide(0.85).map_kind == "identity"
+    # A collapsed map (b = 0) returns the base rate for every p. Reporting that is
+    # the whole point: otherwise the gate looks like it is ignoring its input.
+    flat = ana.Recalibration(0.0, 0.0, 40)
+    lo, hi = ana.decide(0.55, recal=flat), ana.decide(0.99, recal=flat)
+    assert lo.map_kind == hi.map_kind == "constant"
+    assert lo.adjusted_p == pytest.approx(hi.adjusted_p)
+
+
+def test_gap_filled_eprocess_prices_gaps_and_never_inflates():
+    # A gap can only lower the e-value: whatever the claim would have been, it is
+    # priced at the worst factor it could have contributed.
+    probs = [0.9] * 40
+    outcomes = [1.0 if i % 4 else 0.0 for i in range(40)]
+    full = ana.calibration_eprocess_seq(probs, outcomes)
+    gapped = ana.calibration_eprocess_seq(
+        probs, [None if i % 5 == 0 else o for i, o in enumerate(outcomes)]
+    )
+    assert gapped < full
+    # All-graded must agree exactly with the non-gap version.
+    assert full == pytest.approx(ana.calibration_eprocess_v2(probs, outcomes))
+    # A bold gap costs more than a cautious one.
+    bold = ana.calibration_eprocess_seq([0.95], [None])
+    timid = ana.calibration_eprocess_seq([0.55], [None])
+    assert bold < timid <= 1.0
 
 
 def test_mean_boldness_and_asmd():

@@ -297,6 +297,29 @@ fn calibration_log_eprocess(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Opt
     Ok(scoring::calibration_log_eprocess(&s))
 }
 
+/// The mixture e-process over a sequence that may contain **gaps**: pass `None`
+/// for a claim that is due but still ungraded, and it contributes the smallest
+/// factor it could possibly have contributed.
+///
+/// Gaps can only lower the e-value, never raise it, so a backlog hides
+/// miscalibration rather than inventing it. Stopping at the first gap instead
+/// leaves about `(1-g)/g` usable claims for an ungraded rate `g` — two claims at
+/// 35% ungraded, however long the record is.
+#[pyfunction]
+fn calibration_eprocess_seq(probs: Vec<f64>, outcomes: Vec<Option<f64>>) -> PyResult<Option<f64>> {
+    if probs.len() != outcomes.len() {
+        return Err(pyo3::exceptions::PyValueError::new_err(
+            "probs and outcomes must be the same length",
+        ));
+    }
+    let steps: Vec<scoring::Step> = probs
+        .iter()
+        .zip(outcomes.iter())
+        .map(|(&prob, &o)| scoring::Step { prob, outcome: o })
+        .collect();
+    Ok(scoring::calibration_eprocess_seq(&steps))
+}
+
 /// The Winkler score as a multiple of the interval's own width — unitless, so
 /// claims measured in different units can be averaged together.
 #[pyfunction]
@@ -392,8 +415,13 @@ fn risk_coverage_curve(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Vec<(f64
 
 /// Decision gate: correct `p` through an optional recalibration map `(recal_a,
 /// recal_b)`, then apply Chow's stake-aware threshold. Returns
-/// `(act, adjusted_p, proceed_threshold, margin)` where `act` ∈ {proceed, verify,
-/// abstain}. Pass `recal_a`/`recal_b` only when a correction has been earned.
+/// `(act, adjusted_p, proceed_threshold, margin, map_kind)` where `act` ∈
+/// {proceed, verify, abstain} and `map_kind` ∈ {identity, logistic, constant}.
+/// Pass `recal_a`/`recal_b` only when a correction has been earned.
+///
+/// `map_kind == "constant"` means the slope collapsed to zero and every `p`
+/// returns the same answer — check it before reporting a decision as if it had
+/// depended on the number you passed in.
 #[pyfunction]
 #[pyo3(signature = (p, stake=1.0, verify_cost=0.2, recal_a=None, recal_b=None))]
 fn decide(
@@ -402,7 +430,7 @@ fn decide(
     verify_cost: f64,
     recal_a: Option<f64>,
     recal_b: Option<f64>,
-) -> (String, f64, f64, f64) {
+) -> (String, f64, f64, f64, String) {
     let recal = match (recal_a, recal_b) {
         (Some(a), Some(b)) => Some(scoring::Recalibration { a, b, n: 0 }),
         _ => None,
@@ -413,7 +441,13 @@ fn decide(
         scoring::Act::Verify => "verify",
         scoring::Act::Abstain => "abstain",
     };
-    (act.to_string(), d.adjusted_p, d.proceed_threshold, d.margin)
+    (
+        act.to_string(),
+        d.adjusted_p,
+        d.proceed_threshold,
+        d.margin,
+        d.map_kind.as_str().to_string(),
+    )
 }
 
 /// Mean boldness `mean(max(p, 1−p))` of a set of stated probabilities — distance
@@ -451,6 +485,7 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(wilson_interval, m)?)?;
     m.add_function(wrap_pyfunction!(shrink_toward, m)?)?;
     m.add_function(wrap_pyfunction!(calibration_eprocess, m)?)?;
+    m.add_function(wrap_pyfunction!(calibration_eprocess_seq, m)?)?;
     m.add_function(wrap_pyfunction!(eprocess_pvalue, m)?)?;
     m.add_function(wrap_pyfunction!(corp_brier, m)?)?;
     m.add_function(wrap_pyfunction!(gate_recalibration, m)?)?;

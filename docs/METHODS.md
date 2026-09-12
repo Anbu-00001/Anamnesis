@@ -160,9 +160,10 @@ will fail" at 0.15 alongside "this will pass" at 0.85.
 ### 3b. The order the evidence arrives in
 
 Claims enter in order of their **due key**: their `resolve_by` date, or their
-creation date plus a 30-day grace horizon when they have none. Both are chosen
-before the answer is known. The sequence stops at the first claim whose due key
-has passed and which is still ungraded.
+creation date plus a horizon **stored on the claim when it is created** (per
+`kind:`, defaulting to 7 days). All of these are chosen before the answer is
+known. A claim that is due but still ungraded is **priced**, not skipped and not
+fatal: it contributes the smallest factor it could possibly have contributed.
 
 #### Why that is sufficient
 
@@ -177,8 +178,24 @@ over all `k` **simultaneously**. So it does not matter how `k` comes to be chose
 or whether the choice correlates with the outcomes — every prefix is already
 covered by the same bound. There is no separate "stopping time" condition to
 discharge, and consequently no deadline gate is needed: the deadline was only ever
-a way of *enforcing the prefix property*, and stopping at the first unresolved
-claim enforces it directly.
+a way of *enforcing the prefix property*.
+
+**Gaps extend this by one sentence.** For an ungraded claim the two factors it
+could have contributed are `1 + λh(1−p)` (had it resolved YES) and `1 − λhp` (had
+it resolved NO). Under the null the outcome is YES with probability exactly `p`,
+so their `p`-weighted average is
+
+```
+p(1 + λh(1−p)) + (1−p)(1 − λhp) = 1
+```
+
+identically. A weighted average of two numbers is at least their minimum, so the
+minimum is `≤ 1`, and it is also `≤` the true factor whichever outcome the claim
+would have had. The gap-filled wealth is therefore pointwise `≤` the fully-graded
+martingale at every `n`, and is itself a non-negative **supermartingale** starting
+at `1`. Ville's inequality covers supermartingales, so the bound carries over
+unchanged; across repeated views, whatever is ungraded at view time `t` still
+satisfies `W'(t) ≤ M_n` for one fixed process `M`.
 
 This is also precisely why the original code was wrong. Sorting by resolution time
 does not produce a prefix of a fixed sequence — it produces **a different
@@ -187,6 +204,61 @@ nothing about that, because there is no single `M_k` to bound.
 
 Everything else in this section follows from that argument rather than merely
 supporting it.
+
+#### Why the sequence no longer stops at the first gap
+
+Stopping was a correct answer to the wrong question. Any prefix rule yields about
+`(1−g)/g` usable claims for an ungraded rate `g`, so a ledger that is 35%
+ungraded gets a **two-claim** sequence however much it holds. On a real 426-claim
+agent ledger that meant **23 of 309** graded calls counted.
+
+Partitioning does not rescue it. `K` partitions multiply the number of sequences
+but each one is just as short, giving `K·(1−g)/g` — and the `K`-fold mixture
+penalty cancels the power just bought. Monthly partitions on that ledger would
+have given roughly 7 usable claims, *worse* than the 23.
+
+Pricing the gap keeps every graded call in the test. Measured at n = 300, alarm
+`e ≥ 20`, peeking every 5:
+
+| graded | rule | usable n | P(detect) sharp | P(detect) diffuse | P(false alarm) |
+|---|---|---|---|---|---|
+| 100% | either | 300 | 1.000 | 0.587 | 0.013 |
+| 90% | stop at gap | 10.1 | 0.047 | 0.000 | 0.000 |
+| 90% | **gap-filled** | 270.1 | **1.000** | 0.217 | 0.000 |
+| 65% | stop at gap | 2.0 | 0.000 | 0.000 | 0.000 |
+| 65% | **gap-filled** | 194.7 | **1.000** | 0.003 | 0.000 |
+
+"Sharp" is the symmetric pattern this mixture exists for (says 0.9 when the truth
+is 0.65, 0.1 when it is 0.35); "diffuse" is a weaker alternative with per-claim
+discrepancy ≤ 0.135. **Gaps are priced, not forgiven**: against the diffuse
+alternative the cost of a 35% backlog is enough to eat the signal entirely. That
+is a real limitation, and it is the honest form of the incentive — the backlog
+costs you the ability to detect subtle miscalibration.
+
+Two properties make the price well-behaved: with `|λ| ≤ 0.9` every factor is at
+least `0.1`, so a gap costs wealth rather than zeroing the process; and the cost
+scales with how bold the ungraded claim was, so an ungraded `0.95` costs more than
+an ungraded `0.55`.
+
+An undisciplined user's e-value therefore drifts down, meaning gaps can **hide**
+miscalibration. They could already do that by freezing the test under the old
+stopping rule, and neither direction can manufacture a false alarm.
+
+#### The horizon
+
+The horizon answers "when is an answer fair to expect"; gap-pricing answers "what
+if there still isn't one". They are separate questions and are now handled
+separately.
+
+Because a premature admission is now a small cost rather than a frozen test, the
+horizon can be short enough to be useful. It is **stored on the claim at
+creation** rather than computed at read time from a global, so the evidence order
+is auditable from the file and cannot shift under an existing ledger when a
+default changes. Measured resolution latency on the 426-claim agent ledger was
+**median 6.6 minutes, p90 5 hours, p99 3.3 days**; the previous 30-day global
+horizon held 130 already-resolved claims out of the sequence for nothing. The
+default is now 7 days, with `kind:tests-pass`/`kind:bug-hypothesis` at 1 day and
+`kind:estimate`/`approach`/`compat` at 3.
 
 #### Measured anyway
 
@@ -349,6 +421,51 @@ that corrected 0.9 **up to 1.0** for a forecaster who was right half the time.
 With the line search it returns 0.498, against a truth of 0.5. If the solver does
 not converge, the identity map is returned instead: "no correction" is the honest
 answer when the fit will not settle, and a confidently wrong one is not.
+
+#### The assumption: `b ≥ 0`
+
+The slope is **constrained to be non-negative** by projecting each Newton step
+onto `b ≥ 0`. This is an assumption, and it is stated here rather than left to be
+inferred from the code:
+
+> `b ≥ 0` asserts that the forecaster's **ranking is not inverted** — that the
+> calls you were surer about were not systematically *less* likely to come true.
+
+The justification is that this is exactly what the isotonic (PAV) fit does with
+the same data. Isotonic regression is monotone non-decreasing by construction, so
+it cannot express an inverted ranking either; when the data are anti-correlated it
+returns a flat curve at the base rate. Constraining `b` makes the parametric map
+agree with the non-parametric one it is checked against, instead of being free to
+do something the oracle cannot.
+
+What is given up is real but small: a genuinely anti-calibrated forecaster is
+*not* corrected by flipping their probabilities. That is deliberate. Flipping is
+a much stronger claim than the data at these sample sizes supports — the fit that
+motivated this constraint found `b = −0.69` on `n = 15`, which is noise — and a
+map that inverts you is the single worst failure mode for an instrument whose
+output is fed to a decision gate.
+
+The honest division of labour is that **MCB and DSC report the inversion, and the
+map declines to act on it**. When the ranking is inverted, `b` projects to `0`,
+the map collapses to a constant, and `DSC ≈ 0` is reported: *your forecasts do not
+sort outcomes*. Fixing the ranking is the user's job; the map's job is to not make
+a confident correction it has not earned.
+
+#### The collapsed map must announce itself
+
+Once `b = 0`, `decide --prob 0.99` and `decide --prob 0.55` return the same act,
+because the stated probability is no longer an input. That is correct behaviour
+and indistinguishable from a bug at the call site, so the shape of the map is
+reported explicitly as `map_kind`:
+
+| `map_kind` | meaning |
+|---|---|
+| `identity` | no correction earned yet; your number is used as stated |
+| `logistic` | fitted `σ(a + b·logit p)`, `b > 0` — ranking kept, level moved |
+| `constant` | `b = 0`; your confidence did not track outcomes, so it was replaced by your base rate |
+
+It appears in `ana decide --json`, in the MCP `decide` tool's result, and as a
+line of prose in the text output when it is `constant`.
 
 ---
 

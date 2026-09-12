@@ -615,6 +615,50 @@ impl Recalibration {
     }
 }
 
+/// Which shape the correction map actually took.
+///
+/// Surfaced because a collapsed map is indistinguishable from a broken one at the
+/// call site: once `b` hits `0`, `decide --prob 0.99` and `decide --prob 0.55`
+/// return the same act, and a user who is not told why will file a bug. It is not
+/// a bug — it is the fit reporting that the stated numbers carried no information
+/// about the outcomes — but it has to say so out loud.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MapKind {
+    /// No correction earned yet (or none applied): the stated probability is used
+    /// exactly as given.
+    Identity,
+    /// A fitted `sigma(a + b*logit p)` with `b > 0` — the ordinary case, where
+    /// your ranking is kept and only the level is moved.
+    Logistic,
+    /// The slope collapsed to `b = 0`. Your stated confidence did not track the
+    /// outcomes, so every input maps to the same corrected number: your base rate.
+    Constant,
+}
+
+impl MapKind {
+    /// The stable wire name, for `--json` and the MCP tools.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            MapKind::Identity => "identity",
+            MapKind::Logistic => "logistic",
+            MapKind::Constant => "constant",
+        }
+    }
+}
+
+impl Recalibration {
+    /// Which shape this map took — see [`MapKind`].
+    pub fn kind(&self) -> MapKind {
+        if self.b == 0.0 {
+            MapKind::Constant
+        } else if self.a == 0.0 && self.b == 1.0 {
+            MapKind::Identity
+        } else {
+            MapKind::Logistic
+        }
+    }
+}
+
 /// Fit a **ridge-regularised logistic recalibration** `σ(a + b·logit p)` by
 /// Newton–Raphson, penalising departure from the identity `(0, 1)` with strength
 /// `ridge`.
@@ -830,6 +874,10 @@ pub struct Decision {
     pub proceed_threshold: f64,
     /// `adjusted_p − proceed_threshold`; `≥ 0` ⇒ proceed. The room you had.
     pub margin: f64,
+    /// Which correction was applied to get from the stated `p` to `adjusted_p`.
+    /// [`MapKind::Constant`] is the one worth reading aloud: the act no longer
+    /// depends on the number you passed in.
+    pub map_kind: MapKind,
 }
 
 /// Within Chow's reject region, the boundary between *verify* and *abstain*: below
@@ -861,9 +909,9 @@ const ABSTAIN_BELOW: f64 = 0.5;
 /// the (evidence-gated) map.
 pub fn decide(p: f64, recal: Option<Recalibration>, stake: f64, verify_cost: f64) -> Decision {
     let p = p.clamp(0.0, 1.0);
-    let adjusted_p = match recal {
-        Some(r) => r.apply(p),
-        None => p,
+    let (adjusted_p, map_kind) = match recal {
+        Some(r) => (r.apply(p), r.kind()),
+        None => (p, MapKind::Identity),
     };
     let stake = stake.max(0.0);
     // Chow's reject threshold for a one-sided act/verify decision. With nothing at
@@ -886,6 +934,7 @@ pub fn decide(p: f64, recal: Option<Recalibration>, stake: f64, verify_cost: f64
         adjusted_p,
         proceed_threshold,
         margin,
+        map_kind,
     }
 }
 
@@ -1272,16 +1321,121 @@ const STRATEGIES: [fn(f64) -> f64; 3] = [bet_bias, bet_extremity, bet_extremity_
 /// looks like the moment it starts logging "this will fail" at 0.15 alongside
 /// "this will pass" at 0.85.
 pub fn calibration_log_eprocess(samples: &[Sample]) -> Option<f64> {
-    if samples.is_empty() {
+    let steps: Vec<Step> = samples
+        .iter()
+        .map(|s| Step::graded(s.prob, s.outcome))
+        .collect();
+    calibration_log_eprocess_seq(&steps)
+}
+
+/// One step of the evidence sequence: what you said, and what happened — or
+/// `None` when the claim is due but still ungraded.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Step {
+    /// The stated probability, fixed before the outcome.
+    pub prob: f64,
+    /// `1.0`/`0.0` once graded; `None` while the claim is an open gap.
+    pub outcome: Option<f64>,
+}
+
+impl Step {
+    pub fn graded(prob: f64, outcome: f64) -> Self {
+        Step {
+            prob,
+            outcome: Some(outcome),
+        }
+    }
+    /// A due-but-ungraded claim — a gap in the record.
+    pub fn gap(prob: f64) -> Self {
+        Step {
+            prob,
+            outcome: None,
+        }
+    }
+}
+
+/// The mixture e-process over a sequence that may contain **gaps**.
+///
+/// A graded step contributes its ordinary factor `1 + λ·h(p)·(y − p)`. An
+/// ungraded step contributes the smallest factor it could possibly have
+/// contributed,
+///
+/// ```text
+/// min over y in {0,1} of  1 + λ·h(p)·(y − p)
+/// ```
+///
+/// taken **per mixture component**, since each `(strategy, λ)` pair is its own
+/// wealth process.
+///
+/// # Why this is valid
+///
+/// The two candidate factors are `1 + λh(1−p)` (had it resolved YES) and
+/// `1 − λhp` (had it resolved NO). Under the calibration null the outcome is YES
+/// with probability exactly `p`, so their `p`-weighted average is
+///
+/// ```text
+/// p(1 + λh(1−p)) + (1−p)(1 − λhp) = 1
+/// ```
+///
+/// identically. A weighted average of two numbers is at least their minimum, so
+/// **the min is ≤ 1**, and it is also ≤ the true factor whichever outcome the
+/// claim would have had. The gap-filled wealth is therefore pointwise ≤ the
+/// fully-graded martingale at every `n`, and is itself a non-negative
+/// supermartingale starting at `1`. Ville's inequality covers supermartingales,
+/// so the bound `P(∃k : M_k ≥ 1/α) ≤ α` carries over unchanged — and across
+/// repeated views, whatever is ungraded at view time `t` still satisfies
+/// `W'(t) ≤ M_n` for one fixed process `M`. The argument in `crate::evidence`
+/// keeps its shape; this extends it by one sentence.
+///
+/// # Why it replaced stopping at the first gap
+///
+/// Stopping is the wrong response to gaps. Any prefix rule yields about
+/// `(1−g)/g` claims for an ungraded rate `g`, so at 35% ungraded the sequence is
+/// ~2 claims long no matter how much you have logged — and partitioning does not
+/// rescue it, because K partitions give K short sequences and a K-fold mixture
+/// penalty that cancels the gain. Measured at n = 300, alarm `e ≥ 20`, peeking
+/// every 5:
+///
+/// | graded | rule | usable n | P(detect) | P(false alarm) |
+/// |---|---|---|---|---|
+/// | 100% | either | 300 | 1.000 | 0.013 |
+/// | 90% | stop at gap | 10.1 | 0.047 | 0.000 |
+/// | 90% | gap-filled | 270.1 | 1.000 | 0.000 |
+/// | 65% | stop at gap | 2.0 | 0.000 | 0.000 |
+/// | 65% | gap-filled | 194.7 | 1.000 | 0.000 |
+///
+/// False alarms cannot rise, because wealth only ever shrinks relative to the
+/// graded process. The cost is real, though, and it is not free power: against a
+/// *diffuse* alternative (per-claim discrepancy ≤ 0.135 rather than 0.25),
+/// detection falls from 0.587 at full grading to 0.003 at 65%. Gaps are priced,
+/// not forgiven.
+///
+/// Two properties worth keeping: with `|λ| ≤ 0.9` every factor is at least `0.1`,
+/// so a gap costs wealth rather than zeroing the process; and the cost scales
+/// with how bold the ungraded claim was — an ungraded `0.95` costs more than an
+/// ungraded `0.55`, which is the right incentive.
+///
+/// An undisciplined user's e-value therefore drifts down, so gaps can *hide*
+/// miscalibration. They could already do that by freezing the test under the old
+/// stopping rule, and neither direction can manufacture a false alarm.
+pub fn calibration_log_eprocess_seq(steps: &[Step]) -> Option<f64> {
+    if steps.is_empty() {
         return None;
     }
     let mut logw = [[0.0f64; EPROCESS_LAMBDAS.len()]; STRATEGIES.len()];
-    for s in samples {
-        let z = s.outcome - s.prob; // mean zero under the calibration null
+    for st in steps {
         for (k, h) in STRATEGIES.iter().enumerate() {
-            let hz = h(s.prob) * z;
+            let hp = h(st.prob);
             for (lw, &lam) in logw[k].iter_mut().zip(EPROCESS_LAMBDAS.iter()) {
-                *lw += (lam * hz).ln_1p();
+                *lw += match st.outcome {
+                    // mean zero under the calibration null
+                    Some(y) => (lam * hp * (y - st.prob)).ln_1p(),
+                    None => {
+                        let yes = 1.0 + lam * hp * (1.0 - st.prob);
+                        let no = 1.0 + lam * hp * (0.0 - st.prob);
+                        yes.min(no).ln()
+                    }
+                };
             }
         }
     }
@@ -1290,6 +1444,12 @@ pub fn calibration_log_eprocess(samples: &[Sample]) -> Option<f64> {
     let max = all.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let lse = max + all.iter().map(|v| (v - max).exp()).sum::<f64>().ln();
     Some(lse - (all.len() as f64).ln())
+}
+
+/// [`calibration_log_eprocess_seq`] on the natural scale, capped like
+/// [`calibration_eprocess_v2`].
+pub fn calibration_eprocess_seq(steps: &[Step]) -> Option<f64> {
+    calibration_log_eprocess_seq(steps).map(|l| l.min(EPROCESS_LOG_CAP).exp())
 }
 
 /// The evidence bar a recalibration map must clear before it is applied, and the
@@ -1317,10 +1477,27 @@ pub fn gate_recalibration(
     evidence: &[Sample],
     ridge: f64,
 ) -> (Option<Recalibration>, bool, Option<f64>) {
-    let e = calibration_eprocess_v2(evidence);
+    let steps: Vec<Step> = evidence
+        .iter()
+        .map(|s| Step::graded(s.prob, s.outcome))
+        .collect();
+    gate_recalibration_seq(fit_on, &steps, ridge)
+}
+
+/// [`gate_recalibration`] over a sequence that may contain gaps.
+///
+/// The minimum-`n` bar counts **graded** steps only: a gap carries no outcome, so
+/// it is evidence about discipline, never about calibration, and must not buy a
+/// correction the record has not earned.
+pub fn gate_recalibration_seq(
+    fit_on: &[Sample],
+    evidence: &[Step],
+    ridge: f64,
+) -> (Option<Recalibration>, bool, Option<f64>) {
+    let e = calibration_eprocess_seq(evidence);
     let recal = fit_recalibration(fit_on, ridge);
-    let earned =
-        recal.is_some() && e.is_some_and(|ev| ev >= RECAL_MIN_E) && evidence.len() >= RECAL_MIN_N;
+    let graded = evidence.iter().filter(|s| s.outcome.is_some()).count();
+    let earned = recal.is_some() && e.is_some_and(|ev| ev >= RECAL_MIN_E) && graded >= RECAL_MIN_N;
     (recal, earned, e)
 }
 
@@ -1454,6 +1631,143 @@ mod tests {
             &Recalibration::identity(samples.len()),
             &samples
         ));
+    }
+
+    #[test]
+    fn gaps_cost_wealth_and_can_never_manufacture_an_alarm() {
+        // The whole validity argument in one assertion: whatever the ungraded
+        // claim would have turned out to be, pricing it at its worst case can
+        // only lower the wealth relative to actually knowing.
+        let probs = [0.9, 0.2, 0.55, 0.95, 0.1, 0.75];
+        for &p in &probs {
+            for &y in &[0.0, 1.0] {
+                let graded = calibration_log_eprocess_seq(&[Step::graded(p, y)]).unwrap();
+                let gap = calibration_log_eprocess_seq(&[Step::gap(p)]).unwrap();
+                assert!(
+                    gap <= graded + 1e-12,
+                    "a gap at p={p} must not beat the graded outcome y={y}"
+                );
+                assert!(gap <= 1e-12, "and must never exceed 1 (log 0)");
+            }
+        }
+
+        // Gaps are priced by boldness: an ungraded 0.95 costs more than a 0.55.
+        let bold = calibration_log_eprocess_seq(&[Step::gap(0.95)]).unwrap();
+        let timid = calibration_log_eprocess_seq(&[Step::gap(0.55)]).unwrap();
+        assert!(
+            bold < timid,
+            "a bold ungraded call must cost more wealth than a cautious one"
+        );
+
+        // But a gap never zeroes the process: |lambda| <= 0.9 keeps every factor
+        // at or above 0.1, so the record survives a backlog instead of dying.
+        let many: Vec<Step> = (0..50).map(|_| Step::gap(0.99)).collect();
+        let e = calibration_log_eprocess_seq(&many).unwrap();
+        assert!(e.is_finite(), "50 bold gaps must not produce -inf");
+        assert!(e >= 50.0 * (0.1f64).ln() - 1e-9);
+
+        // An all-graded sequence is exactly the old computation.
+        let samples = [
+            Sample::new(0.9, true),
+            Sample::new(0.2, false),
+            Sample::new(0.6, true),
+        ];
+        let steps: Vec<Step> = samples
+            .iter()
+            .map(|s| Step::graded(s.prob, s.outcome))
+            .collect();
+        approx(
+            calibration_log_eprocess_seq(&steps).unwrap(),
+            calibration_log_eprocess(&samples).unwrap(),
+        );
+    }
+
+    #[test]
+    fn gap_filling_sees_what_stopping_at_the_first_gap_cannot() {
+        // A symmetrically overconfident forecaster: 0.9 when the truth is 0.65,
+        // 0.1 when it is 0.35. Every third claim is left ungraded, which is the
+        // measured discipline of a real agent ledger.
+        let mut steps = Vec::new();
+        let mut graded_prefix = Vec::new();
+        let mut seen_gap = false;
+        for i in 0..300 {
+            let p = if i % 2 == 0 { 0.9 } else { 0.1 };
+            // deterministic stand-in for the 0.65/0.35 truth
+            let y = if i % 2 == 0 {
+                if i % 20 < 13 {
+                    1.0
+                } else {
+                    0.0
+                }
+            } else if i % 20 < 7 {
+                1.0
+            } else {
+                0.0
+            };
+            if i % 3 == 2 {
+                steps.push(Step::gap(p));
+                seen_gap = true;
+            } else {
+                steps.push(Step::graded(p, y));
+                if !seen_gap {
+                    graded_prefix.push(Sample {
+                        prob: p,
+                        outcome: y,
+                    });
+                }
+            }
+        }
+        let stopping = calibration_log_eprocess(&graded_prefix).unwrap();
+        let gapfilled = calibration_log_eprocess_seq(&steps).unwrap();
+        assert!(
+            graded_prefix.len() <= 3,
+            "stopping at the first gap leaves almost nothing: {}",
+            graded_prefix.len()
+        );
+        assert!(
+            stopping < EPROCESS_LOG_CAP,
+            "the truncated prefix cannot establish anything"
+        );
+        assert!(
+            gapfilled > 20.0f64.ln(),
+            "gap-filled must clear the alarm on 300 claims: log e = {gapfilled}"
+        );
+    }
+
+    #[test]
+    fn a_collapsed_map_says_it_collapsed() {
+        // A forecaster whose stated confidence is anti-correlated with the truth.
+        // The projected fit cannot use an inverted ranking, so it flattens to the
+        // base rate — which is right, but makes every `decide` answer identical.
+        let samples: Vec<Sample> = (0..60)
+            .map(|i| Sample::new(if i % 2 == 0 { 0.9 } else { 0.1 }, i % 2 != 0))
+            .collect();
+        let r = fit_recalibration(&samples, 1.0).unwrap();
+        assert_eq!(r.b, 0.0, "an inverted ranking must project to a flat map");
+        assert_eq!(r.kind(), MapKind::Constant);
+
+        // The point of naming it: the act no longer depends on the input.
+        let hi = decide(0.99, Some(r), 10.0, 2.0);
+        let lo = decide(0.55, Some(r), 10.0, 2.0);
+        assert_eq!(hi.map_kind, MapKind::Constant);
+        assert!(
+            (hi.adjusted_p - lo.adjusted_p).abs() < 1e-12,
+            "a constant map returns the same number for any stated p"
+        );
+        assert_eq!(hi.act, lo.act);
+
+        // The ordinary cases still report themselves as what they are.
+        assert_eq!(Recalibration::identity(10).kind(), MapKind::Identity);
+        assert_eq!(decide(0.7, None, 1.0, 0.2).map_kind, MapKind::Identity);
+        assert_eq!(
+            Recalibration {
+                a: 0.3,
+                b: 0.8,
+                n: 40
+            }
+            .kind(),
+            MapKind::Logistic
+        );
     }
 
     #[test]

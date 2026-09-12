@@ -187,9 +187,11 @@ ANAMNESIS — the shape of your judgement
 
   Selective        act on all 37% error · surest half 39% → confidence barely separates winners from losers
 
-  Is it real?      e-value      2.5   (anytime-valid p ≤ 0.400)
+  Is it real?      e-value      1.8   (anytime-valid p ≤ 0.556)
                    no evidence of miscalibration in 35 graded calls — the test can still miss patterns; read the calibration error above for the SIZE of any error
-                   [9870c0] is due and ungraded; resolve it, or void it if it was never answerable — until then the test cannot grow past 35 call(s)
+                   35 of 35 graded calls counted, 2 ungraded priced in at their worst case (`ana list --due`)
+                   that backlog is costing you a factor of 1.392 on the evidence — grading it is how you get it back
+                   oldest is [9870c0] — resolve it, or void it if it was never answerable. an ungraded bold call costs more than a cautious one
 
   Reliability diagram   P = your avg forecast · O = what actually happened
     range        n    0                                1

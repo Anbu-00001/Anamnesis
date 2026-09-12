@@ -231,6 +231,7 @@ fn tools_call(req: &Value, id: Value, ledger: &Path, who: Option<&str>) -> Value
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
         "predict" => tool_predict(&args, ledger, who),
+        "update" => tool_update(&args, ledger),
         "resolve" => tool_resolve(&args, ledger),
         "calibration" => tool_calibration(&args, ledger),
         "recalibrate" => tool_recalibrate(&args, ledger),
@@ -380,6 +381,9 @@ fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
         statement: statement.to_string(),
         created_at: now,
         resolve_by,
+        // Fixed at creation and written to the file, so the evidence order is
+        // auditable and cannot shift later when a default changes.
+        horizon_days: Some(crate::evidence::horizon_for(&normalize_tags(&tags))),
         tags: normalize_tags(&tags),
         kind,
         stake,
@@ -420,7 +424,13 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
                 }
                 _ => return Err("binary claim: pass `outcome` as yes/no (or true/false)".into()),
             };
-            let prob = led.claims[idx].current_prob().unwrap_or(0.5);
+            // Grade the FIRST forecast (invariant #6). Until `update` was
+            // exposed over MCP an agent could only ever have one, so this read the
+            // right number by accident; with revision reachable it would have told
+            // a reviser their score was the one they reached after the evidence.
+            let prob = led.claims[idx].first_prob().unwrap_or(0.5);
+            let final_prob = led.claims[idx].current_prob();
+            let revisions = led.claims[idx].forecasts.len();
             led.claims[idx].resolution = Some(Resolution {
                 at: now,
                 outcome: Some(if happened {
@@ -433,14 +443,31 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
                 resolved_by: None,
             });
             store::save(ledger, &led).map_err(|e| e.to_string())?;
-            let brier = (prob - if happened { 1.0 } else { 0.0 }).powi(2);
+            let truth_f = if happened { 1.0 } else { 0.0 };
+            let brier = (prob - truth_f).powi(2);
+            let final_brier = final_prob.map(|fp| (fp - truth_f).powi(2));
+            let revised = match (revisions > 1, final_prob, final_brier) {
+                (true, Some(fp), Some(fb)) => format!(
+                    " Graded on your FIRST forecast; you later revised to {:.0}% ({fb:.3} — shown, not graded).",
+                    fp * 100.0
+                ),
+                _ => String::new(),
+            };
             Ok((
                 format!(
-                    "[{cid}] resolved {} — you said {:.0}% → Brier {brier:.3}",
+                    "[{cid}] resolved {} — you said {:.0}% → Brier {brier:.3}.{revised}",
                     if happened { "TRUE" } else { "FALSE" },
                     prob * 100.0
                 ),
-                Some(json!({ "id": cid, "outcome": happened, "prob": prob, "brier": brier })),
+                Some(json!({
+                    "id": cid,
+                    "outcome": happened,
+                    "prob": prob,
+                    "brier": brier,
+                    "score_basis": "first",
+                    "final_prob": final_prob,
+                    "final_brier": final_brier,
+                })),
             ))
         }
         ClaimKind::Numeric => {
@@ -477,6 +504,109 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
             ))
         }
     }
+}
+
+/// Revise an open forecast, appending rather than overwriting.
+///
+/// This verb existed only on the CLI until 0.4.0, which made the advertised loop
+/// (predict → update → resolve → calibrate) unreachable for the agent that is the
+/// tool's primary user: 426 claims logged over three months contained exactly zero
+/// revisions, because there was no way to make one. That measured "nobody ever
+/// changes their mind" as a fact about agents when it was a fact about the API.
+///
+/// It is safe to expose only because the headline score grades the FIRST forecast
+/// (`Claim::sample`). Shipping `update` while the score read the last one would
+/// have handed every agent a one-call route to a perfect record.
+fn tool_update(args: &Value, ledger: &Path) -> ToolResult {
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("id is required")?;
+    let because = args.get("because").and_then(Value::as_str);
+    let _guard = store::lock(ledger).map_err(|e| e.to_string())?;
+    let mut led = store::load(ledger).map_err(|e| e.to_string())?;
+    let idx = led.index_of(id)?;
+    if led.claims[idx].is_void() {
+        return Err(format!("[{}] is void", led.claims[idx].id));
+    }
+    if led.claims[idx].is_resolved() {
+        return Err(format!(
+            "[{}] is already resolved; its history is final",
+            led.claims[idx].id
+        ));
+    }
+    let kind = led.claims[idx].kind;
+    let now = Utc::now();
+
+    let (forecast, human, detail) = match kind {
+        ClaimKind::Binary => {
+            let p = args
+                .get("prob")
+                .and_then(Value::as_f64)
+                .ok_or("this is a binary claim; revise it with `prob` (0..1)")?;
+            if !(0.0..=1.0).contains(&p) {
+                return Err(format!("prob must be between 0 and 1, got {p}"));
+            }
+            let old = led.claims[idx].current_prob().unwrap_or(p);
+            (
+                Forecast {
+                    at: now,
+                    prob: Some(p),
+                    interval: None,
+                    because: because.map(str::to_string),
+                },
+                format!("{:.0}% → {:.0}%", old * 100.0, p * 100.0),
+                json!({ "old_prob": old, "prob": p }),
+            )
+        }
+        ClaimKind::Numeric => {
+            let iv = args
+                .get("interval")
+                .and_then(Value::as_str)
+                .ok_or("this is a numeric claim; revise it with `interval` \"LOW..HIGH\"")?;
+            let (low, high) = parse_interval(iv)?;
+            let lvl = args
+                .get("level")
+                .and_then(Value::as_f64)
+                .or_else(|| led.claims[idx].current_interval().map(|i| i.level))
+                .unwrap_or(0.80);
+            if !(0.0..1.0).contains(&lvl) {
+                return Err(format!("level must be between 0 and 1, got {lvl}"));
+            }
+            (
+                Forecast {
+                    at: now,
+                    prob: None,
+                    interval: Some(NumericForecast {
+                        low,
+                        high,
+                        level: lvl,
+                    }),
+                    because: because.map(str::to_string),
+                },
+                format!("[{low}, {high}] @ {:.0}%", lvl * 100.0),
+                json!({ "low": low, "high": high, "level": lvl }),
+            )
+        }
+    };
+
+    led.claims[idx].forecasts.push(forecast);
+    let cid = led.claims[idx].id.clone();
+    let rev = led.claims[idx].forecasts.len();
+    store::save(ledger, &led).map_err(|e| e.to_string())?;
+
+    let mut payload = json!({ "id": cid, "kind": kind, "revision": rev });
+    if let (Some(o), Some(d)) = (payload.as_object_mut(), detail.as_object()) {
+        for (k, v) in d {
+            o.insert(k.clone(), v.clone());
+        }
+    }
+    Ok((
+        format!(
+            "[{cid}] {human} (revision #{rev}). Your FIRST forecast is still what the headline score grades — revising is free and does not launder the record."
+        ),
+        Some(payload),
+    ))
 }
 
 fn tool_void(args: &Value, ledger: &Path) -> ToolResult {
@@ -680,8 +810,15 @@ fn tool_decide(args: &Value, ledger: &Path) -> ToolResult {
     } else {
         String::new()
     };
+    // An agent acting on a collapsed map would otherwise see the same verdict for
+    // every probability it passes and have no way to know why.
+    let note = if d.map_kind == scoring::MapKind::Constant {
+        format!(" NOTE: your stated confidence has not tracked outcomes over {n} calls, so the number you gave was replaced with your base rate — every prob returns this same answer until that changes.")
+    } else {
+        String::new()
+    };
     let text = format!(
-        "{verb} — {gloss}. Need ≥{:.0}% at stake {stake:.1}; you have {:.0}%{corr}.",
+        "{verb} — {gloss}. Need ≥{:.0}% at stake {stake:.1}; you have {:.0}%{corr}.{note}",
         d.proceed_threshold * 100.0,
         d.adjusted_p * 100.0,
     );
@@ -695,6 +832,7 @@ fn tool_decide(args: &Value, ledger: &Path) -> ToolResult {
             "margin": d.margin,
             "stake": stake,
             "verify_cost": verify_cost,
+            "map_kind": d.map_kind.as_str(),
             "used_recalibration": earned,
             "n": n,
             "eprocess": e,
@@ -801,6 +939,17 @@ fn tool_schemas() -> Value {
             }, "required": ["statement", "by"] }
         },
         {
+            "name": "update",
+            "description": "Revise an OPEN prediction as evidence arrives. The old forecast is kept, never overwritten — the claim is a palimpsest. Revising is free and cannot launder your record: the headline score always grades your FIRST forecast, so an update is read as 'you learned something', not as 'you were right all along'. Use it the moment your belief actually moves; leaving a stale number logged is the thing that costs you.",
+            "inputSchema": { "type": "object", "properties": {
+                "id": { "type": "string", "description": "claim id (any unique prefix)" },
+                "prob": { "type": "number", "description": "binary: the revised probability, 0..1" },
+                "interval": { "type": "string", "description": "numeric: the revised interval \"LOW..HIGH\"" },
+                "level": { "type": "number", "description": "numeric: confidence level; defaults to the claim's previous level" },
+                "because": { "type": "string", "description": "what changed your mind — the reason is the part worth re-reading later" }
+            }, "required": ["id"] }
+        },
+        {
             "name": "resolve",
             "description": "Resolve a prediction the moment reality answers; returns its Brier (binary) or Winkler (numeric) score.",
             "inputSchema": { "type": "object", "properties": {
@@ -877,6 +1026,7 @@ mod tests {
             names,
             [
                 "predict",
+                "update",
                 "resolve",
                 "calibration",
                 "recalibrate",

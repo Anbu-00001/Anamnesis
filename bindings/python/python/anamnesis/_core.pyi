@@ -70,6 +70,12 @@ def calibration_eprocess_v2(
     """Mixture e-process, capped at 1e12. Unlike :func:`calibration_eprocess`,
     this sees symmetric overconfidence (too sure at 0.9 AND at 0.1)."""
 
+def calibration_eprocess_seq(
+    probs: Sequence[float], outcomes: Sequence[float | None]
+) -> float | None:
+    """Mixture e-process over a sequence that may contain gaps: pass ``None`` for a
+    due-but-ungraded claim and it is priced at its worst possible factor."""
+
 def calibration_log_eprocess(
     probs: Sequence[float], outcomes: Sequence[float]
 ) -> float | None:
@@ -105,6 +111,6 @@ def decide(
     verify_cost: float = ...,
     recal_a: Optional[float] = ...,
     recal_b: Optional[float] = ...,
-) -> Tuple[str, float, float, float]: ...
+) -> Tuple[str, float, float, float, str]: ...
 def mean_boldness(probs: List[float]) -> Optional[float]: ...
 def asmd(a: List[float], b: List[float]) -> Optional[float]: ...

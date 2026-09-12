@@ -109,6 +109,13 @@ pub struct Claim {
     pub created_at: DateTime<Utc>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolve_by: Option<NaiveDate>,
+    /// How many days after creation this claim becomes answerable, when it has no
+    /// `resolve_by` date. **Stored at creation** rather than computed at read time
+    /// from a global, so the evidence order is auditable from the file itself and
+    /// cannot silently shift when a default changes. Absent in older ledgers ⇒ the
+    /// current global default, and not serialised when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub horizon_days: Option<i64>,
     #[serde(default)]
     pub tags: Vec<String>,
     /// Binary or numeric. Absent in older ledgers ⇒ defaults to binary.
@@ -486,6 +493,7 @@ mod tests {
             id: id.to_string(),
             statement: format!("claim {id}"),
             created_at: ts(2025, 1, 1),
+            horizon_days: None,
             resolve_by: None,
             tags: vec![],
             kind: ClaimKind::Binary,
@@ -516,6 +524,7 @@ mod tests {
             id: "n".into(),
             statement: "how many".into(),
             created_at: ts(2025, 1, 1),
+            horizon_days: None,
             resolve_by: None,
             tags: vec![],
             kind: ClaimKind::Numeric,

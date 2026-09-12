@@ -1,6 +1,6 @@
 ---
 name: calibration-protocol
-description: How and when to log and resolve predictions with Anamnesis so your engineering judgement stays honest and improves across sessions. Engage at the start of any non-trivial coding task, when making effort/time estimates, when forming a bug hypothesis, or whenever you catch yourself saying something will "definitely" work.
+description: How and when to log, revise and resolve predictions with Anamnesis so your engineering judgement stays honest and improves across sessions. Engage at the start of any non-trivial coding task, when making effort/time estimates, when forming a bug hypothesis, or whenever you catch yourself saying something will "definitely" work.
 ---
 
 # The calibration protocol
@@ -41,6 +41,22 @@ cheap, evidence-backed moves, both supported by `/predict`:
 
 Mark consequential calls with `--stake N` so your scored calibration weights the
 predictions that actually matter.
+
+## When to revise (`/update`)
+
+The moment your belief actually moves — not at the end. You read the failing test,
+you found the real stack trace, the migration turned out to touch three more
+tables: that is when the number changes. Leaving a stale probability logged is
+what costs you.
+
+**Revising cannot launder your record.** The headline score always grades your
+*first* forecast — the one recorded before you knew — so an update is read as
+"you learned something", never as "you were right all along". The old forecast is
+kept, never overwritten; `ana show <id>` prints the whole chain. Say what moved
+you with `--because`: months later, the reason is the part worth re-reading.
+
+If you find you never revise, that is itself a finding. Either your first calls
+are unusually good, or you are not updating on evidence you have already seen.
 
 ## When to resolve (`/resolve`)
 

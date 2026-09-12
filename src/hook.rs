@@ -239,10 +239,13 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                     context.push(k);
                 }
             }
-            if let Some(id) = &d.evidence_blocked_by {
-                context.push(format!(
-                    "  the evidence test is paused at [{id}] — resolve or void it to let it continue"
-                ));
+            if d.evidence_ungraded_due > 0 {
+                if let Some(id) = &d.evidence_oldest_gap {
+                    context.push(format!(
+                        "  {} ungraded call(s) are costing you evidence, oldest [{id}] — resolve or void them",
+                        d.evidence_ungraded_due
+                    ));
+                }
             }
             context.extend(due_lines(&ledger, today, &slug));
             if context.len() == 1 {

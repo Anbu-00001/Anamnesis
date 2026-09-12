@@ -622,11 +622,15 @@ fn voiding_a_resolved_claim_cannot_quietly_lower_the_evidence() {
     let _ = fs::remove_dir_all(&dir);
 }
 
-/// One ungraded, already-due claim stops the sequence there — because skipping it
-/// would let the user decide after the fact which of their calls count. The
-/// report has to say so, and say what to do about it.
+/// One ungraded, already-due claim is **priced in**, not skipped and not fatal.
+///
+/// Skipping it would let the user decide after the fact which calls count.
+/// Stopping there prevented that, but cost the whole test: any prefix rule yields
+/// about `(1−g)/g` claims, so a 35%-ungraded ledger got a two-claim sequence no
+/// matter how much it held. The gap now contributes the worst factor it could
+/// have, which preserves the guarantee and keeps the record.
 #[test]
-fn an_overdue_ungraded_claim_pauses_the_evidence_and_says_so() {
+fn an_overdue_ungraded_claim_is_priced_in_and_says_so() {
     let dir = workdir("blocked");
     let ledger = dir.join("ledger.json");
     write_ledger(
@@ -636,7 +640,8 @@ fn an_overdue_ungraded_claim_pauses_the_evidence_and_says_so() {
 
     let before = report_json(&ledger);
     assert_eq!(before["evidence_n"].as_u64().unwrap(), 30);
-    assert!(before["evidence_blocked_by"].is_null());
+    assert!(before["evidence_oldest_gap"].is_null());
+    let e_before = before["eprocess"].as_f64().unwrap();
 
     // Add one open claim dated before all of them.
     let mut v: serde_json::Value =
@@ -654,21 +659,41 @@ fn an_overdue_ungraded_claim_pauses_the_evidence_and_says_so() {
     let after = report_json(&ledger);
     assert_eq!(
         after["evidence_n"].as_u64().unwrap(),
-        0,
-        "it stops at the blocker"
-    );
-    assert_eq!(after["evidence_blocked_by"], "blocker");
-    assert_eq!(
-        after["evidence_waiting"].as_u64().unwrap(),
         30,
-        "waiting, not lost"
+        "every graded call still counts — the gap does not truncate the record"
+    );
+    assert_eq!(after["evidence_oldest_gap"], "blocker");
+    assert_eq!(
+        after["evidence_ungraded_due"].as_u64().unwrap(),
+        1,
+        "the size of the backlog, priced in"
+    );
+
+    // The gap is a price: it can only lower the e-value, never raise it. That is
+    // the whole validity argument, visible from outside the binary.
+    let e_after = after["eprocess"].as_f64().unwrap();
+    assert!(
+        e_after < e_before,
+        "an ungraded claim must cost evidence ({e_after} vs {e_before})"
+    );
+    assert!(
+        after["evidence_gap_cost_log"].as_f64().unwrap() > 0.0,
+        "and the report must say what it cost"
     );
 
     let text = run(&ledger, &["report"]).0;
     assert!(text.contains("blocker"), "the report must name it:\n{text}");
-    assert!(text.contains("waiting, not lost"), "and reassure:\n{text}");
+    assert!(
+        text.contains("priced in at their worst case"),
+        "and explain that it is a price, not a wall:\n{text}"
+    );
+    assert!(
+        text.contains("ana list --due"),
+        "the line must name the way out:\n{text}"
+    );
 
-    // Voiding the bad question is the documented way out, and it works.
+    // Voiding the bad question is still the documented way out, and grading it
+    // gives the wealth back.
     assert!(
         run(
             &ledger,
@@ -676,7 +701,13 @@ fn an_overdue_ungraded_claim_pauses_the_evidence_and_says_so() {
         )
         .2
     );
-    assert_eq!(report_json(&ledger)["evidence_n"].as_u64().unwrap(), 30);
+    let healed = report_json(&ledger);
+    assert_eq!(healed["evidence_n"].as_u64().unwrap(), 30);
+    assert_eq!(
+        healed["eprocess"].as_f64().unwrap(),
+        e_before,
+        "clearing the gap restores the evidence exactly"
+    );
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -1084,4 +1115,69 @@ fn export_removes_every_free_text_field() {
         .collect();
     assert!(tags.contains(&"kind:estimate") && tags.contains(&"who:me"));
     let _ = fs::remove_dir_all(&dir);
+}
+
+// ------------------------------------------------------- P0-2 revise-then-resolve
+
+/// The hindsight exploit, driven the way a user actually drives it.
+///
+/// `resolve` reported the score of `current_prob` — the LAST forecast. With no way
+/// to revise, first and last were always the same claim, so the bug was invisible:
+/// a real agent ledger of 426 claims contained zero revisions because `update` was
+/// CLI-only. Exposing `update` over MCP made it reachable, and the first end-to-end
+/// run of predict → update → resolve printed `Brier 0.062` for a claim the record
+/// scores at `0.360`.
+///
+/// The stored record was always right. It was the number read back to the person
+/// who had just revised — the one moment they are most likely to believe it — that
+/// was wrong.
+#[test]
+fn revising_then_resolving_reports_the_first_forecast_score() {
+    let dir = workdir("revise");
+    let ledger = dir.join("ledger.json");
+
+    let (out, _, ok) = run(
+        &ledger,
+        &["add", "the migration is compatible", "--prob", "0.6"],
+    );
+    assert!(ok, "add failed: {out}");
+    let id = out
+        .split('[')
+        .nth(1)
+        .unwrap()
+        .split(']')
+        .next()
+        .unwrap()
+        .to_string();
+
+    // Revise once the evidence arrives — the honest use of the verb.
+    let (out, _, ok) = run(&ledger, &["update", &id, "--prob", "0.25"]);
+    assert!(ok, "update failed: {out}");
+
+    let (out, _, ok) = run(&ledger, &["resolve", &id, "no"]);
+    assert!(ok, "resolve failed: {out}");
+    assert!(
+        out.contains("0.360"),
+        "resolve must report the FIRST forecast's Brier (0.6 vs FALSE = 0.360):\n{out}"
+    );
+    assert!(
+        !out.contains("you said 25%"),
+        "the revised number is not the score:\n{out}"
+    );
+    assert!(
+        out.contains("not graded"),
+        "and the revision must still be visible, labelled:\n{out}"
+    );
+
+    // The same claim, the same conclusion, through the report.
+    let (out, _, _) = run(&ledger, &["--json", "report"]);
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(v["score_basis"], "first");
+    assert!((v["brier_first"].as_f64().unwrap() - 0.36).abs() < 1e-9);
+    assert!((v["brier_final"].as_f64().unwrap() - 0.0625).abs() < 1e-9);
+    assert_eq!(
+        v["late_updates"].as_u64().unwrap(),
+        1,
+        "a revision after the fact is counted and surfaced, not hidden"
+    );
 }

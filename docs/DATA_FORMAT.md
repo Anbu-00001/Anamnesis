@@ -43,6 +43,7 @@ That is guarded by `a_v0_3_0_ledger_still_loads_and_reports` in
 | `amendments` | `[{at, old_statement, new_statement, old_tags, new_tags}]` — corrections to wording or tags, pre-resolution only. |
 | `resolution.resolved_by` | `self` (default, not written), `auto` (graded from an observed fact, e.g. a test run's exit status) or `human`. |
 | `stake` | how much the call matters; `1.0` by default and not written when default. |
+| `horizon_days` | how many days after creation the claim becomes answerable when it has no `resolve_by`. Set at creation from the `kind:` tag (default 7; `tests-pass`/`bug-hypothesis` 1; `estimate`/`approach`/`compat` 3). Stored rather than computed at read time so the evidence order is auditable from the file and cannot shift when a default changes. Absent ⇒ the current default. |
 
 ## What is immutable
 

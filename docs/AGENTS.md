@@ -7,8 +7,8 @@ agent's stated confidence matched what actually followed. Two surfaces ship in
 this repo:
 
 - **`ana mcp`** — a [Model Context Protocol](https://modelcontextprotocol.io)
-  server over stdio exposing `predict` / `resolve` / `calibration` / `recalibrate`
-  / `decide` / `list` as tools, so any MCP host (Claude, Cursor, Cline, …) can keep
+  server over stdio exposing `predict` / `update` / `resolve` / `calibration` /
+  `recalibrate` / `decide` / `list` as tools, so any MCP host (Claude, Cursor, Cline, …) can keep
   a calibration ledger *and act on it*:
   ```jsonc
   { "mcpServers": { "anamnesis": { "command": "ana", "args": ["mcp"] } } }

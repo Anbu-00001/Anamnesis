@@ -702,6 +702,7 @@ fn cmd_import(
             statement: statement.to_string(),
             created_at: created,
             resolve_by,
+            horizon_days: Some(anamnesis::evidence::horizon_for(&tags)),
             tags,
             kind: ClaimKind::Binary,
             stake: 1.0,
@@ -977,6 +978,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 statement: statement.clone(),
                 created_at: now,
                 resolve_by,
+                horizon_days: Some(anamnesis::evidence::horizon_for(&normalize_tags(tags))),
                 tags: normalize_tags(tags),
                 kind,
                 stake,
@@ -1109,7 +1111,13 @@ fn run(cli: Cli) -> Result<(), String> {
                         .as_ref()
                         .ok_or("resolve a binary claim with yes or no")?)
                     .into();
-                    let prob = ledger.claims[idx].current_prob().unwrap_or(0.5);
+                    // The FIRST forecast is what gets graded (invariant #6): the
+                    // belief recorded before the answer was known. Reporting the
+                    // last one here told a reviser their score was the one they
+                    // arrived at after the evidence came in.
+                    let prob = ledger.claims[idx].first_prob().unwrap_or(0.5);
+                    let final_prob = ledger.claims[idx].current_prob();
+                    let revisions = ledger.claims[idx].forecasts.len();
                     ledger.claims[idx].resolution = Some(Resolution {
                         at: now,
                         outcome: Some(o),
@@ -1118,11 +1126,20 @@ fn run(cli: Cli) -> Result<(), String> {
                         resolved_by: None,
                     });
                     store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;
-                    let brier = (prob - if o.happened() { 1.0 } else { 0.0 }).powi(2);
+                    let truth_f = if o.happened() { 1.0 } else { 0.0 };
+                    let brier = (prob - truth_f).powi(2);
+                    let final_brier = final_prob.map(|fp| (fp - truth_f).powi(2));
                     if cli.json {
-                        out_json(
-                            json!({"id": cid, "kind": kind, "outcome": o.happened(), "prob": prob, "brier": brier}),
-                        );
+                        out_json(json!({
+                            "id": cid,
+                            "kind": kind,
+                            "outcome": o.happened(),
+                            "prob": prob,
+                            "brier": brier,
+                            "score_basis": "first",
+                            "final_prob": final_prob,
+                            "final_brier": final_brier,
+                        }));
                     } else {
                         let truth = if o.happened() { "TRUE" } else { "FALSE" };
                         println!(
@@ -1130,6 +1147,15 @@ fn run(cli: Cli) -> Result<(), String> {
                             pct(prob),
                             brier
                         );
+                        if revisions > 1 {
+                            if let (Some(fp), Some(fb)) = (final_prob, final_brier) {
+                                println!(
+                                    "  graded on your FIRST forecast; you later revised to {} ({:.3} — shown, not graded)",
+                                    pct(fp),
+                                    fb
+                                );
+                            }
+                        }
                     }
                 }
                 ClaimKind::Numeric => {
@@ -1531,6 +1557,7 @@ fn run(cli: Cli) -> Result<(), String> {
                         "stake": *stake,
                         "verify_cost": *verify_cost,
                         "used_recalibration": earned,
+                        "map_kind": d.map_kind.as_str(),
                         "n": n,
                         "eprocess": e,
                     })
@@ -1559,6 +1586,13 @@ fn run(cli: Cli) -> Result<(), String> {
                     *stake,
                     d.adjusted_p * 100.0
                 );
+                // A collapsed map returns the same act for every stated p. Say so,
+                // or it reads as the gate ignoring the input.
+                if d.map_kind == scoring::MapKind::Constant {
+                    println!(
+                        "  note: your stated confidence hasn't tracked outcomes over {n} calls, so the number you gave was replaced with your base rate — every --prob returns this same answer until that changes."
+                    );
+                }
             }
         }
 

@@ -89,6 +89,49 @@ truthful one, and the reason is given below.
   (PAV) fit that CORP already computes. PAV cannot diverge by construction, so it
   is a free oracle. A map failing any of these is replaced by the identity.
 
+### Breaking — the evidence sequence
+
+- **A due-but-ungraded claim is now priced, not blocking.** The sequence used to
+  stop at the first gap, which was safe but nearly useless: any prefix rule yields
+  about `(1−g)/g` usable claims for an ungraded rate `g`, so a ledger that is 35%
+  ungraded got a **two-claim** sequence however much it held. Measured on a real
+  426-claim agent ledger: **23 of 309** graded calls counted. Partitioning is not
+  a fix — `K` partitions give `K` equally short sequences and a `K`-fold mixture
+  penalty that cancels the gain; monthly partitions on that ledger would have
+  given ~7, worse than the 23.
+
+  A gap now contributes the smallest factor it could possibly have contributed,
+  `min over y in {0,1} of 1 + λ·h(p)·(y − p)`, per mixture component. The same
+  ledger now counts **236 of 309**. Validity is unchanged and the argument grows
+  by one sentence: the two candidate factors average to exactly `1` under the
+  null, so the minimum is `≤ 1` and `≤` the true factor whichever outcome the
+  claim would have had — making the wealth a non-negative supermartingale, which
+  Ville's inequality also covers.
+
+  Measured at n = 300, alarm `e ≥ 20`, peeking every 5 (`validation/gapfill.py`):
+  detection of symmetric overconfidence at 90% grading goes from 0.047 to 1.000,
+  and at 65% from 0.000 to 1.000, with the null false-alarm rate never rising
+  (gaps only shrink wealth). The cost is real, though: against a *diffuse*
+  alternative (per-claim discrepancy ≤ 0.135) detection falls from 0.587 at full
+  grading to 0.003 at 65%. Gaps are priced, not forgiven.
+
+  The cost scales with boldness — an ungraded `0.95` costs more than an ungraded
+  `0.55` — and `|λ| ≤ 0.9` keeps every factor at or above `0.1`, so a backlog
+  costs wealth rather than killing the process. The report now says what the
+  backlog is costing instead of only counting it.
+  JSON: `evidence_oldest_gap`, `evidence_gap_cost_log`, `evidence_gap_without_deadline`
+  replace `evidence_blocked_by`, `evidence_waiting`, `evidence_blocked_without_deadline`.
+
+- **The horizon is per-`kind:` and stored on the claim at creation** (new
+  `horizon_days` field), instead of being computed at read time from a global.
+  Fixed before the outcome either way, but now auditable from the file and immune
+  to a default changing under an existing ledger. The default drops from **30 days
+  to 7** (`kind:tests-pass`/`bug-hypothesis` 1 day, `estimate`/`approach`/`compat`
+  3), which is safe only because a premature admission is now a small cost rather
+  than a frozen test. Measured resolution latency on the agent ledger: median 6.6
+  minutes, p90 5 hours, p99 3.3 days — the 30-day horizon was holding 130
+  already-resolved claims out of the sequence for nothing.
+
 ### Breaking — the verdict
 
 - **One verdict, computed once, for every surface** (`report::verdict`). The plain
@@ -116,6 +159,25 @@ truthful one, and the reason is given below.
   evidence bar as its happiest words: no `[DIALED IN]` below 50 graded calls.
 
 ### Fixed
+
+- **The Python package version was still `0.3.0`** while the crate was `0.4.0`, so
+  `maturin build` produced a wheel labelled `anamnesis-0.3.0` carrying 0.4.0
+  scoring semantics. PyPI versions cannot be reused, so publishing would have been
+  permanent. `scripts/check-versions.sh` now covers `bindings/python/pyproject.toml`
+  and `bindings/python/Cargo.toml` as well — it only checked the crate, the plugin
+  and the marketplace, which is why the drift reappeared in the one place it was
+  not looking.
+
+- **`resolve` reported the score of your LAST forecast, not your first** — on both
+  the CLI and the MCP tool. The stored record was always right (`report` grades the
+  first forecast), but the number read back at the moment of resolution — the one
+  moment you are most likely to believe it — came from `current_prob`. A claim
+  logged at 0.6, revised to 0.25 and resolved NO printed `Brier 0.062`; the record
+  scores it `0.360`. Invisible until this release because `update` was CLI-only, so
+  first and last were almost always the same forecast. Both now grade the first and
+  print the revision labelled "shown, not graded".
+  JSON: `score_basis`, `final_prob`, `final_brier` on the resolve result.
+  Pinned by `tests/hn_scenarios.rs::revising_then_resolving_reports_the_first_forecast_score`.
 
 - **Concurrent writes no longer lose claims.** Every command did load → modify →
   save with no lock, and every writer shared one temp filename. Measured: 40
@@ -153,6 +215,33 @@ truthful one, and the reason is given below.
 
 ### Added
 
+- **MCP `update`** — revise an open forecast over the protocol. This verb existed
+  only on the CLI, which made the advertised loop (predict → update → resolve →
+  calibrate) unreachable for the agent that is the tool's primary user: a real
+  ledger of 426 claims logged across three months contained **exactly zero**
+  revisions, because there was no way to make one. That measured "agents never
+  change their mind" as a fact about the API, not about agents. `ana show` still
+  advertises "the palimpsest of your changing mind"; now the agent path can
+  actually write one. Shipped only because the headline score grades the *first*
+  forecast — exposing `update` while the score read the last one would have handed
+  every agent a one-call route to a perfect record.
+  Also added as the `/update` plugin command and a section of the calibration
+  protocol skill.
+- **Python binding: `decide` now returns `map_kind` as a fifth field.** Breaking
+  for anyone unpacking the `Decision` tuple positionally by arity; attribute access
+  (`d.act`, `d.adjusted_p`) is unaffected.
+- **`map_kind` on `decide`** (`identity` | `logistic` | `constant`), in `--json`,
+  in the MCP `decide` result, and as a line of prose in the text output when it is
+  `constant`. Once the slope collapses to `b = 0`, `--prob 0.99` and `--prob 0.55`
+  return the same act, because the stated probability is no longer an input. That
+  is correct and looks exactly like a bug, so it now says so: *your stated
+  confidence hasn't tracked outcomes over N calls, so the number was replaced with
+  your base rate.*
+- **The evidence line now carries the size of the backlog and the way out** —
+  "evidence uses 22 of 301 graded calls — 152 more are waiting, not lost, behind
+  92 due-but-ungraded claim(s) (`ana list --due`)". "22 of 301" on its own reads
+  to a stranger as a broken feature rather than as a mechanism with an exit.
+  JSON: `evidence_ungraded_due`.
 - **`ana demo`** — builds a fictional year of predictions in a temporary
   directory, reports on it, and never touches a real ledger.
 - **`ana import <file.csv>`** — bring an existing prediction history in. Columns:
