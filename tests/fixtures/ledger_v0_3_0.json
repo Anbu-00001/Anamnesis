@@ -1,0 +1,1106 @@
+{
+  "claims": [
+    {
+      "id": "e46080",
+      "statement": "The US Federal Reserve cuts rates at least once before end of 2025",
+      "created_at": "2025-01-19T10:00:00Z",
+      "tags": [
+        "geopolitics",
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-19T10:00:00Z",
+          "prob": 0.9,
+          "because": "inflation clearly cooling; Fed already guiding toward cuts"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-01T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "1636fe",
+      "statement": "All three of OpenAI, Google and Anthropic ship a new flagship model in 2025",
+      "created_at": "2025-01-21T10:00:00Z",
+      "tags": [
+        "tech",
+        "ai"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-01-21T10:00:00Z",
+          "prob": 0.95,
+          "because": "release cadence makes this nearly certain"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-11T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "973a36",
+      "statement": "The S&P 500 ends 2025 above its 2024 close",
+      "created_at": "2025-01-23T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-23T10:00:00Z",
+          "prob": 0.95,
+          "because": "the trend is my friend and earnings look fine"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-31T10:00:00Z",
+        "outcome": "false",
+        "note": "a Q4 drawdown I waved away as noise"
+      }
+    },
+    {
+      "id": "b11b59",
+      "statement": "Apple ships a fully LLM-revamped Siri by end of 2025",
+      "created_at": "2025-02-04T10:00:00Z",
+      "tags": [
+        "tech",
+        "ai"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-02-04T10:00:00Z",
+          "prob": 0.9,
+          "because": "WWDC promised it; surely they execute"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-11T10:00:00Z",
+        "outcome": "false",
+        "note": "I trusted a roadmap demo over shipping history"
+      }
+    },
+    {
+      "id": "7f127b",
+      "statement": "A consumer AR-glasses product sells over one million units in 2025",
+      "created_at": "2025-02-14T10:00:00Z",
+      "tags": [
+        "tech"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-02-14T10:00:00Z",
+          "prob": 0.9,
+          "because": "everyone says this is the year"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-21T10:00:00Z",
+        "outcome": "false",
+        "note": "I mistook hype volume for demand"
+      }
+    },
+    {
+      "id": "104ed7",
+      "statement": "A new GLP-1 weight-loss drug wins major FDA approval in 2025",
+      "created_at": "2025-02-24T10:00:00Z",
+      "tags": [
+        "science",
+        "health"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-02-24T10:00:00Z",
+          "prob": 0.9,
+          "because": "deep pipeline, strong trials"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-01T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "8c9ad7",
+      "statement": "I attend the wedding I already RSVP'd yes to",
+      "created_at": "2025-03-16T10:00:00Z",
+      "tags": [
+        "personal"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-03-16T10:00:00Z",
+          "prob": 0.95,
+          "because": "it's on the calendar and I want to go"
+        }
+      ],
+      "resolution": {
+        "at": "2025-09-22T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "54e8f3",
+      "statement": "I keep my daily writing streak unbroken for 90 days",
+      "created_at": "2025-01-30T10:00:00Z",
+      "tags": [
+        "personal"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-30T10:00:00Z",
+          "prob": 0.9,
+          "because": "motivation is sky-high right now"
+        }
+      ],
+      "resolution": {
+        "at": "2025-06-04T10:00:00Z",
+        "outcome": "false",
+        "note": "motivation is not a plan; I missed day 47"
+      }
+    },
+    {
+      "id": "f73ed6",
+      "statement": "Bitcoin trades above $100k at some point in 2025",
+      "created_at": "2025-01-25T10:00:00Z",
+      "tags": [
+        "markets",
+        "crypto"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-25T10:00:00Z",
+          "prob": 0.8,
+          "because": "halving dynamics plus ETF inflows"
+        }
+      ],
+      "resolution": {
+        "at": "2025-10-22T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "86377d",
+      "statement": "An open-weights model tops a major public leaderboard outright in 2025",
+      "created_at": "2025-03-01T10:00:00Z",
+      "tags": [
+        "tech",
+        "ai"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-03-01T10:00:00Z",
+          "prob": 0.8,
+          "because": "open models are closing the gap fast"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "outcome": "false",
+        "note": "closed frontier pulled ahead again"
+      }
+    },
+    {
+      "id": "b4880b",
+      "statement": "Tesla delivers fewer vehicles in 2025 than in 2024",
+      "created_at": "2025-03-06T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-03-06T10:00:00Z",
+          "prob": 0.8,
+          "because": "demand softening across the lineup"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "974943",
+      "statement": "I finish the side project before my own deadline",
+      "created_at": "2025-02-09T10:00:00Z",
+      "tags": [
+        "personal"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-02-09T10:00:00Z",
+          "prob": 0.8,
+          "because": "I always think I'm faster than I am"
+        }
+      ],
+      "resolution": {
+        "at": "2025-08-03T10:00:00Z",
+        "outcome": "false",
+        "note": "planning fallacy, exactly as warned"
+      }
+    },
+    {
+      "id": "867a9a",
+      "statement": "A new pandemic triggers a WHO emergency declaration in 2025",
+      "created_at": "2025-01-27T10:00:00Z",
+      "tags": [
+        "geopolitics",
+        "health"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-01-27T10:00:00Z",
+          "prob": 0.2,
+          "because": "low base rate; I was rightly skeptical of the noise"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-31T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "7a2beb",
+      "statement": "OPEC+ extends its production cuts through the end of 2025",
+      "created_at": "2025-01-29T10:00:00Z",
+      "tags": [
+        "geopolitics",
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-29T10:00:00Z",
+          "prob": 0.7,
+          "because": "fiscal break-evens demand higher prices"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-11T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "966e95",
+      "statement": "Nvidia remains the most valuable semiconductor company all year",
+      "created_at": "2025-01-31T10:00:00Z",
+      "tags": [
+        "tech",
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-31T10:00:00Z",
+          "prob": 0.7,
+          "because": "no credible challenger this cycle"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "948c2e",
+      "statement": "Bitcoin ends 2025 above $150k",
+      "created_at": "2025-01-26T10:00:00Z",
+      "tags": [
+        "markets",
+        "crypto"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-26T10:00:00Z",
+          "prob": 0.7,
+          "because": "supercycle thesis"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "outcome": "false",
+        "note": "the thesis was a wish wearing a number"
+      }
+    },
+    {
+      "id": "e40faa",
+      "statement": "The reigning champion defends their Wimbledon title in 2025",
+      "created_at": "2025-06-24T10:00:00Z",
+      "tags": [
+        "sports"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-06-24T10:00:00Z",
+          "prob": 0.7,
+          "because": "looks dominant on grass"
+        }
+      ],
+      "resolution": {
+        "at": "2025-07-24T10:00:00Z",
+        "outcome": "false",
+        "note": "an upset I gave too little weight"
+      }
+    },
+    {
+      "id": "48e522",
+      "statement": "I read at least 12 books this year",
+      "created_at": "2025-01-20T10:00:00Z",
+      "tags": [
+        "personal"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-20T10:00:00Z",
+          "prob": 0.7,
+          "because": "one a month is the floor for me"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "622c6b",
+      "statement": "Gold sets a new all-time high in 2025",
+      "created_at": "2025-02-02T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-02-02T10:00:00Z",
+          "prob": 0.6,
+          "because": "central-bank buying plus real-rate path"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-11T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "ed40b3",
+      "statement": "An outsider (outside the pre-season top four) wins a major football trophy",
+      "created_at": "2025-05-15T10:00:00Z",
+      "tags": [
+        "sports"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-05-15T10:00:00Z",
+          "prob": 0.6,
+          "because": "the field looks unusually open"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-11T10:00:00Z",
+        "outcome": "false",
+        "note": "the favourites held after all"
+      }
+    },
+    {
+      "id": "ec269a",
+      "statement": "I run a sub-2:00 half marathon this year",
+      "created_at": "2025-02-19T10:00:00Z",
+      "tags": [
+        "personal",
+        "health"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-02-19T10:00:00Z",
+          "prob": 0.6,
+          "because": "training is on track if I stay healthy"
+        }
+      ],
+      "resolution": {
+        "at": "2025-10-22T10:00:00Z",
+        "outcome": "false",
+        "note": "a calf strain in week 9"
+      }
+    },
+    {
+      "id": "8108b3",
+      "statement": "India wins more than five golds at the season's flagship athletics meet",
+      "created_at": "2025-05-25T10:00:00Z",
+      "tags": [
+        "sports"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-05-25T10:00:00Z",
+          "prob": 0.6,
+          "because": "strong recent form"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-11T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "c8f3f9",
+      "statement": "A major AI lab faces a serious public safety controversy in 2025",
+      "created_at": "2025-02-06T10:00:00Z",
+      "tags": [
+        "tech",
+        "ai"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-02-06T10:00:00Z",
+          "prob": 0.5,
+          "because": "broad claim, genuinely uncertain"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-11T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "b4fb87",
+      "statement": "Oil (Brent) closes 2025 lower than it opened",
+      "created_at": "2025-02-04T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-02-04T10:00:00Z",
+          "prob": 0.5,
+          "because": "no edge; truly a toss-up"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "9423a3",
+      "statement": "A major European government collapses into a snap election in H2 2025",
+      "created_at": "2025-02-08T10:00:00Z",
+      "tags": [
+        "geopolitics"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-02-08T10:00:00Z",
+          "prob": 0.3,
+          "because": "fragile coalitions but inertia is strong"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-11T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "3871b6",
+      "statement": "A speculative retail mania (meme-stock scale) returns in 2025",
+      "created_at": "2025-02-12T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-02-12T10:00:00Z",
+          "prob": 0.3,
+          "because": "liquidity is tighter than 2021"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-21T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "fc9bf3",
+      "statement": "A major US bank fails or needs a public rescue in 2025",
+      "created_at": "2025-02-10T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-02-10T10:00:00Z",
+          "prob": 0.3,
+          "because": "stress is real but backstops are ready"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-21T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "c8fac6",
+      "statement": "Brent crude spikes above $100 at some point in 2025",
+      "created_at": "2025-02-04T10:00:00Z",
+      "tags": [
+        "markets",
+        "geopolitics"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-02-04T10:00:00Z",
+          "prob": 0.2,
+          "because": "I doubted any supply shock would land"
+        }
+      ],
+      "resolution": {
+        "at": "2025-08-13T10:00:00Z",
+        "outcome": "true",
+        "note": "a regional flare-up I underweighted"
+      }
+    },
+    {
+      "id": "35ea8c",
+      "statement": "A room-temperature superconductor is independently validated in 2025",
+      "created_at": "2025-03-04T10:00:00Z",
+      "tags": [
+        "science"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-03-04T10:00:00Z",
+          "prob": 0.2,
+          "because": "extraordinary claims; replication usually fails"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-11T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "ec2d24",
+      "statement": "A crewed mission lands on the Moon in 2025",
+      "created_at": "2025-03-06T10:00:00Z",
+      "tags": [
+        "science"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-03-06T10:00:00Z",
+          "prob": 0.1,
+          "because": "schedules have slipped for years"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-31T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "d9207e",
+      "statement": "An FDA-approved outright cure for a major cancer is announced in 2025",
+      "created_at": "2025-03-08T10:00:00Z",
+      "tags": [
+        "science",
+        "health"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-03-08T10:00:00Z",
+          "prob": 0.1,
+          "because": "that is not how oncology progresses"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-31T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "1cbd41",
+      "statement": "My country's central bank hikes rates again in 2025",
+      "created_at": "2025-01-20T10:00:00Z",
+      "tags": [
+        "geopolitics",
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-20T10:00:00Z",
+          "prob": 0.7,
+          "because": "early data looked hot"
+        },
+        {
+          "at": "2025-07-14T10:00:00Z",
+          "prob": 0.3,
+          "because": "data turned; hikes look off the table"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-11T10:00:00Z",
+        "outcome": "false"
+      }
+    },
+    {
+      "id": "2496c9",
+      "statement": "A serious AI-regulation bill becomes law in a major economy in 2025",
+      "created_at": "2025-01-23T10:00:00Z",
+      "tags": [
+        "geopolitics",
+        "ai"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2025-01-23T10:00:00Z",
+          "prob": 0.55,
+          "because": "lots of talk, little movement"
+        },
+        {
+          "at": "2025-08-13T10:00:00Z",
+          "prob": 0.8,
+          "because": "a concrete bill cleared committee"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-26T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "56e068",
+      "statement": "Our team's flagship feature ships to general availability in 2025",
+      "created_at": "2025-01-24T10:00:00Z",
+      "tags": [
+        "personal",
+        "tech"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-24T10:00:00Z",
+          "prob": 0.4,
+          "because": "scope looked too big"
+        },
+        {
+          "at": "2025-06-24T10:00:00Z",
+          "prob": 0.8,
+          "because": "leadership promised resources"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-11T10:00:00Z",
+        "outcome": "false",
+        "note": "I let an org promise override my own estimate \u2014 beware that"
+      }
+    },
+    {
+      "id": "aa9f61",
+      "statement": "Global EV sales grow more than 15% year over year in 2025",
+      "created_at": "2025-01-22T10:00:00Z",
+      "tags": [
+        "markets",
+        "tech"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-01-22T10:00:00Z",
+          "prob": 0.6,
+          "because": "China strong, West cooling"
+        },
+        {
+          "at": "2025-06-14T10:00:00Z",
+          "prob": 0.7,
+          "because": "subsidy news tipped me up"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-31T10:00:00Z",
+        "outcome": "true"
+      }
+    },
+    {
+      "id": "4c420e",
+      "statement": "Number of US Fed rate cuts in 2025",
+      "created_at": "2025-01-21T10:00:00Z",
+      "tags": [
+        "markets",
+        "geopolitics"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-01-21T10:00:00Z",
+          "interval": {
+            "low": 1.0,
+            "high": 3.0,
+            "level": 0.8
+          },
+          "because": "a cut or two looks likely"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-01T10:00:00Z",
+        "value": 2.0
+      }
+    },
+    {
+      "id": "c28cfc",
+      "statement": "S&P 500 year-end 2025 close (hundreds of points)",
+      "created_at": "2025-01-23T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-01-23T10:00:00Z",
+          "interval": {
+            "low": 58.0,
+            "high": 64.0,
+            "level": 0.8
+          },
+          "because": "grind higher from here"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-31T10:00:00Z",
+        "value": 56.0
+      }
+    },
+    {
+      "id": "e49ce8",
+      "statement": "Bitcoin year-end 2025 price (thousands of $)",
+      "created_at": "2025-01-26T10:00:00Z",
+      "tags": [
+        "markets",
+        "crypto"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-01-26T10:00:00Z",
+          "interval": {
+            "low": 120.0,
+            "high": 180.0,
+            "level": 0.8
+          },
+          "because": "supercycle math"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "value": 95.0
+      }
+    },
+    {
+      "id": "63c0c3",
+      "statement": "Books I finish reading in 2025",
+      "created_at": "2025-01-20T10:00:00Z",
+      "tags": [
+        "personal"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-01-20T10:00:00Z",
+          "interval": {
+            "low": 12.0,
+            "high": 18.0,
+            "level": 0.8
+          },
+          "because": "roughly one a month, give or take"
+        }
+      ],
+      "resolution": {
+        "at": "2026-01-10T10:00:00Z",
+        "value": 14.0
+      }
+    },
+    {
+      "id": "b9c5a2",
+      "statement": "Global EV sales year-over-year growth in 2025 (%)",
+      "created_at": "2025-01-22T10:00:00Z",
+      "tags": [
+        "markets",
+        "tech"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-01-22T10:00:00Z",
+          "interval": {
+            "low": 10.0,
+            "high": 20.0,
+            "level": 0.8
+          },
+          "because": "strong but decelerating"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-31T10:00:00Z",
+        "value": 23.0
+      }
+    },
+    {
+      "id": "5bedba",
+      "statement": "Brent crude 2025 low (US$)",
+      "created_at": "2025-01-24T10:00:00Z",
+      "tags": [
+        "markets"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-01-24T10:00:00Z",
+          "interval": {
+            "low": 70.0,
+            "high": 85.0,
+            "level": 0.8
+          },
+          "because": "the floor felt solid"
+        }
+      ],
+      "resolution": {
+        "at": "2025-11-11T10:00:00Z",
+        "value": 63.0
+      }
+    },
+    {
+      "id": "bbde18",
+      "statement": "Number of FOMC dissenting votes at any 2025 meeting",
+      "created_at": "2025-01-28T10:00:00Z",
+      "tags": [
+        "markets",
+        "geopolitics"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-01-28T10:00:00Z",
+          "interval": {
+            "low": 0.0,
+            "high": 2.0,
+            "level": 0.8
+          },
+          "because": "consensus usually holds"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-11T10:00:00Z",
+        "value": 4.0
+      }
+    },
+    {
+      "id": "9edcc9",
+      "statement": "Nvidia peak intraday drawdown from its 2025 high (%)",
+      "created_at": "2025-02-01T10:00:00Z",
+      "tags": [
+        "markets",
+        "tech"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-02-01T10:00:00Z",
+          "interval": {
+            "low": 10.0,
+            "high": 20.0,
+            "level": 0.8
+          },
+          "because": "shallow dips in a strong tape"
+        }
+      ],
+      "resolution": {
+        "at": "2025-12-21T10:00:00Z",
+        "value": 32.0
+      }
+    },
+    {
+      "id": "9fd988",
+      "statement": "My half-marathon finish time this year (minutes)",
+      "created_at": "2025-02-19T10:00:00Z",
+      "tags": [
+        "personal",
+        "health"
+      ],
+      "kind": "numeric",
+      "forecasts": [
+        {
+          "at": "2025-02-19T10:00:00Z",
+          "interval": {
+            "low": 105.0,
+            "high": 115.0,
+            "level": 0.8
+          },
+          "because": "training pace extrapolated straight out"
+        }
+      ],
+      "resolution": {
+        "at": "2025-10-22T10:00:00Z",
+        "value": 123.0
+      }
+    },
+    {
+      "id": "f793ed",
+      "statement": "Bitcoin closes above $200k at some point in 2026",
+      "created_at": "2026-01-30T10:00:00Z",
+      "resolve_by": "2026-12-31",
+      "tags": [
+        "markets",
+        "crypto"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2026-01-30T10:00:00Z",
+          "prob": 0.45,
+          "because": "no edge yet; halving tailwind vs macro"
+        }
+      ]
+    },
+    {
+      "id": "99a4a5",
+      "statement": "A frontier lab releases weights of a GPT-4-class model in 2026",
+      "created_at": "2026-02-04T10:00:00Z",
+      "resolve_by": "2026-12-31",
+      "tags": [
+        "tech",
+        "ai"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2026-02-04T10:00:00Z",
+          "prob": 0.35,
+          "because": "competitive pressure rising"
+        }
+      ]
+    },
+    {
+      "id": "893b7a",
+      "statement": "I ship Anamnesis v1.0 with a TUI by the end of 2026",
+      "created_at": "2026-05-30T10:00:00Z",
+      "resolve_by": "2026-12-31",
+      "tags": [
+        "personal"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2026-05-30T10:00:00Z",
+          "prob": 0.55,
+          "because": "the core is done; UI is the easy part \u2014 said every engineer ever"
+        }
+      ]
+    },
+    {
+      "id": "26d644",
+      "statement": "A general AI-safety treaty is signed by 3+ major powers in 2026",
+      "created_at": "2026-02-09T10:00:00Z",
+      "resolve_by": "2026-12-31",
+      "tags": [
+        "geopolitics",
+        "ai"
+      ],
+      "kind": "binary",
+      "forecasts": [
+        {
+          "at": "2026-02-09T10:00:00Z",
+          "prob": 0.15,
+          "because": "diplomacy is slow; this is aspirational"
+        }
+      ]
+    },
+    {
+      "id": "0cd2ea",
+      "statement": "My open-source library passes 1,000 GitHub stars",
+      "created_at": "2025-11-11T10:00:00Z",
+      "resolve_by": "2026-05-01",
+      "tags": [
+        "personal",
+        "tech"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2025-11-11T10:00:00Z",
+          "prob": 0.5,
+          "because": "depends entirely on one good launch"
+        }
+      ]
+    },
+    {
+      "id": "9870c0",
+      "statement": "Inflation in my country falls below 3% (annualised) by spring 2026",
+      "created_at": "2026-01-10T10:00:00Z",
+      "resolve_by": "2026-04-30",
+      "tags": [
+        "markets"
+      ],
+      "kind": "binary",
+      "stake": 3.0,
+      "forecasts": [
+        {
+          "at": "2026-01-10T10:00:00Z",
+          "prob": 0.65,
+          "because": "trend is clearly down"
+        }
+      ]
+    }
+  ]
+}

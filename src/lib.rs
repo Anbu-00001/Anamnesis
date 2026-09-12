@@ -12,6 +12,9 @@
 //! network, no model. The rest is storage ([`store`]), the domain model
 //! ([`model`]), and human-readable reporting ([`report`]).
 
+pub mod demo;
+pub mod evidence;
+pub mod hook;
 pub mod mcp;
 pub mod model;
 pub mod report;

@@ -71,6 +71,12 @@ pub struct MindChange {
 pub struct NumericData {
     pub count: usize,
     pub mean_winkler: f64,
+    /// Mean Winkler score as a multiple of each interval's own width — unitless,
+    /// so a question measured in dollars cannot dominate one in milliseconds.
+    /// `1.0` = every value landed inside.
+    pub mean_winkler_ratio: Option<f64>,
+    /// The median of the same quantity, which one disastrous miss cannot move.
+    pub median_winkler_ratio: Option<f64>,
     /// Average nominal level of your intervals (e.g. 0.80 for 80% intervals).
     pub nominal_coverage: f64,
     /// Fraction of intervals that actually contained the outcome.
@@ -98,8 +104,7 @@ pub(crate) const RECAL_RIDGE: f64 = 1.5;
 /// Minimum e-value (at least *suggestive* evidence) and sample count before a
 /// correction is offered — never recalibrate on noise. Shared by the report and
 /// the MCP `recalibrate` tool so the two can never disagree.
-pub(crate) const RECAL_MIN_E: f64 = 3.0;
-pub(crate) const RECAL_MIN_N: usize = 6;
+pub(crate) use scoring::{RECAL_MIN_E, RECAL_MIN_N};
 
 /// The recalibration map for the resolved binary claims matching `tag` (in
 /// resolution order), together with whether the e-process has **earned** applying
@@ -110,19 +115,22 @@ pub(crate) const RECAL_MIN_N: usize = 6;
 pub fn earned_recalibration(
     ledger: &Ledger,
     tag: Option<&str>,
+    today: NaiveDate,
 ) -> (Option<scoring::Recalibration>, bool, usize, Option<f64>) {
-    let mut claims: Vec<&crate::model::Claim> = ledger
+    // The gate must consume exactly the sequence the report's headline test does,
+    // in the same outcome-independent order, or `decide` and `report` will
+    // disagree about whether the evidence exists.
+    let evidence = crate::evidence::binary_evidence(&ledger.claims, today, tag);
+    // The map itself is fitted on every graded claim: more data makes a better
+    // correction, and it is the *gate*, not the fit, that guards validity.
+    let all: Vec<Sample> = ledger
         .claims
         .iter()
-        .filter(|c| c.is_resolved())
         .filter(|c| tag.is_none_or(|t| c.tags.iter().any(|x| x == t)))
+        .filter_map(|c| c.sample())
         .collect();
-    claims.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
-    let samples: Vec<Sample> = claims.iter().filter_map(|c| c.sample()).collect();
-    let n = samples.len();
-    let e = scoring::calibration_eprocess(&samples);
-    let recal = scoring::fit_recalibration(&samples, RECAL_RIDGE);
-    let earned = recal.is_some() && e.is_some_and(|ev| ev >= RECAL_MIN_E) && n >= RECAL_MIN_N;
+    let n = evidence.samples.len();
+    let (recal, earned, e) = scoring::gate_recalibration(&all, &evidence.samples, RECAL_RIDGE);
     (recal, earned, n, e)
 }
 
@@ -138,6 +146,223 @@ const TREND_MIN_N: usize = 10;
 /// forecasts count as drawn from different distributions (the conventional
 /// covariate-balance / missing-not-at-random cutoff).
 const SELECTION_ASMD_FLAG: f64 = 0.1;
+/// Draws and seed for the MCB noise floor. Fixed, so the floor never moves under
+/// a user who simply re-runs the report.
+const MCB_NULL_DRAWS: usize = 400;
+const MCB_NULL_SEED: u64 = 0xA11C_E5EE_D000_0001;
+
+/// Below this many graded calls, no calibration verdict is possible at all.
+pub const VERDICT_MIN_N: usize = 20;
+/// And below this many, the report never says "well calibrated" — absence of
+/// evidence at n = 25 is not evidence of calibration.
+pub const VERDICT_CONFIDENT_N: usize = 50;
+/// The e-value at which miscalibration counts as demonstrated: `1/20 = α 0.05`
+/// by Ville's inequality, at any stopping time.
+pub const EVIDENCE_ALARM: f64 = 20.0;
+/// How far a directional (yes/no) lean has to run before it is the headline
+/// rather than a footnote.
+const BIAS_DOMINATES: f64 = 0.1;
+/// Below this, the confidence gap is too small to name a direction from — the
+/// errors have cancelled, and the sign of what is left is noise.
+const DIRECTION_MIN_GAP: f64 = 0.02;
+/// Below this much discrimination, the forecasts do not order the outcomes at
+/// all, and that fact outranks anything to be said about their level.
+const DSC_UNINFORMATIVE: f64 = 1e-9;
+
+/// The one calibration verdict.
+///
+/// Every shareable surface — the plain report and its cat, the badge SVG, the
+/// HTML card, `--json`, the MCP `calibration` tool, the shell hooks, the `decide`
+/// explanation — used to key off the **confidence gap**, and over- and
+/// under-confidence cancel inside that single number. Measured consequence: a
+/// ledger of 50 calls at 0.9 on coin flips plus 50 at 0.6 on sure things, whose
+/// Brier skill is −0.520 and whose calibration error is the worst in the test
+/// suite, produced a gap of −0.000000000000001 and was therefore announced as
+/// `[DIALED IN] · well calibrated`, badged `Well calibrated`, and advised to
+/// "keep doing what you're doing".
+///
+/// So the pass/fail decision is made **here, once**, from evidence (`mcb` against
+/// its own noise floor, and the e-process) — never from the gap. The gap is
+/// consulted only to name the *direction* of a failure already established.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum Verdict {
+    /// Too few graded calls to say anything.
+    InsufficientData,
+    /// No miscalibration has been demonstrated. Not the same as "calibrated":
+    /// the test can miss patterns, and small records hide a lot.
+    NoEvidenceOfMiscalibration,
+    /// The forecasts carry no information about which calls come true: after
+    /// isotonic recalibration they all collapse to one value.
+    ///
+    /// This outranks any statement about over- or under-confidence, including a
+    /// demonstrated one. A forecaster whose confidence does not sort the outcomes
+    /// has a ranking problem, and shading every number up or down cannot fix it —
+    /// it just produces a well-calibrated constant. Fix the ranking first.
+    CalibratedButUninformative,
+    /// Demonstrably too sure of yourself.
+    Overconfident,
+    /// Demonstrably not sure enough.
+    Underconfident,
+    /// Miscalibrated with a directional lean toward YES.
+    BiasedYes,
+    /// Miscalibrated with a directional lean toward NO.
+    BiasedNo,
+    /// Demonstrably miscalibrated, with the errors running **both** ways at once
+    /// — too sure at the top of the range and not sure enough at the bottom, or
+    /// the reverse — so there is no single direction to shade toward.
+    ///
+    /// This state exists because of a measurement. The 50-coin-flips-at-0.9 plus
+    /// 50-sure-things-at-0.6 ledger has a confidence gap of about −1e-15: naming
+    /// a direction from it is naming the sign of floating-point noise, and the
+    /// answer it happened to give ("underconfident") would have sent the reader
+    /// to raise the very 0.9s that were the problem.
+    MiscalibratedBothWays,
+}
+
+impl Verdict {
+    /// Whether miscalibration has actually been demonstrated.
+    pub fn is_miscalibrated(self) -> bool {
+        matches!(
+            self,
+            Verdict::Overconfident
+                | Verdict::Underconfident
+                | Verdict::BiasedYes
+                | Verdict::BiasedNo
+                | Verdict::MiscalibratedBothWays
+        )
+    }
+
+    /// A stable machine-readable slug, used by the hooks and the badge.
+    pub fn slug(self) -> &'static str {
+        match self {
+            Verdict::InsufficientData => "insufficient_data",
+            Verdict::NoEvidenceOfMiscalibration => "no_evidence_of_miscalibration",
+            Verdict::CalibratedButUninformative => "calibrated_but_uninformative",
+            Verdict::Overconfident => "overconfident",
+            Verdict::Underconfident => "underconfident",
+            Verdict::BiasedYes => "biased_yes",
+            Verdict::BiasedNo => "biased_no",
+            Verdict::MiscalibratedBothWays => "miscalibrated_both_ways",
+        }
+    }
+
+    /// The short label for the badge and the card. Deliberately never the words
+    /// "well calibrated" for anything short of demonstrated-and-plentiful
+    /// evidence — see [`Verdict::NoEvidenceOfMiscalibration`].
+    pub fn label(self, n: usize) -> &'static str {
+        match self {
+            Verdict::InsufficientData => "not enough data",
+            Verdict::NoEvidenceOfMiscalibration if n >= VERDICT_CONFIDENT_N => "well calibrated",
+            Verdict::NoEvidenceOfMiscalibration => "no miscalibration found",
+            Verdict::CalibratedButUninformative => "uninformative",
+            Verdict::Overconfident => "overconfident",
+            Verdict::Underconfident => "underconfident",
+            Verdict::BiasedYes => "leans yes",
+            Verdict::BiasedNo => "leans no",
+            Verdict::MiscalibratedBothWays => "miscalibrated",
+        }
+    }
+}
+
+/// The per-`kind:` samples, in the same outcome-independent order the headline
+/// evidence test uses, so a per-kind e-value carries the same guarantee.
+fn kind_evidence_order<'a>(
+    claims: &'a [crate::model::Claim],
+    today: NaiveDate,
+    tag: Option<&str>,
+) -> Vec<Vec<(&'a str, Sample)>> {
+    crate::evidence::binary_evidence_claims(claims, today, tag)
+        .into_iter()
+        .filter_map(|c| {
+            let s = c.evidence_sample()?;
+            Some(
+                c.tags
+                    .iter()
+                    .filter_map(|t| t.strip_prefix("kind:").map(|k| (k, s)))
+                    .collect(),
+            )
+        })
+        .collect()
+}
+
+/// Decide the verdict from evidence alone.
+///
+/// Inputs: `n` graded calls, the CORP miscalibration and its noise floor, the
+/// discrimination, the e-value, and — for *direction only* — the confidence gap
+/// and directional bias.
+#[allow(clippy::too_many_arguments)]
+pub fn verdict_from(
+    n: usize,
+    mcb: Option<f64>,
+    mcb_floor: Option<f64>,
+    dsc: Option<f64>,
+    eprocess: Option<f64>,
+    confidence_gap: Option<f64>,
+    directional_bias: Option<f64>,
+    distinct_forecasts: usize,
+) -> Verdict {
+    if n < VERDICT_MIN_N {
+        return Verdict::InsufficientData;
+    }
+    let demonstrated = eprocess.is_some_and(|e| e >= EVIDENCE_ALARM);
+    let above_floor = match (mcb, mcb_floor) {
+        (Some(m), Some(f)) => m > f,
+        (Some(m), None) => m > 0.0,
+        _ => false,
+    };
+
+    // Ranking outranks calibration, whenever the forecasts sort nothing.
+    //
+    // On the 90%-coin-flips-plus-60%-sure-things ledger, DSC is exactly 0.0000:
+    // the isotonic fit collapses every forecast to one value because higher
+    // stated confidence went with a LOWER hit rate. The honest statement there is
+    // not about confidence levels at all — it is that the ordering carries no
+    // information, and advice about shading numbers up or down is premature. Fix
+    // the ranking first; calibrating an uninformative forecast just produces a
+    // well-calibrated constant.
+    //
+    // The guard on `distinct_forecasts` matters: with a single forecast value
+    // DSC is zero by construction, because there is nothing to rank. Telling
+    // someone who said 0.9 to everything and was right a third of the time to
+    // "fix the ranking" would be useless — the finding there really is the level.
+    if distinct_forecasts >= 2 && dsc.is_some_and(|d| d.abs() < DSC_UNINFORMATIVE) {
+        return Verdict::CalibratedButUninformative;
+    }
+
+    if demonstrated && above_floor {
+        // Real miscalibration. Now, and only now, look at the direction.
+        let bias = directional_bias.unwrap_or(0.0);
+        if bias.abs() >= BIAS_DOMINATES && bias.abs() > confidence_gap.map_or(0.0, f64::abs) {
+            return if bias > 0.0 {
+                Verdict::BiasedYes
+            } else {
+                Verdict::BiasedNo
+            };
+        }
+        // A direction is only worth naming when there is one. Below this, the
+        // over- and under-confident halves have cancelled and the sign of the
+        // remainder is noise.
+        let gap = confidence_gap.unwrap_or(0.0);
+        if gap.abs() < DIRECTION_MIN_GAP {
+            return Verdict::MiscalibratedBothWays;
+        }
+        return if gap > 0.0 {
+            Verdict::Overconfident
+        } else {
+            Verdict::Underconfident
+        };
+    }
+
+    // Nothing demonstrated, and the forecasts sort nothing: the textbook
+    // calibrated-but-useless case, saying 0.5 to everything on a fair coin. It
+    // reaches here rather than the check above because with a single forecast
+    // value there was never anything to rank.
+    if dsc.is_some_and(|d| d.abs() < DSC_UNINFORMATIVE) {
+        return Verdict::CalibratedButUninformative;
+    }
+    Verdict::NoEvidenceOfMiscalibration
+}
 
 /// A learned recalibration map, machine-readable: `p ↦ σ(a + b·logit p)` plus a
 /// few worked corrections for the human view.
@@ -170,6 +395,11 @@ pub struct ResolutionDiscipline {
     /// profile of what you graded vs. what you didn't. `None` when a side is empty.
     pub resolved_boldness: Option<f64>,
     pub open_boldness: Option<f64>,
+    /// Resolutions that were graded from an observed fact rather than the
+    /// forecaster's own word — a test run's exit status, say. "Why trust a
+    /// self-graded ledger?" is the first fair objection, and this is the part of
+    /// the answer that is a number.
+    pub auto_graded: usize,
     /// Standardized gap (ASMD) between those two boldness profiles — the
     /// missing-not-at-random diagnostic. `> 0.1` ⇒ your open and graded calls differ
     /// enough that the split is unlikely to be random. `None` below two per side.
@@ -192,8 +422,19 @@ pub struct SelectiveData {
 #[derive(Serialize, Clone, Debug)]
 pub struct ReportData {
     pub tag: Option<String>,
+    /// Resolved claims of **every** kind. Header arithmetic uses this, so that
+    /// `resolved + open == total` actually holds: the header used to print a
+    /// binary-only "resolved" beside an all-kinds "open", which is how the demo
+    /// ledger came to announce `35 resolved · 6 open` for 50 claims.
     pub resolved: usize,
+    /// Resolved binary claims — the `n` behind every probability metric.
+    pub resolved_binary: usize,
+    /// Resolved numeric (interval) claims — the `n` behind the interval metrics.
+    pub resolved_numeric: usize,
+    /// Open claims of every kind.
     pub open: usize,
+    /// Every matching claim, resolved or not. Always `resolved + open`.
+    pub total: usize,
     pub first_recorded: Option<String>,
     pub last_recorded: Option<String>,
     pub brier: Option<f64>,
@@ -241,6 +482,57 @@ pub struct ReportData {
     /// Resolution-discipline / selection-bias check — whether the metrics above rest
     /// on a fair sample of your calls or a self-selected one.
     pub resolution_discipline: Option<ResolutionDiscipline>,
+
+    // ── P0-2: which forecast the headline score is computed on ──────────────
+    /// Always `"first"`. The graded forecast is the one made *before* the answer
+    /// was known; see [`crate::model::Claim::sample_final`] for why.
+    pub score_basis: &'static str,
+    /// The headline Brier, on first forecasts. Equal to `brier`.
+    pub brier_first: Option<f64>,
+    /// Brier on the final forecast — shown for comparison, never graded.
+    pub brier_final: Option<f64>,
+    /// Brier weighted by how long each forecast stood. Secondary metric.
+    pub brier_time_avg: Option<f64>,
+    /// Resolved claims carrying a forecast made too close to the answer to grade.
+    pub late_updates: usize,
+
+    // ── P0-4: the CORP decomposition ────────────────────────────────────────
+    /// Miscalibration (CORP). Replaces `reliability` as the calibration number.
+    pub mcb: Option<f64>,
+    /// Discrimination (CORP). `0` ⇒ your confidence says nothing about which
+    /// calls come true.
+    pub dsc: Option<f64>,
+    /// Uncertainty (CORP) — identical in meaning to `uncertainty`.
+    pub unc: Option<f64>,
+    /// The 95th percentile of `mcb` for a *calibrated* forecaster making exactly
+    /// these calls: the noise floor below which `mcb` means nothing.
+    pub mcb_null_q95: Option<f64>,
+
+    // ── P0-3: what the evidence test actually consumed ──────────────────────
+    /// Claims in the evidence sequence (due, graded, in deadline order).
+    pub evidence_n: usize,
+    /// Id of the first overdue, ungraded claim — the evidence pauses there.
+    pub evidence_blocked_by: Option<String>,
+    /// Id of the first claim whose due date has passed and which is still
+    /// ungraded. The evidence test stops there, on purpose.
+    pub evidence_waiting: usize,
+    /// Whether the blocking claim has no `--by` date, in which case adding one is
+    /// the other way to unblock the sequence.
+    pub evidence_blocked_without_deadline: bool,
+    /// Claims voided *after* they had already resolved — outcomes deleted from
+    /// the record after being seen. They stay in the evidence sequence; this
+    /// count exists so the edit is never silent.
+    pub voided_after_resolution: usize,
+    /// `ln` of the e-value, for comparing magnitudes past the display cap.
+    pub eprocess_log: Option<f64>,
+    /// The e-value a single per-kind subgroup must clear, after the union-bound
+    /// correction for having searched `K` subgroups.
+    pub kind_alarm_threshold: Option<f64>,
+
+    // ── P0-5: the one verdict every surface must agree with ─────────────────
+    /// The single calibration verdict. Every surface — text, cat, badge, card,
+    /// JSON, hooks, `decide` — derives its wording from this and nothing else.
+    pub verdict: Verdict,
 }
 
 impl ReportData {
@@ -259,10 +551,12 @@ impl ReportData {
             None => true,
         };
 
+        // Voided claims are excluded everywhere: from the scores, from the counts,
+        // and from the resolution-discipline check. They stay in the ledger.
         let resolved_claims: Vec<&crate::model::Claim> = ledger
             .claims
             .iter()
-            .filter(|c| c.is_resolved())
+            .filter(|c| c.is_resolved() && !c.is_void())
             .filter(matches_tag)
             .collect();
         let samples: Vec<Sample> = resolved_claims.iter().filter_map(|c| c.sample()).collect();
@@ -273,7 +567,7 @@ impl ReportData {
         let open_claims: Vec<&crate::model::Claim> = ledger
             .claims
             .iter()
-            .filter(|c| c.is_open())
+            .filter(|c| c.is_open() && !c.is_void())
             .filter(matches_tag)
             .collect();
         let open = open_claims.len();
@@ -289,12 +583,21 @@ impl ReportData {
             )
         };
 
-        // Chronological (resolution-order) view, reused by the e-process and by the
-        // per-slice e-values below: sequential validity is about the order outcomes
-        // were *learned*, so sort by resolution time once and share it.
+        // The evidence sequence: ordered by resolve-by date, which is fixed when
+        // the claim is created. Sorting by resolution time instead looks
+        // chronological but is outcome-dependent — YES answers arrive early and
+        // NO answers wait for the deadline — and that made a perfectly calibrated
+        // forecaster raise a false alarm in 100% of simulated runs when the
+        // report was re-read as claims resolved. See `crate::evidence`.
+        let evidence =
+            crate::evidence::binary_evidence(&ledger.claims, today, tag_filter.as_deref());
+        let chrono_samples: Vec<Sample> = evidence.samples.clone();
+
+        // The descriptive "lately" trend is not a test and carries no validity
+        // claim, so it may keep using the order outcomes were learned in.
         let mut chrono: Vec<&crate::model::Claim> = resolved_claims.clone();
         chrono.sort_by_key(|c| c.resolution.as_ref().map(|r| r.at));
-        let chrono_samples: Vec<Sample> = chrono.iter().filter_map(|c| c.sample()).collect();
+        let recent_samples: Vec<Sample> = chrono.iter().filter_map(|c| c.sample()).collect();
 
         let decomp = scoring::decompose(&samples);
         let over = scoring::overconfidence(&samples);
@@ -360,13 +663,11 @@ impl ReportData {
         // project/tag filter, because calibration-per-type is the agent's lever.
         let by_kind = {
             let mut map: BTreeMap<&str, Vec<Sample>> = BTreeMap::new();
-            for c in &chrono {
-                if let Some(s) = c.sample() {
-                    for t in &c.tags {
-                        if let Some(k) = t.strip_prefix("kind:") {
-                            map.entry(k).or_default().push(s);
-                        }
-                    }
+            // Built from the same outcome-independent order as the headline test,
+            // so a per-kind e-value carries the same guarantee the overall one does.
+            for kind in kind_evidence_order(&ledger.claims, today, tag_filter.as_deref()) {
+                for (k, s) in kind {
+                    map.entry(k).or_default().push(s);
                 }
             }
             let mut rows: Vec<TagStat> = map
@@ -391,9 +692,12 @@ impl ReportData {
                         brier: scoring::brier(&s),
                         confidence_gap: oc.map(|o| o.gap),
                         confidence_gap_shrunk: gap_shrunk,
-                        // Per-kind anytime-valid evidence (samples already in
-                        // resolution order, inherited from `chrono`).
-                        eprocess: scoring::calibration_eprocess(&s),
+                        // Per-kind anytime-valid evidence, on the evidence
+                        // sequence. Because K subgroups are searched at once,
+                        // a single row must clear `EVIDENCE_ALARM × K` — a
+                        // union bound on top of Ville — before it counts as a
+                        // finding rather than a description.
+                        eprocess: scoring::calibration_eprocess_v2(&s),
                     }
                 })
                 .collect();
@@ -439,6 +743,22 @@ impl ReportData {
         } else {
             let n = numeric_samples.len() as f64;
             let mean_winkler = numeric_samples.iter().map(scoring::winkler).sum::<f64>() / n;
+            // Unitless, skipping zero-width intervals where it is undefined.
+            let mut ratios: Vec<f64> = numeric_samples
+                .iter()
+                .filter_map(scoring::winkler_ratio)
+                .collect();
+            ratios.sort_by(f64::total_cmp);
+            let mean_winkler_ratio =
+                (!ratios.is_empty()).then(|| ratios.iter().sum::<f64>() / ratios.len() as f64);
+            let median_winkler_ratio = (!ratios.is_empty()).then(|| {
+                let m = ratios.len() / 2;
+                if ratios.len().is_multiple_of(2) {
+                    (ratios[m - 1] + ratios[m]) / 2.0
+                } else {
+                    ratios[m]
+                }
+            });
             let nominal = numeric_samples.iter().map(|s| s.level).sum::<f64>() / n;
             let cov = scoring::coverage(&numeric_samples).unwrap_or(f64::NAN);
             let width = numeric_samples.iter().map(|s| s.width()).sum::<f64>() / n;
@@ -456,20 +776,46 @@ impl ReportData {
             Some(NumericData {
                 count: numeric_samples.len(),
                 mean_winkler,
+                mean_winkler_ratio,
+                median_winkler_ratio,
                 nominal_coverage: nominal,
                 empirical_coverage: cov,
                 coverage_gap: cov - nominal,
                 mean_width: width,
                 coverage_shrunk,
-                coverage_eprocess: scoring::calibration_eprocess(&coverage_samples),
+                coverage_eprocess: scoring::calibration_eprocess_v2(&coverage_samples),
                 width_factor: scoring::conformal_width_factor(&numeric_samples),
             })
         };
 
-        // Anytime-valid calibration test, fed the outcomes in the order they were
-        // learned (chrono / chrono_samples computed once, above).
-        let eprocess = scoring::calibration_eprocess(&chrono_samples);
+        // Anytime-valid calibration test, over the outcome-independent evidence
+        // sequence, mixing betting strategies so that symmetric overconfidence
+        // (too sure at 0.9 AND too sure at 0.1) cannot cancel itself out.
+        let eprocess = scoring::calibration_eprocess_v2(&chrono_samples);
+        let eprocess_log = scoring::calibration_log_eprocess(&chrono_samples);
         let eprocess_pvalue = eprocess.map(scoring::eprocess_pvalue);
+
+        // CORP decomposition and the noise floor its value has to clear.
+        let corp = scoring::corp_brier(&samples);
+        let mcb_null_q95 =
+            scoring::mcb_null_quantile(&samples, MCB_NULL_DRAWS, 0.95, MCB_NULL_SEED);
+
+        // P0-2: the headline is the FIRST forecast; these are the comparisons.
+        let final_samples: Vec<Sample> = resolved_claims
+            .iter()
+            .filter_map(|c| c.sample_final())
+            .collect();
+        let brier_final = scoring::brier(&final_samples);
+        let time_avg: Vec<f64> = resolved_claims
+            .iter()
+            .filter_map(|c| c.brier_time_averaged())
+            .collect();
+        let brier_time_avg =
+            (!time_avg.is_empty()).then(|| time_avg.iter().sum::<f64>() / time_avg.len() as f64);
+        let late_updates = resolved_claims
+            .iter()
+            .filter(|c| c.has_late_update())
+            .count();
 
         // Learned recalibration map (ridge-shrunk toward identity for small n).
         let recalibration = scoring::fit_recalibration(&samples, RECAL_RIDGE).map(|r| RecalData {
@@ -485,7 +831,7 @@ impl ReportData {
         // Small-sample / over-time bands (chrono order reused from the e-process).
         let brier_ci =
             scoring::brier_ci_bootstrap(&samples, 0.95, BRIER_CI_RESAMPLES, BRIER_CI_SEED);
-        let recent_brier = scoring::ewma_brier(&chrono_samples, EWMA_HALF_LIFE);
+        let recent_brier = scoring::ewma_brier(&recent_samples, EWMA_HALF_LIFE);
         let distinct_forecasts = scoring::distinct_forecasts(&samples);
         let selective = scoring::risk_coverage(&samples).map(|rc| SelectiveData {
             risk_full: rc.risk_at_full,
@@ -527,6 +873,13 @@ impl ReportData {
                     resolved: resolved_claims.len(),
                     open: open_claims.len(),
                     overdue,
+                    auto_graded: resolved_claims
+                        .iter()
+                        .filter(|c| {
+                            c.resolution.as_ref().and_then(|r| r.resolved_by)
+                                == Some(crate::model::ResolvedBy::Auto)
+                        })
+                        .count(),
                     resolved_boldness: scoring::mean_boldness(&resolved_probs),
                     open_boldness: scoring::mean_boldness(&open_probs),
                     boldness_asmd: scoring::asmd(&resolved_probs, &open_probs),
@@ -534,10 +887,16 @@ impl ReportData {
             })
         };
 
+        let by_kind_len = by_kind.len();
+        let by_kind_len_zero = by_kind_len == 0;
+
         ReportData {
             tag: tag_filter,
-            resolved: samples.len(),
+            resolved: resolved_claims.len(),
+            resolved_binary: samples.len(),
+            resolved_numeric: numeric_samples.len(),
             open,
+            total: resolved_claims.len() + open,
             first_recorded,
             last_recorded,
             brier: scoring::brier(&samples),
@@ -567,12 +926,43 @@ impl ReportData {
             selective,
             weighted_brier,
             resolution_discipline,
+
+            score_basis: "first",
+            brier_first: scoring::brier(&samples),
+            brier_final,
+            brier_time_avg,
+            late_updates,
+
+            mcb: corp.as_ref().map(|c| c.mcb),
+            dsc: corp.as_ref().map(|c| c.dsc),
+            unc: corp.as_ref().map(|c| c.unc),
+            mcb_null_q95,
+
+            evidence_n: evidence.samples.len(),
+            evidence_blocked_by: evidence.blocked_by.clone(),
+            evidence_waiting: evidence.waiting,
+            evidence_blocked_without_deadline: evidence.blocked_without_deadline,
+            voided_after_resolution: evidence.voided_after_resolution,
+            eprocess_log,
+            kind_alarm_threshold: (!by_kind_len_zero)
+                .then_some(EVIDENCE_ALARM * by_kind_len as f64),
+
+            verdict: verdict_from(
+                chrono_samples.len(),
+                corp.as_ref().map(|c| c.mcb),
+                mcb_null_q95,
+                corp.as_ref().map(|c| c.dsc),
+                eprocess,
+                over.map(|o| o.gap),
+                scoring::directional_bias(&samples),
+                distinct_forecasts,
+            ),
         }
     }
 
     /// True when there is nothing resolved (binary or numeric) to reflect.
     fn is_empty(&self) -> bool {
-        self.resolved == 0 && self.numeric.is_none()
+        self.resolved_binary == 0 && self.numeric.is_none()
     }
 }
 
@@ -613,13 +1003,31 @@ fn lane(pred: f64, obs: Option<f64>) -> String {
     String::from_utf8(cells).unwrap()
 }
 
-fn verdict(gap: f64) -> &'static str {
-    if gap > 0.05 {
-        "OVERCONFIDENT — you are bolder than you are right"
+/// Gloss for the confidence-gap line only.
+///
+/// The gap is an *aggregate* of bold-versus-right, and aggregates cancel, so this
+/// describes the number on that one line and is never allowed to become a
+/// verdict. It also has to agree with the verdict: naming a direction in capitals
+/// while the verdict above says nothing has been demonstrated leaves the reader
+/// to pick which of the two to believe.
+fn gap_gloss(gap: f64, v: Verdict) -> String {
+    let direction = if gap > 0.05 {
+        "bolder than you are right"
     } else if gap < -0.05 {
-        "UNDERCONFIDENT — reality rewards you more than you claim"
+        "less sure than you turn out to be"
     } else {
-        "well calibrated in aggregate"
+        "boldness and accuracy match on average"
+    };
+    if v.is_miscalibrated() {
+        match () {
+            _ if gap > 0.05 => format!("OVERCONFIDENT — {direction}"),
+            _ if gap < -0.05 => format!("UNDERCONFIDENT — {direction}"),
+            _ => format!("{direction} (the errors cancel here — see the verdict above)"),
+        }
+    } else if gap.abs() > 0.05 {
+        format!("{direction}, but not by more than luck could manage at this sample size — see the verdict above")
+    } else {
+        format!("{direction} (an average: errors in opposite directions cancel here)")
     }
 }
 
@@ -649,10 +1057,19 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         return out;
     }
 
+    let split = if d.resolved_numeric > 0 && d.resolved_binary > 0 {
+        format!(
+            " ({} yes/no · {} numeric)",
+            d.resolved_binary, d.resolved_numeric
+        )
+    } else {
+        String::new()
+    };
     let _ = writeln!(
         out,
-        "\n{} resolved  ·  {} open  ·  first recorded {}  ·  latest {}",
+        "\n{} of {} resolved{split}  ·  {} open  ·  first recorded {}  ·  latest {}",
         d.resolved,
+        d.total,
         d.open,
         d.first_recorded.as_deref().unwrap_or("—"),
         d.last_recorded.as_deref().unwrap_or("—"),
@@ -681,6 +1098,21 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 rd.overdue
             );
         }
+        if d.voided_after_resolution > 0 {
+            let _ = writeln!(
+                out,
+                "    ⚠ {} claim(s) were voided AFTER they had already resolved — an outcome removed from the record after it was seen. They are still counted in the evidence test below; voiding a claim you did not like is how this instrument would be defeated.",
+                d.voided_after_resolution
+            );
+        }
+        if rd.auto_graded > 0 {
+            let _ = writeln!(
+                out,
+                "    {} of them ({:.0}%) were graded from an observed fact rather than your own word — those cannot flatter you.",
+                rd.auto_graded,
+                100.0 * rd.auto_graded as f64 / rd.resolved.max(1) as f64
+            );
+        }
         // Missing-not-at-random check: are the calls you left open a different breed
         // from the ones you graded? If so, the calibration sample is skewed.
         if let (Some(rb), Some(ob), Some(asmd)) =
@@ -707,9 +1139,28 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
     }
 
     // Binary section -------------------------------------------------------
-    if d.resolved > 0 {
+    if d.resolved_binary > 0 {
+        // The verdict, first, before any number it is derived from — one line, the
+        // same line every other surface prints.
+        let _ = writeln!(
+            out,
+            "\n  VERDICT          {}",
+            d.verdict.label(d.evidence_n).to_uppercase()
+        );
         if let (Some(brier), Some(logs), Some(base)) = (d.brier, d.log_score, d.base_rate) {
             let _ = writeln!(out, "\n  Brier score      {brier:.3}   (0 = perfect · 0.25 = always 50/50 · lower better)");
+            let _ = writeln!(
+                out,
+                "                   scored on your FIRST forecast — the belief you recorded before the answer was known"
+            );
+            if let Some(bf) = d.brier_final {
+                if (bf - brier).abs() > 0.0005 {
+                    let _ = writeln!(
+                        out,
+                        "                   on your final forecast it would be {bf:.3} (shown, not graded)"
+                    );
+                }
+            }
             if let Some((lo, hi)) = d.brier_ci {
                 let _ = writeln!(
                     out,
@@ -745,7 +1196,7 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             }
             // Recency trend — descriptive only (small-n control charts false-alarm).
             if let Some(recent) = d.recent_brier {
-                if d.resolved >= TREND_MIN_N {
+                if d.resolved_binary >= TREND_MIN_N {
                     let delta = brier - recent; // > 0 ⇒ recent lower ⇒ improving
                     let lean = if delta > 0.02 {
                         "improving"
@@ -770,24 +1221,54 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             );
         }
 
-        if let (Some(rel), Some(res), Some(unc)) = (d.reliability, d.resolution, d.uncertainty) {
+        if let (Some(mcb), Some(dsc), Some(unc)) = (d.mcb, d.dsc, d.unc) {
             let _ = writeln!(
                 out,
-                "\n  Decomposition  (Brier = Reliability − Resolution + Uncertainty)"
+                "\n  Decomposition  (Brier = Miscalibration − Discrimination + Uncertainty)"
             );
+            // The floor is what makes the calibration error readable. MCB is fitted
+            // on the same data it scores, so it is never zero even for a perfect
+            // forecaster; this says how large it would be for one.
+            match d.mcb_null_q95 {
+                Some(floor) if mcb <= floor => {
+                    let _ = writeln!(
+                        out,
+                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   at or below the {floor:.3} a perfectly calibrated forecaster would score making these same calls — nothing to see"
+                    );
+                }
+                Some(floor) => {
+                    let _ = writeln!(
+                        out,
+                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better\n                   above the {floor:.3} luck alone would produce on these same calls"
+                    );
+                }
+                None => {
+                    let _ = writeln!(
+                        out,
+                        "    miscalibration {mcb:.3}   calibration error      ↓ lower is better"
+                    );
+                }
+            }
+            let dsc_note = if dsc.abs() < 1e-9 {
+                "   — your confidence carries NO information about which calls come true"
+            } else {
+                ""
+            };
             let _ = writeln!(
                 out,
-                "    reliability    {rel:.3}   calibration error      ↓ lower is better"
-            );
-            let _ = writeln!(
-                out,
-                "    resolution     {res:.3}   discrimination power   ↑ higher is better"
+                "    discrimination {dsc:.3}   sorting power          ↑ higher is better{dsc_note}"
             );
             let _ = writeln!(
                 out,
                 "    uncertainty    {unc:.3}   irreducible difficulty of your questions"
             );
-            let _ = writeln!(out, "    check          {rel:.3} − {res:.3} + {unc:.3} = {:.3}  (= Brier, to f64 precision)", rel - res + unc);
+            let _ = writeln!(out, "    check          {mcb:.3} − {dsc:.3} + {unc:.3} = {:.3}  (= Brier, exactly — no bins, no tuning)", mcb - dsc + unc);
+            if let (Some(rel), Some(res)) = (d.reliability, d.resolution) {
+                let _ = writeln!(
+                    out,
+                    "    (the older exact-value grouping reads {rel:.3} / {res:.3}; it counts small groups as error and is kept only as a deprecated alias)"
+                );
+            }
         }
 
         match d.auc {
@@ -805,7 +1286,15 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         if let (Some(gap), Some(conf), Some(acc)) =
             (d.confidence_gap, d.mean_confidence, d.accuracy)
         {
-            let _ = writeln!(out, "\n  Confidence gap   {gap:+.3}   {}", verdict(gap));
+            // The gloss is subordinate to the verdict. This line used to shout
+            // "OVERCONFIDENT" from a gap of +0.12 while the verdict above said no
+            // miscalibration had been demonstrated — the reader is left to guess
+            // which of the two to believe, which is the whole defect P0-5 fixed.
+            let _ = writeln!(
+                out,
+                "\n  Confidence gap   {gap:+.3}   {}",
+                gap_gloss(gap, d.verdict)
+            );
             let _ = writeln!(
                 out,
                 "                   mean boldness {conf:.3}  vs  accuracy {acc:.3}"
@@ -829,8 +1318,8 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 out,
                 "\n  Confidence vocab {:>4} distinct level(s) across {} call(s){}",
                 d.distinct_forecasts,
-                d.resolved,
-                if d.distinct_forecasts <= 3 && d.resolved >= 6 {
+                d.resolved_binary,
+                if d.distinct_forecasts <= 3 && d.resolved_binary >= 6 {
                     " — coarse; more gradations would sharpen you"
                 } else {
                     ""
@@ -840,7 +1329,7 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
 
         // Selective prediction — error among your surest calls vs all (when to act).
         if let Some(sel) = &d.selective {
-            if d.resolved >= 6 {
+            if d.resolved_binary >= 6 {
                 let verdict = if sel.risk_half < sel.risk_full - 0.05 {
                     "your confidence ranks your calls — trust the bold ones"
                 } else if sel.risk_half > sel.risk_full + 0.05 {
@@ -858,20 +1347,70 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         }
 
         // Anytime-valid significance: is the miscalibration above real, or noise?
+        // Three states, each said plainly. "Too few resolutions to tell" printed
+        // at n = 1000 read as a bug, because it was one.
         if let Some(e) = d.eprocess {
             let p = d.eprocess_pvalue.unwrap_or(1.0);
-            let verdict = if e >= 20.0 {
-                "miscalibration is REAL — significant even though you peek every session (α=.05)"
-            } else if e >= 3.0 {
-                "suggestive, not yet conclusive — keep logging"
+            let n = d.evidence_n;
+            let shown = if d
+                .eprocess_log
+                .is_some_and(|l| l >= scoring::EPROCESS_LOG_CAP)
+            {
+                "> 10^12".to_string()
             } else {
-                "no real evidence of miscalibration yet — too few resolutions to tell"
+                format!("{e:.1}")
+            };
+            let line = if e >= EVIDENCE_ALARM {
+                "miscalibration is REAL — significant even though you peek every session (α=.05)"
+                    .to_string()
+            } else if n < VERDICT_MIN_N {
+                format!(
+                    "not enough graded calls yet — {n} in the test, about {} more to reach a usable {VERDICT_MIN_N}",
+                    VERDICT_MIN_N.saturating_sub(n)
+                )
+            } else if e >= RECAL_MIN_E {
+                "suggestive, not yet conclusive — keep logging".to_string()
+            } else {
+                "no evidence of miscalibration in {n} graded calls — the test can still miss patterns; read the calibration error above for the SIZE of any error"
+                    .replace("{n}", &n.to_string())
             };
             let _ = writeln!(
                 out,
-                "\n  Is it real?      e-value {e:>6.1}   (anytime-valid p ≤ {p:.3})"
+                "\n  Is it real?      e-value {shown:>8}   (anytime-valid p ≤ {p:.3})"
             );
-            let _ = writeln!(out, "                   {verdict}");
+            let _ = writeln!(out, "                   {line}");
+        } else if d.resolved_binary > 0 {
+            let _ = writeln!(out, "\n  Is it real?      no evidence sequence yet");
+        }
+
+        // What the evidence test could and could not use. The test needs an order
+        // fixed before the outcomes were known, and `--by` is what fixes it.
+        if d.resolved_binary > 0 {
+            if let Some(id) = &d.evidence_blocked_by {
+                let fix = if d.evidence_blocked_without_deadline {
+                    "resolve it, or give it a --by date so it sorts later"
+                } else {
+                    "resolve it, or void it if it was never answerable"
+                };
+                if d.evidence_waiting > 0 {
+                    let _ = writeln!(
+                        out,
+                        "                   evidence uses {} of {} graded calls: it stops at [{id}], which is due and ungraded — {fix}.",
+                        d.evidence_n, d.resolved_binary
+                    );
+                    let _ = writeln!(
+                        out,
+                        "                   the {} graded call(s) after it are waiting, not lost — skipping ahead is what would let the record be picked after the fact",
+                        d.evidence_waiting
+                    );
+                } else {
+                    let _ = writeln!(
+                        out,
+                        "                   [{id}] is due and ungraded; {fix} — until then the test cannot grow past {} call(s)",
+                        d.evidence_n
+                    );
+                }
+            }
         }
 
         // The learned correction — only once it is both trustworthy (n) and worth
@@ -1004,11 +1543,16 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             // the worst kind that clears the evidence bar is *genuinely* miscalibrated
             // — not the small-subgroup fluke that derails a raw worst-group gap. Stay
             // silent otherwise; the overall "Is it real?" line already covers that.
+            // Searching K subgroups for the worst one is K tests, not one. Ville
+            // plus a union bound says a single row has to clear
+            // `EVIDENCE_ALARM × K` before it is a finding; below that the
+            // per-kind numbers are descriptive only, and are labelled as such.
+            let k_threshold = d.kind_alarm_threshold.unwrap_or(EVIDENCE_ALARM);
             if let Some((t, e)) = d
                 .by_kind
                 .iter()
                 .filter_map(|t| t.eprocess.map(|e| (t, e)))
-                .filter(|&(_, e)| e >= RECAL_MIN_E)
+                .filter(|&(_, e)| e >= k_threshold)
                 .max_by(|a, b| a.1.total_cmp(&b.1))
             {
                 let dir = match t.confidence_gap {
@@ -1032,17 +1576,32 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             );
             let _ = writeln!(
                 out,
-                "    Brier of first guess {:.3}  →  Brier of final guess {:.3}   ({:+.3})",
+                "    Brier of first guess {:.3}  (GRADED)  →  Brier of final guess {:.3}  (not graded)   ({:+.3})",
                 mc.brier_first, mc.brier_last, mc.improvement
             );
-            let line = if mc.improvement > 0.005 {
-                "    Your updates moved you TOWARD the truth. Good — you changed your mind well."
-            } else if mc.improvement < -0.005 {
-                "    Your updates moved you AWAY from the truth. Beware revising under social or emotional pressure."
-            } else {
-                "    Your revisions were roughly a wash."
-            };
-            let _ = writeln!(out, "{line}");
+            // Deliberately neutral. Praising a movement toward the truth rewards
+            // the one thing this tool exists to catch: ten claims logged at 0.5,
+            // updated to 0.99 and then resolved YES used to score a Brier of
+            // 0.000 and be congratulated for changing their mind well. Moving
+            // toward the answer is only a virtue if you did not already know it,
+            // and the ledger cannot tell the difference — so it does not judge.
+            let _ = writeln!(
+                out,
+                "    Only the first figure is scored. A revision may be genuine learning or may be hindsight; the ledger cannot tell, so it grades the belief you recorded before the answer was known."
+            );
+            if d.late_updates > 0 {
+                let _ = writeln!(
+                    out,
+                    "    {} claim(s) were revised after their due date or within a day of the answer — those revisions carry no weight anywhere.",
+                    d.late_updates
+                );
+            }
+            if let Some(ta) = d.brier_time_avg {
+                let _ = writeln!(
+                    out,
+                    "    Time-averaged Brier {ta:.3} — each forecast weighted by how long it stood, the way Metaculus rewards updating early (secondary: it can still be farmed by updating the moment you know)."
+                );
+            }
         }
     }
 
@@ -1055,8 +1614,11 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         );
         let _ = writeln!(
             out,
-            "    mean Winkler score   {:.3}   (lower better; width + miscoverage penalty)",
-            num.mean_winkler
+            "    interval score       {}\n                         (1.00 = the value landed inside; above that is the miss penalty, in multiples of your own stated width)",
+            match (num.mean_winkler_ratio, num.median_winkler_ratio) {
+                (Some(mean), Some(med)) => format!("mean {mean:.2} · median {med:.2}"),
+                _ => format!("{:.3} raw Winkler (units vary)", num.mean_winkler),
+            }
         );
         let _ = writeln!(out, "    mean interval width  {:.3}", num.mean_width);
         let _ = writeln!(
@@ -1161,7 +1723,7 @@ struct PlainSummary {
 }
 
 fn plain_summary(d: &ReportData) -> PlainSummary {
-    let n = d.resolved;
+    let n = d.resolved_binary;
     let mut insights: Vec<Insight> = Vec::new();
 
     // — Honest sample? (resolution discipline) —
@@ -1197,30 +1759,46 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         });
     }
 
-    // — Sure vs right? (calibration) — also fixes the headline verdict.
-    let (verdict_word, verdict_class): (String, &'static str) = match d.confidence_gap {
-        Some(g) if g > 0.05 => ("Overconfident".into(), "over"),
-        Some(g) if g < -0.05 => ("Underconfident".into(), "under"),
-        Some(_) => ("Well calibrated".into(), "good"),
-        None => ("Not enough data".into(), "unknown"),
+    // — Sure vs right? (calibration) —
+    //
+    // Word and class come from `d.verdict` and nowhere else. They used to be read
+    // off the confidence gap, in which over- and under-confidence cancel: a
+    // ledger of 50 calls at 0.9 on coin flips plus 50 at 0.6 on sure things has a
+    // gap of roughly −1e-15, and was therefore called "Well calibrated" while its
+    // Brier skill was −0.520.
+    let (verdict_word, verdict_class): (String, &'static str) = match d.verdict {
+        Verdict::InsufficientData => ("Not enough data".into(), "unknown"),
+        Verdict::Overconfident => ("Overconfident".into(), "over"),
+        Verdict::Underconfident => ("Underconfident".into(), "under"),
+        Verdict::BiasedYes => ("Leans yes".into(), "over"),
+        Verdict::BiasedNo => ("Leans no".into(), "under"),
+        Verdict::CalibratedButUninformative => ("Uninformative".into(), "uninformative"),
+        Verdict::MiscalibratedBothWays => ("Miscalibrated".into(), "both"),
+        Verdict::NoEvidenceOfMiscalibration if n >= VERDICT_CONFIDENT_N => {
+            ("Well calibrated".into(), "good")
+        }
+        Verdict::NoEvidenceOfMiscalibration => ("No miscalibration found".into(), "good"),
     };
-    if let (Some(gap), Some(conf), Some(acc)) = (d.confidence_gap, d.mean_confidence, d.accuracy) {
+    if let (Some(conf), Some(acc)) = (d.mean_confidence, d.accuracy) {
         let core = format!(
             "On the calls you felt about {} sure of, you turned out right about {} of the time.",
             pct(conf),
             pct(acc)
         );
-        let lesson = if gap > 0.05 {
-            "You OVERSELL yourself — you sound more certain than you turn out to be, so shade your confidence down."
-        } else if gap < -0.05 {
-            "You UNDERSELL yourself — reality rewards you more than you claim, so when you feel fairly sure you can trust it more."
-        } else {
-            "Your confidence lines up with how often you're right — well judged."
+        let lesson = match d.verdict {
+            Verdict::Overconfident => "You OVERSELL yourself — you sound more certain than you turn out to be, so shade your confidence down.",
+            Verdict::Underconfident => "You UNDERSELL yourself — reality rewards you more than you claim, so when you feel fairly sure you can trust it more.",
+            Verdict::BiasedYes => "You lean toward YES — you say things will happen more often than they do.",
+            Verdict::BiasedNo => "You lean toward NO — you say things won't happen more often than turns out to be true.",
+            Verdict::CalibratedButUninformative => "Your confidence does not separate the calls that come true from the ones that don't — after correcting for level, every forecast you make carries the same information. That is the thing to fix first; how high or low you pitch the numbers barely matters until the ranking works.",
+            Verdict::InsufficientData => "Too few graded calls to say whether that's luck or judgement.",
+            Verdict::MiscalibratedBothWays => "Your errors run BOTH ways — too sure at one end of your range and not sure enough at the other. They cancel in the average, so there is no single direction to shade: look at the reliability diagram to see where each half goes wrong.",
+            Verdict::NoEvidenceOfMiscalibration => "Nothing in the record shows your confidence is off. That is not the same as proof it's right — the test can miss patterns, and a small record hides a lot.",
         };
         insights.push(Insight {
             label: "When you say you're sure, should you be?",
             answer: format!("{core} {lesson}"),
-            jargon: "calibration / confidence gap",
+            jargon: "calibration verdict (CORP miscalibration + sequential evidence test)",
         });
     }
 
@@ -1240,12 +1818,15 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
 
     // — Evidence (is the pattern real?) —
     if let Some(e) = d.eprocess {
-        let ev = if e >= 20.0 {
+        let en = d.evidence_n;
+        let ev = if e >= EVIDENCE_ALARM {
             "Yes, it's real. Even though you check this every session, the pattern above is statistically solid — you can act on it.".to_string()
-        } else if e >= 3.0 {
+        } else if en < VERDICT_MIN_N {
+            format!("Not yet answerable. Only {en} of your calls are in the test, and about {} more are needed before it can say anything either way.", VERDICT_MIN_N.saturating_sub(en))
+        } else if e >= RECAL_MIN_E {
             "Maybe — the signs are suggestive but not yet conclusive. Keep logging.".to_string()
         } else {
-            format!("Too soon to say. With only {n} answer(s), what you see above could easily be luck. The tool will tell you plainly once the evidence is strong enough to act on — it isn't yet.")
+            format!("No. Across {en} graded calls the test found no miscalibration. That is not proof you are calibrated — the test can miss patterns it isn't looking for — but nothing here is demonstrably off.")
         };
         insights.push(Insight {
             label: "Is any of this real, or a small-sample fluke?",
@@ -1304,7 +1885,17 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         "over" => {
             actions.push("Add slack and shade your confidence down — you tend to oversell.".into())
         }
-        "good" => actions.push("Keep doing what you're doing — your confidence is honest.".into()),
+        "both" => actions.push(
+            "Your errors cancel: shading everything one way will not help. Compare your high-confidence and low-confidence calls separately — the reliability diagram shows which end is wrong.".into(),
+        ),
+        "uninformative" => actions.push(
+            "Spread your probabilities out — right now they don't distinguish the calls that come true from the ones that don't.".into(),
+        ),
+        "good" if n >= VERDICT_CONFIDENT_N => actions
+            .push("Nothing here needs correcting — keep logging so it stays that way.".into()),
+        "good" => actions.push(
+            "Nothing is demonstrably off yet. Keep logging: absence of evidence at this sample size is not evidence of calibration.".into(),
+        ),
         _ => {}
     }
     let earned = d.eprocess.is_some_and(|e| e >= RECAL_MIN_E)
@@ -1331,20 +1922,44 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
     }
     actions.push("Before a costly or irreversible call, run `ana decide` to turn your confidence into a clear proceed / verify / abstain.".into());
 
-    let headline = match verdict_class {
-        "under" => "You undersell yourself — trust your sure calls more.".to_string(),
-        "over" => "You oversell yourself — add slack and shade down.".to_string(),
-        "good" => "Your confidence is honest — well calibrated.".to_string(),
-        _ => "Too few resolved calls to read your calibration yet.".to_string(),
+    let headline = match d.verdict {
+        Verdict::Underconfident => {
+            "You undersell yourself — trust your sure calls more.".to_string()
+        }
+        Verdict::Overconfident => "You oversell yourself — add slack and shade down.".to_string(),
+        Verdict::BiasedYes => {
+            "You lean toward yes — you predict things happen more than they do.".to_string()
+        }
+        Verdict::BiasedNo => {
+            "You lean toward no — you predict things don't happen more than holds up.".to_string()
+        }
+        Verdict::CalibratedButUninformative => {
+            "Right on average, but your confidence doesn't separate the good calls from the bad."
+                .to_string()
+        }
+        Verdict::MiscalibratedBothWays => {
+            "Miscalibrated in both directions at once — the errors cancel in the average."
+                .to_string()
+        }
+        Verdict::NoEvidenceOfMiscalibration if n >= VERDICT_CONFIDENT_N => {
+            "Your confidence is honest — well calibrated.".to_string()
+        }
+        Verdict::NoEvidenceOfMiscalibration => {
+            "Nothing shows your confidence is off — but this is still a small record.".to_string()
+        }
+        Verdict::InsufficientData => {
+            "Too few resolved calls to read your calibration yet.".to_string()
+        }
     };
     let evidence_tag = match d.eprocess {
-        Some(e) if e >= 20.0 => "evidence: solid",
-        Some(e) if e >= 3.0 => "evidence: suggestive",
-        _ => "evidence: too few to tell",
+        Some(e) if e >= EVIDENCE_ALARM => "evidence: solid",
+        Some(e) if e >= RECAL_MIN_E => "evidence: suggestive",
+        _ if d.evidence_n < VERDICT_MIN_N => "evidence: too few to tell",
+        _ => "evidence: no miscalibration found",
     };
     let footer = format!(
         "{} resolved · {} · offline & local — nothing left your machine",
-        d.resolved, evidence_tag
+        d.resolved_binary, evidence_tag
     );
 
     PlainSummary {
@@ -1375,24 +1990,63 @@ struct Mood {
     gloss: String,
 }
 
-/// Pick the cat's mood from the calibration score: how well your stated confidence
-/// matches what actually happened, on 0–100, in four equal bands. The face is set
-/// by the band; the over/under direction colours the one-line gloss.
+/// A calibration error this far above its own noise floor scores 0/100. Roughly
+/// the miscalibration of saying 90% to coin flips.
+const MOOD_WORST_EXCESS: f64 = 0.10;
+
+/// Pick the cat's mood from the **size of the calibration error**, measured
+/// against the noise floor for a record of this size and shape, and from
+/// [`ReportData::verdict`] for the wording.
+///
+/// It used to key off `|confidence gap|`, which is why a ledger with a 0.160
+/// calibration error and a −0.520 skill score displayed `[DIALED IN] calibration
+/// 100/100 · well calibrated`: its overconfident half and its underconfident half
+/// cancelled to a gap of −1e-15. A cat is the most screenshot-able thing this
+/// program produces, so it is the last place a cancelling statistic belongs.
 fn mood(d: &ReportData) -> Mood {
-    let gap = d.confidence_gap;
-    let score = gap.map(|g| (100.0 * (1.0 - g.abs().min(0.25) / 0.25)).round() as u32);
-    let dir = match gap {
-        Some(g) if g > 0.05 => "overconfident — you oversell",
-        Some(g) if g < -0.05 => "underconfident — you undersell",
-        Some(_) => "well calibrated",
-        None => "no calls to judge yet",
+    let excess = match (d.mcb, d.mcb_null_q95) {
+        (Some(m), Some(f)) => Some((m - f).max(0.0)),
+        (Some(m), None) => Some(m.max(0.0)),
+        _ => None,
     };
-    let (art, name) = match score {
+    let score = if d.verdict == Verdict::InsufficientData {
+        None
+    } else {
+        excess.map(|e| (100.0 * (1.0 - (e / MOOD_WORST_EXCESS).min(1.0))).round() as u32)
+    };
+    let dir = match d.verdict {
+        Verdict::InsufficientData => "not enough graded calls to judge yet",
+        Verdict::Overconfident => "overconfident — you oversell",
+        Verdict::Underconfident => "underconfident — you undersell",
+        Verdict::BiasedYes => "leans yes — you over-predict that things happen",
+        Verdict::BiasedNo => "leans no — you over-predict that things don't",
+        Verdict::CalibratedButUninformative => "your confidence sorts nothing — fix that first",
+        Verdict::NoEvidenceOfMiscalibration => "no miscalibration found",
+        Verdict::MiscalibratedBothWays => {
+            "miscalibrated both ways — the errors cancel in the average"
+        }
+    };
+    // The face always follows the size of the calibration error; only the NAME
+    // changes when the forecasts sort nothing. An inverted forecaster — 0.95s
+    // that never happen, 0.05s that always do — is uninformative AND badly
+    // miscalibrated, and should not get a gentle face just because the headline
+    // finding is about ranking.
+    let (art, band) = match score {
         None => (CAT_SLEEPY, "WARMING UP"),
-        Some(s) if s >= 75 => (CAT_DIALED, "DIALED IN"),
+        // "DIALED IN" is the same claim as "well calibrated", so it answers to
+        // the same evidence bar: absence of evidence at 24 graded calls is not
+        // evidence of calibration, and the friendliest face in the program should
+        // not say otherwise.
+        Some(s) if s >= 75 && d.evidence_n >= VERDICT_CONFIDENT_N => (CAT_DIALED, "DIALED IN"),
+        Some(s) if s >= 75 => (CAT_CLOSE, "NOTHING OFF YET"),
         Some(s) if s >= 50 => (CAT_CLOSE, "CLOSE"),
         Some(s) if s >= 25 => (CAT_DRIFT, "DRIFTING"),
         Some(_) => (CAT_OFF, "WAY OFF"),
+    };
+    let (art, name) = match d.verdict {
+        Verdict::InsufficientData => (CAT_SLEEPY, "WARMING UP"),
+        Verdict::CalibratedButUninformative => (art, "UNINFORMATIVE"),
+        _ => (art, band),
     };
     let gloss = match score {
         Some(s) => format!("calibration {s}/100 · {dir}"),
@@ -1441,7 +2095,11 @@ pub fn render_plain(
 
     let s = plain_summary(&d);
     let _ = writeln!(out, "\n{}", s.headline);
-    let _ = writeln!(out, "Based on {} resolved prediction(s).", d.resolved);
+    let _ = writeln!(
+        out,
+        "Based on {} resolved prediction(s).",
+        d.resolved_binary
+    );
     for ins in &s.insights {
         let _ = writeln!(out, "\n{}", ins.label);
         let _ = writeln!(out, "{}", wrap(&ins.answer, 74, "  "));
@@ -1804,12 +2462,16 @@ pub fn render_html(
     let accent = match verdict_class {
         "under" => "#1565c0",
         "over" => "#c62828",
+        "uninformative" => "#ef6c00",
+        "both" => "#c62828",
         "good" => "#2e7d32",
         _ => "#757575",
     };
     let severity_class = match verdict_class {
         "under" => "underconfident",
         "over" => "overconfident",
+        "uninformative" => "uninformative",
+        "both" => "miscalibrated",
         "good" => "well-calibrated",
         _ => "not-enough-data",
     };
@@ -1965,7 +2627,10 @@ mod tests {
             id: id.into(),
             statement: format!("claim {id}"),
             created_at: now(),
-            resolve_by: None,
+            // A past due date, so the claim enters the evidence sequence. The
+            // sequential test orders by resolve-by precisely because that date is
+            // chosen before the outcome is known.
+            resolve_by: Some(NaiveDate::from_ymd_opt(2025, 6, 1).unwrap()),
             tags: tags.iter().map(|s| s.to_string()).collect(),
             kind: crate::model::ClaimKind::Binary,
             stake: 1.0,
@@ -1984,7 +2649,10 @@ mod tests {
                 }),
                 value: None,
                 note: None,
+                resolved_by: None,
             }),
+            void: None,
+            amendments: Vec::new(),
         }
     }
 
@@ -2008,7 +2676,10 @@ mod tests {
                 outcome: None,
                 value: Some(value),
                 note: None,
+                resolved_by: None,
             }),
+            void: None,
+            amendments: Vec::new(),
         }
     }
 
@@ -2089,12 +2760,12 @@ mod tests {
 
     #[test]
     fn plain_and_html_views_explain_and_render() {
+        // Enough claims, and enough miscalibration, to reach a real verdict:
+        // three claims is `insufficient_data`, which is its own test below.
         let ledger = Ledger {
-            claims: vec![
-                binary("a", 0.9, true, &[]),
-                binary("b", 0.8, true, &[]),
-                binary("c", 0.6, false, &[]),
-            ],
+            claims: (0..40)
+                .map(|i| binary(&format!("c{i}"), 0.9, i % 3 == 0, &[]))
+                .collect(),
         };
         let p = render_plain(&ledger, None, 10, td());
         assert!(p.contains("plain English"));
@@ -2116,6 +2787,33 @@ mod tests {
                                         // Brier is the headline stat, so it must NOT also appear as an insight term.
         assert!(!h.contains(">Brier score</p>"));
 
+        // Scenario 3: a handful of sure-and-right calls is not a verdict.
+        let tiny = Ledger {
+            claims: vec![
+                binary("a", 1.0, true, &[]),
+                binary("b", 1.0, true, &[]),
+                binary("c", 1.0, true, &[]),
+                binary("d", 0.0, false, &[]),
+                binary("e", 0.0, false, &[]),
+            ],
+        };
+        let td5 = ReportData::compute(&tiny, None, 10, td());
+        assert_eq!(td5.verdict, Verdict::InsufficientData);
+        assert!(
+            td5.log_score.unwrap().is_finite(),
+            "log score must not be inf"
+        );
+        let tp = render_plain(&tiny, None, 10, td());
+        // No verdict, no praise — five correct calls is five correct calls.
+        assert!(
+            tp.contains("Too few resolved calls") && tp.contains("WARMING UP"),
+            "must say so plainly:\n{tp}"
+        );
+        for banned in ["DIALED IN", "Well calibrated", "confidence is honest"] {
+            assert!(!tp.contains(banned), "{banned:?} at n=5:\n{tp}");
+        }
+        assert!(render_badge_svg(&tiny, None, 10, td()).contains("Not enough data"));
+
         // Both views survive an empty ledger without panicking.
         assert!(render_plain(&Ledger::default(), None, 10, td()).contains("Nothing to reflect"));
         assert!(render_html(&Ledger::default(), None, 10, td()).contains("<!DOCTYPE html"));
@@ -2129,10 +2827,15 @@ mod tests {
         assert!(render_badge_svg(&Ledger::default(), None, 10, td()).contains("Not enough data"));
     }
 
+    /// The old version of this test was called `mood_bands_track_the_confidence_gap`,
+    /// and the name was the bug: the gap cancels over- against under-confidence,
+    /// so the friendliest face in the program sat on top of the worst ledger in
+    /// the test suite. The mood now tracks the SIZE of the calibration error
+    /// against the noise floor for a record of that size.
     #[test]
-    fn mood_bands_track_the_confidence_gap() {
-        // Perfectly calibrated (sure and right) → top band.
-        let good = Ledger {
+    fn mood_tracks_the_size_of_the_calibration_error() {
+        // Four sure-and-right calls is not calibration evidence, it is four calls.
+        let tiny = Ledger {
             claims: vec![
                 binary("a", 1.0, true, &[]),
                 binary("b", 1.0, true, &[]),
@@ -2141,26 +2844,86 @@ mod tests {
             ],
         };
         assert_eq!(
-            mood(&ReportData::compute(&good, None, 10, td())).name,
-            "DIALED IN"
+            mood(&ReportData::compute(&tiny, None, 10, td())).name,
+            "WARMING UP",
+            "a four-claim ledger must not earn the best face in the program"
         );
-        // Wildly overconfident (sure and wrong) → bottom band.
+
+        // Wildly overconfident, and enough of it to be demonstrated.
         let bad = Ledger {
-            claims: vec![
-                binary("a", 1.0, false, &[]),
-                binary("b", 1.0, false, &[]),
-                binary("c", 0.0, true, &[]),
-                binary("d", 0.0, true, &[]),
-            ],
+            claims: (0..40)
+                .map(|i| {
+                    binary(
+                        &format!("c{i}"),
+                        if i % 2 == 0 { 0.95 } else { 0.05 },
+                        i % 2 != 0,
+                        &[],
+                    )
+                })
+                .collect(),
         };
+        // Its 0.95s never happen and its 0.05s always do: perfectly inverted, so
+        // the isotonic fit pools everything and DSC is 0. The headline finding is
+        // that the ranking carries no information — but the FACE still tracks the
+        // size of the calibration error, which is enormous.
+        let d = ReportData::compute(&bad, None, 10, td());
+        assert_eq!(d.verdict, Verdict::CalibratedButUninformative);
+        assert_eq!(mood(&d).name, "UNINFORMATIVE");
         assert_eq!(
-            mood(&ReportData::compute(&bad, None, 10, td())).name,
-            "WAY OFF"
+            mood(&d).art,
+            CAT_OFF,
+            "an inverted forecaster must not look calm"
         );
+
         // Nothing to judge → the sleepy face.
         assert_eq!(
             mood(&ReportData::compute(&Ledger::default(), None, 10, td())).name,
             "WARMING UP"
         );
+    }
+
+    /// Finding B, as a unit test: the single ledger that most embarrassed the
+    /// old code must never again be praised on any surface.
+    #[test]
+    fn cancelling_errors_are_never_called_well_calibrated() {
+        let mut claims: Vec<Claim> = Vec::new();
+        for i in 0..50 {
+            claims.push(binary(&format!("f{i}"), 0.9, i % 2 == 0, &[]));
+        }
+        for i in 0..50 {
+            claims.push(binary(&format!("s{i}"), 0.6, true, &[]));
+        }
+        let ledger = Ledger { claims };
+        let d = ReportData::compute(&ledger, None, 10, td());
+
+        // The gap that fooled the old code is still ~0 — that is the point.
+        assert!(d.confidence_gap.unwrap().abs() < 1e-9);
+        // DSC is exactly 0 here — higher stated confidence went with a LOWER hit
+        // rate, so isotonic regression collapses both groups to one value. That
+        // outranks anything about the level: telling this forecaster to shade
+        // their numbers down would not help, because their numbers carry no
+        // information about which calls come true in the first place.
+        assert_eq!(d.verdict, Verdict::CalibratedButUninformative);
+        assert!(d.mcb.unwrap() > d.mcb_null_q95.unwrap());
+        assert_eq!(d.dsc.unwrap(), 0.0, "the forecasts order nothing");
+
+        for view in [
+            render(&ledger, None, 10, td()),
+            render_plain(&ledger, None, 10, td()),
+            render_html(&ledger, None, 10, td()),
+            render_badge_svg(&ledger, None, 10, td()),
+            render_json(&ledger, None, 10, td()),
+        ] {
+            for banned in [
+                "DIALED IN",
+                "Well calibrated",
+                "well calibrated",
+                "well-calibrated",
+                "confidence is honest",
+                "Keep doing what you're doing",
+            ] {
+                assert!(!view.contains(banned), "{banned:?} appeared in:\n{view}");
+            }
+        }
     }
 }

@@ -226,6 +226,89 @@ fn calibration_eprocess(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Option<
 }
 
 /// Convert an e-value to an anytime-valid p-value via the `1/e` calibrator.
+/// CORP decomposition: `(mcb, dsc, unc, score)`. `score == mcb - dsc + unc`.
+#[pyfunction]
+fn corp_brier(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Option<(f64, f64, f64, f64)>> {
+    let s = binary(&probs, &outcomes)?;
+    Ok(scoring::corp_brier(&s).map(|c| (c.mcb, c.dsc, c.unc, c.score)))
+}
+
+/// The PAV-recalibrated probability for each sample, in input order — the
+/// reliability curve, with no bin width to argue about.
+#[pyfunction]
+fn corp_recalibrated(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Vec<f64>> {
+    let s = binary(&probs, &outcomes)?;
+    Ok(scoring::corp_brier(&s)
+        .map(|c| c.recalibrated)
+        .unwrap_or_default())
+}
+
+/// The `q`-quantile of MCB for a perfectly calibrated forecaster making exactly
+/// these calls: the noise floor an observed MCB has to clear to mean anything.
+#[pyfunction]
+#[pyo3(signature = (probs, outcomes, draws=400, q=0.95, seed=0xA11CE))]
+fn mcb_null_quantile(
+    probs: Vec<f64>,
+    outcomes: Vec<f64>,
+    draws: usize,
+    q: f64,
+    seed: u64,
+) -> PyResult<Option<f64>> {
+    let s = binary(&probs, &outcomes)?;
+    Ok(scoring::mcb_null_quantile(&s, draws, q, seed))
+}
+
+/// `((a, b, n) | None, earned, e_value | None)` — what the gate returns.
+type GatedRecalibration = (Option<(f64, f64, usize)>, bool, Option<f64>);
+
+/// Fit a recalibration map AND decide whether the evidence has earned applying
+/// it: returns `((a, b, n) | None, earned, e_value | None)`.
+///
+/// This is the gate the CLI and the MCP tools use, not a reimplementation of it —
+/// it calls the same `scoring::gate_recalibration`. Anything that corrects a
+/// probability should go through here, or it will "correct" on noise.
+#[pyfunction]
+#[pyo3(signature = (fit_probs, fit_outcomes, evidence_probs, evidence_outcomes, ridge=1.0))]
+fn gate_recalibration(
+    fit_probs: Vec<f64>,
+    fit_outcomes: Vec<f64>,
+    evidence_probs: Vec<f64>,
+    evidence_outcomes: Vec<f64>,
+    ridge: f64,
+) -> PyResult<GatedRecalibration> {
+    let fit = binary(&fit_probs, &fit_outcomes)?;
+    let ev = binary(&evidence_probs, &evidence_outcomes)?;
+    let (recal, earned, e) = scoring::gate_recalibration(&fit, &ev, ridge);
+    Ok((recal.map(|r| (r.a, r.b, r.n)), earned, e))
+}
+
+/// The mixture e-process, capped at 1e12 so it never returns `inf`. Unlike
+/// `calibration_eprocess`, this sees symmetric overconfidence.
+#[pyfunction]
+fn calibration_eprocess_v2(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Option<f64>> {
+    let s = binary(&probs, &outcomes)?;
+    Ok(scoring::calibration_eprocess_v2(&s))
+}
+
+/// `ln` of the mixture e-process — use this to compare magnitudes past the cap.
+#[pyfunction]
+fn calibration_log_eprocess(probs: Vec<f64>, outcomes: Vec<f64>) -> PyResult<Option<f64>> {
+    let s = binary(&probs, &outcomes)?;
+    Ok(scoring::calibration_log_eprocess(&s))
+}
+
+/// The Winkler score as a multiple of the interval's own width — unitless, so
+/// claims measured in different units can be averaged together.
+#[pyfunction]
+fn winkler_ratio(low: f64, high: f64, level: f64, value: f64) -> Option<f64> {
+    scoring::winkler_ratio(&scoring::NumericSample {
+        low,
+        high,
+        level,
+        value,
+    })
+}
+
 #[pyfunction]
 fn eprocess_pvalue(e: f64) -> f64 {
     scoring::eprocess_pvalue(e)
@@ -369,6 +452,13 @@ fn _core(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(shrink_toward, m)?)?;
     m.add_function(wrap_pyfunction!(calibration_eprocess, m)?)?;
     m.add_function(wrap_pyfunction!(eprocess_pvalue, m)?)?;
+    m.add_function(wrap_pyfunction!(corp_brier, m)?)?;
+    m.add_function(wrap_pyfunction!(gate_recalibration, m)?)?;
+    m.add_function(wrap_pyfunction!(corp_recalibrated, m)?)?;
+    m.add_function(wrap_pyfunction!(mcb_null_quantile, m)?)?;
+    m.add_function(wrap_pyfunction!(calibration_eprocess_v2, m)?)?;
+    m.add_function(wrap_pyfunction!(calibration_log_eprocess, m)?)?;
+    m.add_function(wrap_pyfunction!(winkler_ratio, m)?)?;
     m.add_function(wrap_pyfunction!(fit_recalibration, m)?)?;
     m.add_function(wrap_pyfunction!(recalibration_apply, m)?)?;
     m.add_function(wrap_pyfunction!(brier_ci_bootstrap, m)?)?;

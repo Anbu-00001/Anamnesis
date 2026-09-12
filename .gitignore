@@ -1,5 +1,11 @@
 /target
-*.json.tmp
+# atomic-save temp files (store::save writes .<name>.<pid>.<nanos>.tmp)
+*.tmp
+# ledger sidecars, if a ledger is ever kept in-tree
+*.json.lock
+*.json.bak
+# scratch file written by validation/peeking.py
+/_peek.json
 # generated demo ledger (recreate with: cargo run --example seed -- seed.json)
 /seed.json
 # guard against the accidental self-referential nested submodule re-appearing

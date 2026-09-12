@@ -48,6 +48,24 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   difference, the covariate-balance / missing-not-at-random effect size) feed the
   report's **resolution-discipline** check — is the calibration computed on a fair
   sample of your calls, or a self-selected one?
+- [src/evidence.rs](src/evidence.rs) — **the order the sequential test consumes
+  claims in**, and the single most subtle thing in the repo. Claims enter by a
+  *due key* fixed at creation (`resolve_by`, else the creation date) and the
+  sequence STOPS at the first due-but-ungraded claim. That stopping rule is what
+  keeps the anytime-valid guarantee: the result is always a true prefix of a fixed
+  order, so only the stopping point varies with the outcomes, and Ville holds at
+  any stopping time. Ordering by *resolution time* — which shipped before, and
+  looks chronological — is not a prefix of any fixed order, and made a perfectly
+  calibrated forecaster false-alarm in 100% of simulated runs when the report was
+  re-read as claims resolved (0% now). Do not "simplify" this back.
+- [src/hook.rs](src/hook.rs) — `ana hook <session-start|user-prompt|post-tool|stop>`.
+  The Claude Code hooks, in the binary: one code path, no `jq`, and the wording
+  comes from `report::verdict` so the hooks cannot disagree with the report. The
+  PostToolUse hook auto-resolves `kind:tests-pass` claims **from the command's exit
+  status**, recording `resolved_by: "auto"` — the part of a self-graded ledger that
+  does not rest on the agent's word.
+- [src/demo.rs](src/demo.rs) — the fictional demo ledger, shared by `ana demo` and
+  `examples/seed.rs` so they cannot drift.
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
   (forecasts appended, never overwritten). `ClaimKind::{Binary,Numeric}`. `Forecast`
   holds `Option<prob>` xor `Option<interval>`; `Resolution` holds `Option<outcome>`
@@ -71,7 +89,7 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   the CLI/MCP, a fixed date in tests) for the **`ResolutionDiscipline`** selection-bias
   check — resolution rate, overdue count, and the boldness `asmd` of graded vs
   ungraded calls — rendered up top as the honesty caveat on every number below.
-- [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/list/show/report/decide/mcp`,
+- [src/main.rs](src/main.rs) — clap CLI: `add/update/resolve/void/amend/list/show/report/decide/demo/import/where/hook/mcp`,
   global `--data` and `--json`. `decide --prob --stake` is the decision gate (below);
   `report --plain` (plain-English + cat), `--html` (offline card), `--badge` (README
   SVG) pick the renderer; `list --tag` filters by tag; the agent ledger is `~/.anamnesis/agent.json`
@@ -112,7 +130,19 @@ not the same as knowing how sure to be (calibration).** The report shows both.
 5. **The integration test depends on exact output substrings**: `added [id]`,
    `30% → 60%`, `resolved TRUE`, `already resolved`, `between 0 and 1`,
    `no claim matches`. If you change these strings, update [tests/cli.rs](tests/cli.rs).
-6. **Tests as oracles**: the fast `auc` is validated against a self-evidently
+6. **The headline score grades the FIRST forecast** (`Claim::sample`), never the
+   last. `sample_final` exists for display only. Scoring the final forecast let a
+   claim logged at 0.5, updated to 0.99 and resolved YES score 0.000 and be
+   congratulated for it.
+7. **One verdict** (`report::verdict`). The plain report, the cat, the badge, the
+   card, `--json`, the MCP `calibration` tool and the hooks all read it. They used
+   to each key off the confidence gap, in which over- and under-confidence cancel:
+   a ledger with a −0.520 Brier skill had a gap of −1e-15 and was announced as
+   `[DIALED IN] · well calibrated`. Never derive a pass/fail from the gap.
+8. **Every mutating command holds the lock** across load and save
+   (`Cmd::mutates()`, `store::lock`). Without it, 40 parallel `ana add` calls left
+   7–19 claims of 40, almost silently.
+9. **Tests as oracles**: the fast `auc` is validated against a self-evidently
    correct `O(n²)` `auc_pairwise` in tests. When optimising a metric, keep the slow
    version as a test oracle rather than deleting it.
 
@@ -123,6 +153,9 @@ cargo build --release            # binary: target/release/ana
 cargo test                       # unit + integration
 cargo clippy --all-targets -- -D warnings
 cargo run --example seed -- seed.json && ./target/release/ana --data seed.json report
+./scripts/check-versions.sh      # Cargo.toml == plugin.json == marketplace.json
+./validation/repro.sh            # the measured defects, against the built binary
+cd bindings/python && maturin develop --release && pytest -q
 ```
 
 No dependency may be added without a real reason; current deps are clap, serde,
@@ -232,9 +265,15 @@ load-bearing operational payoff — the literature's #1 agent open-problem made 
 
 ### Status, surfaces & the working agreement
 
-- **At saturation:** Tiers 1–3 + the decision gate + the resolution-discipline /
-  selection-bias check are shipped; further work is polish, usage, or genuinely new
-  research — not backlog.
+- **Not at saturation, and the 0.3.0 note claiming otherwise was wrong.** A
+  pre-launch audit driving the real binary found five defects that the test suite
+  did not: hindsight-exploitable scoring, an inflated calibration term, an evidence
+  test blind to symmetric overconfidence, an outcome-dependent evidence order, and
+  silent data loss on concurrent writes. All are fixed in 0.4.0 and pinned by
+  `tests/hn_scenarios.rs`. The lesson generalises: **the defects were in what the
+  numbers MEANT, not in the arithmetic**, and only appeared when the tool was
+  driven as a user drives it. Before believing this file, run
+  `./validation/repro.sh`.
 - **Five renderers, one computation:** `report` (rich) · `--plain` (plain English + the
   calibration cat) · `--html` (offline card) · `--badge` (README SVG) · `--json`. The
   HTML/SVG are pixel-faithful to a Claude Design handoff; `plain_summary` builds the

@@ -2,7 +2,7 @@
 
 > claude-mem *remembers*. self-improving-agent *curates lessons*. **Anamnesis keeps score.**
 
-Every agent-memory tool is qualitative — none measure whether your *confidence*
+Most agent-memory tools record what happened. None that I know of measure whether your *confidence*
 matched reality. This plugin is the missing quantitative layer: log a falsifiable
 prediction before you act, get scored by a no-LLM engine when reality answers, and
 have your standing over/under-confidence injected into **every project** at session
@@ -38,7 +38,7 @@ Requires the `ana` engine on `PATH` (or vendored at `~/.anamnesis/bin/ana`) and 
 ```
 
 Get `ana` from the [Anamnesis releases](https://github.com/Anbu-00001/Anamnesis/releases)
-(prebuilt binaries) or `cargo install --path .` from the repo root.
+(prebuilt binaries, checksum-verified) or `cargo install --path . --locked` from the repo root.
 
 ## Notes / known issues
 

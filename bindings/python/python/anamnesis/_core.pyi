@@ -38,6 +38,50 @@ def wilson_interval(
 ) -> Optional[Tuple[float, float]]: ...
 def shrink_toward(successes: float, n: int, prior_mean: float, strength: float) -> float: ...
 def calibration_eprocess(probs: List[float], outcomes: List[float]) -> Optional[float]: ...
+def corp_brier(
+    probs: Sequence[float], outcomes: Sequence[float]
+) -> tuple[float, float, float, float] | None:
+    """CORP decomposition: ``(mcb, dsc, unc, score)``.
+
+    ``score == mcb - dsc + unc`` exactly, with no bins and no tuning parameter
+    (Dimitriadis, Gneiting & Jordan, PNAS 2021). Prefer this to ``decompose``:
+    grouping by exact forecast value reports large calibration error for
+    forecasters who have none whenever the probabilities are fine-grained.
+    """
+
+def corp_recalibrated(
+    probs: Sequence[float], outcomes: Sequence[float]
+) -> list[float]:
+    """The PAV-recalibrated probability per sample, in input order."""
+
+def mcb_null_quantile(
+    probs: Sequence[float],
+    outcomes: Sequence[float],
+    draws: int = 400,
+    q: float = 0.95,
+    seed: int = 0xA11CE,
+) -> float | None:
+    """The calibration error a *perfectly calibrated* forecaster would score
+    while making exactly these calls — the floor an observed MCB must clear."""
+
+def calibration_eprocess_v2(
+    probs: Sequence[float], outcomes: Sequence[float]
+) -> float | None:
+    """Mixture e-process, capped at 1e12. Unlike :func:`calibration_eprocess`,
+    this sees symmetric overconfidence (too sure at 0.9 AND at 0.1)."""
+
+def calibration_log_eprocess(
+    probs: Sequence[float], outcomes: Sequence[float]
+) -> float | None:
+    """``ln`` of the mixture e-process, for comparing magnitudes past the cap."""
+
+def winkler_ratio(
+    low: float, high: float, level: float, value: float
+) -> float | None:
+    """Winkler score as a multiple of the interval's own width — unitless, so
+    claims in different units can be averaged. ``None`` for a zero-width
+    interval."""
+
 def eprocess_pvalue(e: float) -> float: ...
 def fit_recalibration(
     probs: List[float], outcomes: List[float], ridge: float = ...

@@ -66,7 +66,16 @@ __all__ = [
     "calibration_eprocess",
     "eprocess_pvalue",
     "fit_recalibration",
+    "gate_recalibration",
+    "EarnedRecalibration",
     "Recalibration",
+    "corp_brier",
+    "Corp",
+    "corp_recalibrated",
+    "mcb_null_quantile",
+    "calibration_eprocess_v2",
+    "calibration_log_eprocess",
+    "winkler_ratio",
     "brier_ci_bootstrap",
     "ewma_brier",
     "distinct_forecasts",
@@ -232,6 +241,97 @@ def fit_recalibration(
     Returns ``None`` for an empty record."""
     t = _core.fit_recalibration(_floats(probs), _floats(outcomes), float(ridge))
     return None if t is None else Recalibration(*t)
+
+
+EarnedRecalibration = namedtuple("EarnedRecalibration", "map earned eprocess")
+
+
+def gate_recalibration(
+    fit_probs: Sequence,
+    fit_outcomes: Sequence,
+    evidence_probs: Optional[Sequence] = None,
+    evidence_outcomes: Optional[Sequence] = None,
+    ridge: float = 1.5,
+) -> "EarnedRecalibration":
+    """Fit a recalibration map **and** decide whether the evidence has earned it.
+
+    This is the gate the CLI and the MCP tools go through, not a Python copy of
+    it — it calls the same ``scoring::gate_recalibration``. Anything that corrects
+    a stated probability should use this rather than :func:`fit_recalibration`,
+    which will happily fit a map to noise and hand it over without comment.
+
+    ``evidence_*`` is the outcome-independent sequence the e-process may consume;
+    it defaults to the fitting sample. Returns ``(map, earned, eprocess)`` — the
+    map is present either way, and ``earned`` is the part that says to trust it.
+    """
+    ep = fit_probs if evidence_probs is None else evidence_probs
+    eo = fit_outcomes if evidence_outcomes is None else evidence_outcomes
+    t, earned, e = _core.gate_recalibration(
+        _floats(fit_probs), _floats(fit_outcomes), _floats(ep), _floats(eo), float(ridge)
+    )
+    return EarnedRecalibration(
+        None if t is None else Recalibration(*t), bool(earned), e
+    )
+
+
+# ── CORP decomposition ───────────────────────────────────────────────────────
+Corp = namedtuple("Corp", "mcb dsc unc score")
+
+
+def corp_brier(probs: Sequence, outcomes: Sequence) -> Optional["Corp"]:
+    """CORP decomposition of the Brier score: miscalibration, discrimination,
+    uncertainty (Dimitriadis, Gneiting & Jordan, PNAS 2021).
+
+    ``score == mcb - dsc + unc`` exactly, with no bins and no tuning parameter.
+    Prefer this to :func:`decompose`: grouping by exact forecast value reports a
+    large calibration error for forecasters who have none whenever the
+    probabilities are fine-grained — simulated at n=200 with two-decimal
+    forecasts, it reads 0.073 where the truth is 0.000, against CORP's 0.014.
+    """
+    t = _core.corp_brier(_floats(probs), _floats(outcomes))
+    return None if t is None else Corp(*t)
+
+
+def corp_recalibrated(probs: Sequence, outcomes: Sequence) -> list:
+    """The isotonic (PAV) recalibrated probability per sample, in input order —
+    the reliability curve, with no bin width to argue about."""
+    return _core.corp_recalibrated(_floats(probs), _floats(outcomes))
+
+
+def mcb_null_quantile(
+    probs: Sequence,
+    outcomes: Sequence,
+    draws: int = 400,
+    q: float = 0.95,
+    seed: int = 0xA11CE,
+) -> Optional[float]:
+    """The calibration error a *perfectly calibrated* forecaster would score
+    making exactly these calls — the floor an observed ``mcb`` has to clear
+    before it means anything. Deterministic given ``seed``."""
+    return _core.mcb_null_quantile(
+        _floats(probs), _floats(outcomes), int(draws), float(q), int(seed)
+    )
+
+
+def calibration_eprocess_v2(probs: Sequence, outcomes: Sequence) -> Optional[float]:
+    """The mixture e-process: same guarantee as :func:`calibration_eprocess`, but
+    it also sees *symmetric* overconfidence — too sure at 0.9 **and** too sure at
+    0.1, whose errors cancel exactly in the single-strategy version. Capped at
+    1e12 so it never returns ``inf``; use :func:`calibration_log_eprocess` to
+    compare magnitudes past that."""
+    return _core.calibration_eprocess_v2(_floats(probs), _floats(outcomes))
+
+
+def calibration_log_eprocess(probs: Sequence, outcomes: Sequence) -> Optional[float]:
+    """``ln`` of the mixture e-process."""
+    return _core.calibration_log_eprocess(_floats(probs), _floats(outcomes))
+
+
+def winkler_ratio(low: float, high: float, level: float, value: float) -> Optional[float]:
+    """Winkler score as a multiple of the interval's own width: unitless, so
+    claims measured in different units can be averaged. ``1.0`` means the value
+    landed inside. ``None`` for a zero-width interval."""
+    return _core.winkler_ratio(float(low), float(high), float(level), float(value))
 
 
 # ── small-sample / over-time bands ───────────────────────────────────────────

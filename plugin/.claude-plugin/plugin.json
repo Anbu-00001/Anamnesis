@@ -1,9 +1,23 @@
 {
   "name": "anamnesis",
-  "version": "0.2.0",
+  "version": "0.4.0",
   "description": "Quantified self-calibration for coding agents. Log a falsifiable prediction (probability or interval) before you act; get scored when reality answers; see your standing over/under-confidence injected into every project at session start and re-surfaced as a self-introspection checkpoint every 7th prompt. The measurement layer the qualitative memory tools lack.",
-  "author": { "name": "Anbu + Claude (Opus)" },
+  "author": {
+    "name": "Anbu + Claude (Opus)"
+  },
   "homepage": "https://github.com/Anbu-00001/Anamnesis",
-  "keywords": ["calibration", "forecasting", "brier", "self-evaluation", "agent", "metacognition"],
-  "hooks": "./hooks/hooks.json"
+  "keywords": [
+    "calibration",
+    "forecasting",
+    "brier",
+    "self-evaluation",
+    "agent",
+    "metacognition"
+  ],
+  "mcpServers": {
+    "anamnesis": {
+      "command": "${CLAUDE_PLUGIN_ROOT}/mcp-server.sh",
+      "args": []
+    }
+  }
 }

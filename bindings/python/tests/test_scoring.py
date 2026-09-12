@@ -251,3 +251,93 @@ def test_bools_and_numpy_inputs_work():
     o = np.array([1, 1, 0, 1, 0])
     assert ana.brier(p, o) == pytest.approx(0.11)
     assert ana.auc(p, o) == ana.auc(PROBS, OUT)
+
+
+# ── CORP, the noise floor, and the mixture e-process (0.4.0) ─────────────────
+
+
+def test_corp_identity_is_exact():
+    probs = [0.1, 0.2, 0.2, 0.5, 0.7, 0.9, 0.9, 0.95]
+    outcomes = [0, 0, 1, 1, 1, 1, 0, 1]
+    c = ana.corp_brier(probs, outcomes)
+    assert c is not None
+    assert abs(c.score - (c.mcb - c.dsc + c.unc)) < 1e-12
+    assert ana.corp_brier([], []) is None
+
+
+def test_corp_is_quieter_than_exact_grouping_on_a_calibrated_forecaster():
+    """The defect CORP exists to fix: with fine-grained probabilities, grouping by
+    exact value calls a perfectly calibrated forecaster miscalibrated."""
+    import random
+
+    rng = random.Random(7)
+    probs = [round(rng.uniform(0.02, 0.98), 2) for _ in range(300)]
+    outcomes = [1.0 if rng.random() < p else 0.0 for p in probs]
+
+    corp = ana.corp_brier(probs, outcomes)
+    old = ana.decompose(probs, outcomes)
+    assert corp.mcb < old.reliability, (corp.mcb, old.reliability)
+
+    floor = ana.mcb_null_quantile(probs, outcomes)
+    assert floor is not None and floor > 0
+    assert corp.mcb <= floor * 1.5, "a calibrated forecaster should sit near the floor"
+
+
+def test_mcb_null_quantile_is_deterministic():
+    probs = [0.7] * 40
+    outcomes = [1.0 if i % 3 else 0.0 for i in range(40)]
+    a = ana.mcb_null_quantile(probs, outcomes, draws=200, seed=99)
+    b = ana.mcb_null_quantile(probs, outcomes, draws=200, seed=99)
+    assert a == b
+
+
+def test_eprocess_v2_sees_symmetric_overconfidence():
+    """Says 90% when the truth is 65%, and 10% when the truth is 35%. The errors
+    cancel exactly in the single-strategy e-process."""
+    import random
+
+    rng = random.Random(3)
+    probs, outcomes = [], []
+    for i in range(300):
+        p, truth = (0.9, 0.65) if i % 2 == 0 else (0.1, 0.35)
+        probs.append(p)
+        outcomes.append(1.0 if rng.random() < truth else 0.0)
+
+    assert ana.calibration_eprocess(probs, outcomes) < 20.0, "v1 is blind here"
+    assert ana.calibration_eprocess_v2(probs, outcomes) >= 20.0, "v2 must see it"
+    assert ana.calibration_log_eprocess(probs, outcomes) > 3.0
+
+
+def test_eprocess_v2_never_returns_inf():
+    probs = [0.99] * 3000
+    outcomes = [0.0] * 3000
+    e = ana.calibration_eprocess_v2(probs, outcomes)
+    assert e == e and e != float("inf")  # finite, not NaN
+
+
+def test_gate_refuses_to_correct_on_noise():
+    """`fit_recalibration` always hands back a map; the gate is what decides
+    whether the evidence has earned applying it."""
+    probs = [0.6, 0.4, 0.7]
+    outcomes = [1.0, 0.0, 1.0]
+    g = ana.gate_recalibration(probs, outcomes)
+    assert g.map is not None, "the map is always returned"
+    assert not g.earned, "three calls is not evidence"
+
+    import random
+
+    rng = random.Random(11)
+    p2 = [0.9] * 200
+    o2 = [1.0 if rng.random() < 0.5 else 0.0 for _ in range(200)]
+    g2 = ana.gate_recalibration(p2, o2)
+    assert g2.earned, "200 calls at 0.9 that come true half the time is evidence"
+    assert g2.eprocess >= 3.0
+    assert g2.map.apply(0.9) < 0.9, "and the correction pulls the number down"
+
+
+def test_winkler_ratio_is_unitless():
+    small = ana.winkler_ratio(10, 20, 0.8, 25)
+    large = ana.winkler_ratio(10_000, 20_000, 0.8, 25_000)
+    assert abs(small - large) < 1e-9
+    assert abs(ana.winkler_ratio(10, 20, 0.8, 15) - 1.0) < 1e-12
+    assert ana.winkler_ratio(5, 5, 0.8, 5) is None

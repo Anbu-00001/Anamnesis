@@ -22,8 +22,14 @@ fn ana(data: &str, args: &[&str]) -> (String, String, bool) {
 
 /// Add a binary claim at `prob` and immediately resolve it `outcome` (yes/no),
 /// going through the real CLI both times — the canned way to grow a ledger.
+/// A past `--by` date, so the claim lands in the evidence sequence immediately.
+/// The sequential test orders by resolve-by (fixed at creation) and only counts
+/// claims whose date has passed — a claim with no date has no outcome-independent
+/// place in the sequence and is deliberately excluded.
+const PAST_DUE: &str = "2020-01-01";
+
 fn add_resolve(data: &str, prob: &str, outcome: &str) {
-    let (o, _, ok) = ana(data, &["add", "canned claim", "-p", prob]);
+    let (o, _, ok) = ana(data, &["add", "canned claim", "-p", prob, "--by", PAST_DUE]);
     assert!(ok, "add({prob}) failed: {o}");
     let id = extract_id(&o);
     let (o, e, ok) = ana(data, &["resolve", &id, outcome]);
@@ -126,7 +132,13 @@ fn full_lifecycle() {
         o.contains("dry front") && o.contains("front stalled"),
         "both reasons should survive"
     );
-    assert!(o.contains("Brier on final forecast"));
+    // The graded figure is the FIRST forecast; the final one is shown beside it,
+    // labelled as not graded.
+    assert!(o.contains("Brier on your FIRST forecast"));
+    assert!(
+        o.contains("shown, not graded"),
+        "the revised forecast must be visible but clearly ungraded:\n{o}"
+    );
 
     // report works on a real ledger -------------------------------------
     let (o, _, ok) = ana(data, &["report"]);
@@ -163,9 +175,11 @@ fn tier1_report_surfaces_eprocess_and_recalibration() {
     let (o, _, ok) = ana(data, &["report"]);
     assert!(ok, "report should succeed");
     assert!(o.contains("Is it real?"), "e-process line missing:\n{o}");
+    // Three graded calls is not "no evidence of miscalibration", it is "not
+    // enough data" — and the report must say which, with the number.
     assert!(
-        o.contains("no real evidence"),
-        "small n should read as no evidence:\n{o}"
+        o.contains("not enough graded calls yet"),
+        "small n must read as not-enough-data, not as a verdict:\n{o}"
     );
     assert!(
         !o.contains("Recalibration"),
@@ -340,7 +354,19 @@ fn dialectical_elicitation_end_to_end() {
 
 /// Add a binary claim carrying tags and resolve it, through the real CLI.
 fn add_resolve_tagged(data: &str, prob: &str, outcome: &str, tags: &str) {
-    let (o, _, ok) = ana(data, &["add", "canned claim", "-p", prob, "--tags", tags]);
+    let (o, _, ok) = ana(
+        data,
+        &[
+            "add",
+            "canned claim",
+            "-p",
+            prob,
+            "--tags",
+            tags,
+            "--by",
+            PAST_DUE,
+        ],
+    );
     assert!(ok, "tagged add({prob}) failed: {o}");
     let id = extract_id(&o);
     let (o, e, ok) = ana(data, &["resolve", &id, outcome]);

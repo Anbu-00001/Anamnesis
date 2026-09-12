@@ -427,6 +427,25 @@ pub fn winkler(s: &NumericSample) -> f64 {
     }
 }
 
+/// The Winkler score expressed as a **multiple of the interval's own width**.
+///
+/// The raw Winkler score carries the units of the quantity being predicted, so
+/// averaging across claims lets the largest-magnitude question dominate the
+/// headline: one estimate in milliseconds and one in dollars are added together
+/// as if they were the same thing, and "your interval score is 4127" tells the
+/// reader nothing except which claim had the biggest numbers.
+///
+/// Dividing by the width removes the units. `1.0` means the value landed inside
+/// the interval; anything above 1 is the miss penalty, in units of your own
+/// stated width. `None` for a zero-width interval, where the ratio is undefined.
+pub fn winkler_ratio(s: &NumericSample) -> Option<f64> {
+    let width = s.high - s.low;
+    if width <= 0.0 {
+        return None;
+    }
+    Some(winkler(s) / width)
+}
+
 /// Empirical **coverage**: the fraction of intervals that actually contained
 /// their outcome. Compared with the nominal level, this is interval calibration:
 /// 80% intervals that catch the truth far less than 80% of the time are too
@@ -614,9 +633,27 @@ pub fn fit_recalibration(samples: &[Sample], ridge: f64) -> Option<Recalibration
         .iter()
         .map(|s| logit(s.prob.clamp(1e-6, 1.0 - 1e-6)))
         .collect();
+    // The penalised objective: NLL + (ridge/2)·[a² + (b−1)²]. Newton is only
+    // trusted as far as this actually decreases.
+    let objective = |a: f64, b: f64| -> f64 {
+        let mut acc = 0.5 * ridge * (a * a + (b - 1.0).powi(2));
+        for (x, s) in xs.iter().zip(samples) {
+            let z = a + b * x;
+            // softplus(z) − y·z, computed so that large |z| cannot overflow.
+            let softplus = if z > 0.0 {
+                z + (-z).exp().ln_1p()
+            } else {
+                z.exp().ln_1p()
+            };
+            acc += softplus - s.outcome * z;
+        }
+        acc
+    };
+
     let (mut a, mut b) = (0.0f64, 1.0f64);
-    for _ in 0..50 {
-        // Gradient g and Hessian H of NLL + (ridge/2)·[a² + (b−1)²].
+    let mut converged = false;
+    for _ in 0..100 {
+        // Gradient g and Hessian H of the objective above.
         let (mut ga, mut gb) = (ridge * a, ridge * (b - 1.0));
         let (mut haa, mut hab, mut hbb) = (ridge, 0.0, ridge);
         for (x, s) in xs.iter().zip(samples) {
@@ -629,29 +666,140 @@ pub fn fit_recalibration(samples: &[Sample], ridge: f64) -> Option<Recalibration
             hab += w * x;
             hbb += w * x * x;
         }
-        // Newton step [a, b] -= H⁻¹ g. H is SPD thanks to the ridge, so the 2×2
-        // determinant is strictly positive and the inverse always exists.
+        // At the b = 0 boundary, a positive gb means the objective wants to push
+        // b further negative; the constraint holds it, and that is optimal.
+        let gb_free = if b <= 0.0 && gb > 0.0 { 0.0 } else { gb };
+        if ga.abs() < 1e-10 && gb_free.abs() < 1e-10 {
+            converged = true;
+            break;
+        }
         let det = haa * hbb - hab * hab;
-        if det.abs() < 1e-12 {
+        if !(det.is_finite() && det > 1e-12) {
             break;
         }
         let da = (hbb * ga - hab * gb) / det;
         let db = (haa * gb - hab * ga) / det;
-        a -= da;
-        b -= db;
-        if da.abs() < 1e-10 && db.abs() < 1e-10 {
+
+        // Backtracking line search. The undamped Newton step this used to take
+        // DIVERGES whenever the fit wanders into the saturated region: there
+        // every mu is ~0 or ~1, so the Hessian weights w = mu(1−mu) vanish while
+        // the gradient does not, and the step overshoots further each time.
+        //
+        // Measured on 200 calls all stated at 0.9 that came true half the time —
+        // an agent with a narrow confidence vocabulary, which the report's own
+        // "confidence vocab" line exists to notice — it returned a = 66, b = 146,
+        // a map that corrects 0.9 UP to 1.0 for a forecaster who is right half
+        // the time. Exactly the direction of error this tool exists to catch.
+        let f0 = objective(a, b);
+        let mut step = 1.0;
+        let mut moved = false;
+        for _ in 0..40 {
+            // Projected Newton: the slope is constrained to b >= 0, because a
+            // recalibration map must be non-decreasing. Higher stated confidence
+            // mapping to a LOWER corrected probability is not a correction, it is
+            // an inversion, and handing one to `decide` would be worse than
+            // handing it nothing.
+            //
+            // An unconstrained fit reaches b < 0 whenever the observed
+            // frequencies do not rise with the forecast — which at small n is
+            // usually noise. Measured on a 15-claim fixture where twelve 0.9s
+            // failed and a lone 0.6 came true, it converged to b = -0.69.
+            // Pinning b at 0 there collapses the map to a constant, which is
+            // exactly what the isotonic fit does with the same data when
+            // pool-adjacent-violators merges the whole range into one block.
+            let (na, nb) = (a - step * da, (b - step * db).max(0.0));
+            if na.is_finite() && nb.is_finite() && objective(na, nb) <= f0 {
+                if (na - a).abs() < 1e-15 && (nb - b).abs() < 1e-15 {
+                    break; // the projection pinned us; no progress available
+                }
+                a = na;
+                b = nb;
+                moved = true;
+                break;
+            }
+            step *= 0.5;
+        }
+        if !moved {
+            // No downhill step of any size: we are at the optimum to numerical
+            // precision, or the problem is degenerate.
+            converged = true;
+            break;
+        }
+        if (step * da).abs() < 1e-10 && (step * db).abs() < 1e-10 {
+            converged = true;
             break;
         }
     }
-    Some(if a.is_finite() && b.is_finite() {
-        Recalibration {
-            a,
-            b,
-            n: samples.len(),
-        }
+
+    // Refuse to hand back a correction the solver did not actually find. The
+    // identity map says "no correction", which is the honest answer when the fit
+    // will not settle — never a confidently wrong one.
+    let candidate = Recalibration {
+        a,
+        b,
+        n: samples.len(),
+    };
+    if converged && a.is_finite() && b.is_finite() && recalibration_is_sane(&candidate, samples) {
+        Some(candidate)
     } else {
-        Recalibration::identity(samples.len())
-    })
+        Some(Recalibration::identity(samples.len()))
+    }
+}
+
+/// Three cheap invariants a usable recalibration map must satisfy.
+///
+/// This is belt-and-braces on top of the line search, and it is here because of
+/// how this function failed: a diverged fit does not error, it returns a
+/// confident number pointing the wrong way, and the evidence gate had already
+/// decided to trust it. Every other defect in this program fails passively; this
+/// one pushed a 50%-accurate forecaster's stated 0.9 up to 1.0.
+///
+/// 1. The map must send `[0,1]` into `[0,1]` — free, given it is a sigmoid, but
+///    it also catches a non-finite `a` or `b` slipping through.
+/// 2. It must be **monotone non-decreasing**: correcting a higher stated
+///    probability to a lower corrected one is never a calibration correction.
+/// 3. It must agree in direction with the **isotonic (PAV) fit** that [`corp_brier`]
+///    already computes. PAV cannot diverge by construction — it is the
+///    least-squares monotone fit, not an iterative solve — so it is a free oracle
+///    for what the correction ought to look like. If the parametric map says
+///    "raise this" where the isotonic curve says "lower it", the parametric one
+///    is wrong.
+fn recalibration_is_sane(r: &Recalibration, samples: &[Sample]) -> bool {
+    // 1 + 2: sample the map across the unit interval.
+    let grid: [f64; 11] = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0];
+    let mut prev = f64::NEG_INFINITY;
+    for p in grid {
+        let q = r.apply(p);
+        if !q.is_finite() || !(0.0..=1.0).contains(&q) {
+            return false;
+        }
+        if q + 1e-9 < prev {
+            return false; // non-monotone
+        }
+        prev = q;
+    }
+
+    // 3: cross-check the direction against the isotonic fit on the same data.
+    let Some(corp) = corp_brier(samples) else {
+        return true;
+    };
+    let (mut checked, mut disagreements) = (0usize, 0usize);
+    for (s, &iso) in samples.iter().zip(corp.recalibrated.iter()) {
+        let parametric = r.apply(s.prob) - s.prob;
+        let isotonic = iso - s.prob;
+        // Only meaningful where both say something worth saying.
+        if parametric.abs() < 0.02 || isotonic.abs() < 0.02 {
+            continue;
+        }
+        checked += 1;
+        if parametric.signum() != isotonic.signum() {
+            disagreements += 1;
+        }
+    }
+    // The isotonic fit is noisy at small n, so a handful of local disagreements
+    // are expected; a majority of them means the parametric fit points the wrong
+    // way overall, which is the failure being guarded against.
+    checked == 0 || (disagreements * 2) <= checked
 }
 
 // ─────────────────────────── decision gate ──────────────────────────────────
@@ -920,12 +1068,570 @@ pub fn dialectical_mean(p1: f64, p2: f64) -> f64 {
     (p1.clamp(0.0, 1.0) + p2.clamp(0.0, 1.0)) / 2.0
 }
 
+// ───────────────────────── CORP decomposition (P0-4) ────────────────────────
+
+/// The **CORP** decomposition of the Brier score (Dimitriadis, Gneiting & Jordan,
+/// PNAS 2021): *Consistent, Optimally binned, Reproducible, Pool-adjacent-violators*.
+///
+/// [`decompose`] groups forecasts by their exact value, which is what makes its
+/// identity exact — but at an agent's sample sizes most exact-value groups hold
+/// one or two claims, and a group of one always has observed frequency 0 or 1,
+/// so its "calibration error" is the largest it could possibly be. Simulating a
+/// *perfectly calibrated* forecaster using two-decimal probabilities, where the
+/// true calibration error is zero:
+///
+/// | n | exact-value reliability | CORP MCB |
+/// |---|---|---|
+/// | 50 | 0.138 | 0.034 |
+/// | 200 | 0.073 | 0.014 |
+///
+/// The shipped number told a well-calibrated user they had a calibration problem.
+///
+/// CORP replaces binning with isotonic regression (pool-adjacent-violators): the
+/// best *non-decreasing* recalibration of the forecasts. Then
+///
+/// - `MCB` (miscalibration) `= S(forecast) − S(recalibrated)`
+/// - `DSC` (discrimination) `= S(base rate) − S(recalibrated)`
+/// - `UNC` (uncertainty) `= S(base rate)`
+///
+/// and `S = MCB − DSC + UNC` still holds exactly, with no bins and no tuning
+/// parameter — the "exact decomposition" property survives intact. There is no
+/// free lunch: MCB is optimistically biased because the isotonic fit is chosen on
+/// the same data, which is exactly why [`mcb_null_quantile`] exists to say how
+/// large it would be for someone with no calibration error at all.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Corp {
+    /// Miscalibration: how much score you would save by relabelling your
+    /// probabilities with the frequencies that actually followed them.
+    pub mcb: f64,
+    /// Discrimination: how much your (recalibrated) forecasts beat the base
+    /// rate. `0` means your confidence carries no information about which of
+    /// your calls come true.
+    pub dsc: f64,
+    /// Uncertainty: the irreducible difficulty of the questions you chose.
+    pub unc: f64,
+    /// The Brier score of the forecasts as stated.
+    pub score: f64,
+    /// The PAV-recalibrated probability for each sample, in input order — the
+    /// reliability curve, with no bin-width choice to argue about.
+    pub recalibrated: Vec<f64>,
+}
+
+/// Compute the [`Corp`] decomposition. `None` for an empty sample.
+pub fn corp_brier(samples: &[Sample]) -> Option<Corp> {
+    let n = samples.len();
+    if n == 0 {
+        return None;
+    }
+    // 1) Sort by forecast, pooling exact ties into groups of (prob, Σy, count).
+    let mut idx: Vec<usize> = (0..n).collect();
+    idx.sort_by(|&a, &b| samples[a].prob.total_cmp(&samples[b].prob));
+    let mut groups: Vec<(f64, f64, usize)> = Vec::new();
+    for &i in &idx {
+        let s = &samples[i];
+        match groups.last_mut() {
+            Some(g) if g.0 == s.prob => {
+                g.1 += s.outcome;
+                g.2 += 1;
+            }
+            _ => groups.push((s.prob, s.outcome, 1)),
+        }
+    }
+    // 2) Pool adjacent violators. Blocks carry (Σy, Σcount, #groups merged).
+    let mut blocks: Vec<(f64, usize, usize)> = Vec::with_capacity(groups.len());
+    for &(_, sy, c) in &groups {
+        blocks.push((sy, c, 1));
+        while blocks.len() > 1 {
+            let (s2, c2, g2) = blocks[blocks.len() - 1];
+            let (s1, c1, _) = blocks[blocks.len() - 2];
+            if s1 / c1 as f64 > s2 / c2 as f64 {
+                blocks.pop();
+                let last = blocks.last_mut().unwrap();
+                last.0 += s2;
+                last.1 += c2;
+                last.2 += g2;
+            } else {
+                break;
+            }
+        }
+    }
+    // 3) Expand the fitted values back into the original sample order.
+    let mut group_fit = Vec::with_capacity(groups.len());
+    for &(sy, c, g) in &blocks {
+        group_fit.extend(std::iter::repeat_n(sy / c as f64, g));
+    }
+    let mut recalibrated = vec![0.0; n];
+    let mut k = 0usize;
+    for (gi, &(_, _, c)) in groups.iter().enumerate() {
+        for _ in 0..c {
+            recalibrated[idx[k]] = group_fit[gi];
+            k += 1;
+        }
+    }
+    // 4) The three terms, each a Brier score against the same outcomes.
+    let ybar = samples.iter().map(|s| s.outcome).sum::<f64>() / n as f64;
+    let (mut score, mut s_cal, mut unc) = (0.0, 0.0, 0.0);
+    for (i, s) in samples.iter().enumerate() {
+        score += (s.prob - s.outcome).powi(2);
+        s_cal += (recalibrated[i] - s.outcome).powi(2);
+        unc += (ybar - s.outcome).powi(2);
+    }
+    let nf = n as f64;
+    let (score, s_cal, unc) = (score / nf, s_cal / nf, unc / nf);
+    Some(Corp {
+        mcb: score - s_cal,
+        dsc: unc - s_cal,
+        unc,
+        score,
+        recalibrated,
+    })
+}
+
+/// The **noise floor** for [`Corp::mcb`]: the `q`-quantile of the miscalibration
+/// a *perfectly calibrated* forecaster would score while making exactly these
+/// calls, at exactly this sample size.
+///
+/// This is the number that turns "your calibration error is 0.034" from a verdict
+/// into evidence. MCB is fitted on the same data it scores, so it is never zero,
+/// and how far above zero it sits depends on n and on the spread of the
+/// forecasts — quantities the user cannot hold in their head. Drawing
+/// `y ~ Bernoulli(p)` from the user's own forecasts and re-running CORP answers
+/// it directly.
+///
+/// Deterministic: the same samples and seed always give the same floor, so a
+/// report never changes underneath a user who re-runs it. `None` below two
+/// samples.
+pub fn mcb_null_quantile(samples: &[Sample], draws: usize, q: f64, seed: u64) -> Option<f64> {
+    if samples.len() < 2 || draws == 0 {
+        return None;
+    }
+    let mut state = seed;
+    let mut sim: Vec<Sample> = samples.to_vec();
+    let mut mcbs = Vec::with_capacity(draws);
+    for _ in 0..draws {
+        for (t, s) in sim.iter_mut().zip(samples) {
+            let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+            t.outcome = if u < s.prob { 1.0 } else { 0.0 };
+        }
+        mcbs.push(corp_brier(&sim)?.mcb);
+    }
+    mcbs.sort_by(f64::total_cmp);
+    Some(quantile_sorted(&mcbs, q))
+}
+
+// ──────────────────── multi-strategy e-process (P0-3a) ──────────────────────
+
+/// Bets on the overall sign of `y − p`: the original single strategy. Detects a
+/// forecaster who is too high (or too low) *on the whole*.
+fn bet_bias(_p: f64) -> f64 {
+    1.0
+}
+
+/// Bets on the *extremity* of the forecast rather than its direction: it flips
+/// sign at `p = 0.5`, so being too sure when saying 0.9 and too sure when saying
+/// 0.1 push the wealth the same way instead of cancelling.
+fn bet_extremity(p: f64) -> f64 {
+    if p < 0.5 {
+        1.0
+    } else if p > 0.5 {
+        -1.0
+    } else {
+        0.0
+    }
+}
+
+/// The same idea weighted by how extreme the forecast is, so a 0.99 counts for
+/// more than a 0.51.
+fn bet_extremity_scaled(p: f64) -> f64 {
+    2.0 * (0.5 - p)
+}
+
+/// The betting strategies `h(p)`, each bounded by `1` in absolute value and each
+/// a function of the **stated forecast only**.
+///
+/// That restriction is what keeps the guarantee: `p` is fixed before the outcome
+/// is seen, so `E[h(p)(y − p) | past] = 0` under the calibration null and every
+/// wealth process remains a non-negative martingale. Averaging e-processes
+/// computed on the same data sequence is again an e-process, so mixing over
+/// strategies costs validity nothing and buys power against patterns a single
+/// strategy cannot see.
+const STRATEGIES: [fn(f64) -> f64; 3] = [bet_bias, bet_extremity, bet_extremity_scaled];
+
+/// Natural log of the mixture e-process over [`STRATEGIES`] × [`EPROCESS_LAMBDAS`].
+///
+/// Computed in log space because real miscalibration produces e-values with
+/// dozens of digits, which overflow `f64` long before they stop being
+/// meaningful. Every factor is at least `0.1`, so the logs stay finite.
+///
+/// This supersedes [`calibration_eprocess`], which bets only on the overall sign
+/// of `y − p` and is therefore **blind to symmetric overconfidence**: a
+/// forecaster who says 90% when the truth is 65% *and* says 10% when the truth is
+/// 35% has errors that cancel exactly. Measured on such a ledger at n = 1000, the
+/// single-strategy version returns 0.087 — no evidence at all — where this one
+/// returns a number with 65 digits. That case is not exotic; it is what an agent
+/// looks like the moment it starts logging "this will fail" at 0.15 alongside
+/// "this will pass" at 0.85.
+pub fn calibration_log_eprocess(samples: &[Sample]) -> Option<f64> {
+    if samples.is_empty() {
+        return None;
+    }
+    let mut logw = [[0.0f64; EPROCESS_LAMBDAS.len()]; STRATEGIES.len()];
+    for s in samples {
+        let z = s.outcome - s.prob; // mean zero under the calibration null
+        for (k, h) in STRATEGIES.iter().enumerate() {
+            let hz = h(s.prob) * z;
+            for (lw, &lam) in logw[k].iter_mut().zip(EPROCESS_LAMBDAS.iter()) {
+                *lw += (lam * hz).ln_1p();
+            }
+        }
+    }
+    // log-sum-exp, then divide by the number of mixture components.
+    let all: Vec<f64> = logw.iter().flatten().copied().collect();
+    let max = all.iter().copied().fold(f64::NEG_INFINITY, f64::max);
+    let lse = max + all.iter().map(|v| (v - max).exp()).sum::<f64>().ln();
+    Some(lse - (all.len() as f64).ln())
+}
+
+/// The evidence bar a recalibration map must clear before it is applied, and the
+/// minimum record it must be fitted on.
+///
+/// These live here, in the pure core, rather than in the reporting layer, because
+/// the CLI, the MCP tools, the report and the Python binding must all agree about
+/// when a correction has been earned — and "defined once" is only true if there is
+/// literally one definition.
+pub const RECAL_MIN_E: f64 = 3.0;
+pub const RECAL_MIN_N: usize = 6;
+
+/// Fit a recalibration map and decide whether the evidence has **earned** it.
+///
+/// `fit_on` is every graded call (more data makes a better correction);
+/// `evidence` is the outcome-independent sequence the e-process may consume (see
+/// `crate::evidence`). Separating them matters: the map is a description, and may
+/// use everything; the gate is a test, and may only use a sequence whose order
+/// was fixed before the outcomes were known.
+///
+/// Returns the fitted map, whether to apply it, and the e-value behind that call.
+/// The map is returned either way — `earned` is the part that says to trust it.
+pub fn gate_recalibration(
+    fit_on: &[Sample],
+    evidence: &[Sample],
+    ridge: f64,
+) -> (Option<Recalibration>, bool, Option<f64>) {
+    let e = calibration_eprocess_v2(evidence);
+    let recal = fit_recalibration(fit_on, ridge);
+    let earned =
+        recal.is_some() && e.is_some_and(|ev| ev >= RECAL_MIN_E) && evidence.len() >= RECAL_MIN_N;
+    (recal, earned, e)
+}
+
+/// The largest log e-value worth printing. Above this the exact figure is
+/// meaningless — it already says "certain" far more emphatically than any
+/// decision needs — and `exp` would produce `inf`, which serialises to `null`.
+pub const EPROCESS_LOG_CAP: f64 = 27.63; // ≈ ln(10^12)
+
+/// The mixture e-value on the natural scale, capped at `10^12` so the report
+/// never has to print a 66-digit integer or the word `inf`.
+///
+/// Use [`calibration_log_eprocess`] when comparing magnitudes; use this when a
+/// number has to be shown or compared against a threshold like 20.
+pub fn calibration_eprocess_v2(samples: &[Sample]) -> Option<f64> {
+    calibration_log_eprocess(samples).map(|l| l.min(EPROCESS_LOG_CAP).exp())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn approx(a: f64, b: f64) {
         assert!((a - b).abs() < 1e-9, "expected {a} ≈ {b}");
+    }
+
+    // ───────────────────────── CORP (P0-4) ─────────────────────────
+
+    #[test]
+    fn winkler_ratio_is_invariant_to_units() {
+        // The same forecast and the same relative miss, in two units 1000x apart.
+        // The raw score differs by 1000x; the ratio does not.
+        let ns = |low, high, value| NumericSample {
+            low,
+            high,
+            level: 0.8,
+            value,
+        };
+        let small = ns(10.0, 20.0, 25.0);
+        let large = ns(10_000.0, 20_000.0, 25_000.0);
+        assert!((winkler(&large) - winkler(&small) * 1000.0).abs() < 1e-6);
+        approx(
+            winkler_ratio(&small).unwrap(),
+            winkler_ratio(&large).unwrap(),
+        );
+        // A hit scores exactly 1.0: the width itself, and nothing more.
+        approx(winkler_ratio(&ns(10.0, 20.0, 15.0)).unwrap(), 1.0);
+        // A zero-width interval has no ratio to give.
+        assert!(winkler_ratio(&ns(5.0, 5.0, 5.0)).is_none());
+    }
+
+    #[test]
+    fn recalibration_does_not_diverge_on_a_narrow_vocabulary() {
+        // 200 calls, all stated at 0.9, that came true half the time. Every mu
+        // saturates, the Hessian weights vanish, and the undamped Newton step
+        // used to oscillate off to a = 66, b = 146 — a map that "corrects" 0.9
+        // UP to 1.0 for a forecaster who is right half the time.
+        let mut state = 11u64;
+        let samples: Vec<Sample> = (0..200)
+            .map(|_| {
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                Sample::new(0.9, u < 0.5)
+            })
+            .collect();
+        let r = fit_recalibration(&samples, 1.5).unwrap();
+        assert!(r.a.is_finite() && r.b.is_finite());
+        let corrected = r.apply(0.9);
+        assert!(
+            corrected < 0.75,
+            "0.9 must be corrected DOWN toward the true 0.5, got {corrected}"
+        );
+        assert!(
+            (corrected - 0.5).abs() < 0.2,
+            "and should land near the truth, got {corrected}"
+        );
+    }
+
+    #[test]
+    fn the_fitted_slope_is_never_negative() {
+        // Twelve calls at 0.9 that all failed, plus one lucky 0.6. The observed
+        // frequencies do not rise with the forecast, so an unconstrained fit
+        // converges to b = -0.69 — a map that would correct a 0.9 to BELOW what
+        // it corrects a 0.5 to. At n = 15 that is noise, and inverting the
+        // ordering is not a calibration correction.
+        let mut samples = vec![
+            Sample::new(0.6, true),
+            Sample::new(0.5, false),
+            Sample::new(0.7, true),
+        ];
+        for _ in 0..12 {
+            samples.push(Sample::new(0.9, false));
+        }
+        let r = fit_recalibration(&samples, 1.5).unwrap();
+        assert!(r.b >= 0.0, "slope must not invert, got {}", r.b);
+        // Pinned at zero it collapses to a constant — which is exactly what
+        // pool-adjacent-violators does with the same data.
+        assert!((r.apply(0.9) - r.apply(0.5)).abs() < 1e-9);
+        // And it still does the job: a stated 0.9 is pulled a long way down.
+        assert!(r.apply(0.9) < 0.5, "got {}", r.apply(0.9));
+        // Crucially it is NOT the identity — falling back to "no correction"
+        // here would make `decide` blind to the case it exists for.
+        assert!(r.apply(0.9) < 0.89);
+    }
+
+    #[test]
+    fn a_diverged_map_is_rejected_even_if_the_solver_claims_success() {
+        // The invariants must hold independently of the line search, because the
+        // failure mode is a confidently wrong answer rather than an error.
+        let samples: Vec<Sample> = (0..50).map(|i| Sample::new(0.9, i % 2 == 0)).collect();
+
+        // The exact map the old code returned on this shape of data.
+        let diverged = Recalibration {
+            a: 66.0,
+            b: 146.017,
+            n: samples.len(),
+        };
+        assert!(
+            !recalibration_is_sane(&diverged, &samples),
+            "a map that sends 0.9 to 1.0 for a 50%-accurate forecaster must be rejected"
+        );
+
+        // A map running backwards is rejected on monotonicity alone.
+        let inverted = Recalibration {
+            a: 0.0,
+            b: -1.0,
+            n: samples.len(),
+        };
+        assert!(!recalibration_is_sane(&inverted, &samples));
+
+        // The identity always passes.
+        assert!(recalibration_is_sane(
+            &Recalibration::identity(samples.len()),
+            &samples
+        ));
+    }
+
+    #[test]
+    fn recalibration_still_recovers_a_known_slope() {
+        // The well-conditioned case must be unaffected by the line search: an
+        // agent whose truth is sigma(0.4 * logit p) should get a slope pulling
+        // its stated numbers toward the middle.
+        let mut state = 5u64;
+        let samples: Vec<Sample> = (0..600)
+            .map(|_| {
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                let p = ((u * 0.9 + 0.05) * 100.0).round() / 100.0;
+                let truth = sigmoid(0.4 * logit(p));
+                let v = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                Sample::new(p, v < truth)
+            })
+            .collect();
+        let r = fit_recalibration(&samples, 1.5).unwrap();
+        assert!(
+            r.b < 1.0,
+            "slope should say the forecasts run too extreme: {}",
+            r.b
+        );
+        assert!(r.apply(0.9) < 0.9);
+        assert!(r.apply(0.1) > 0.1);
+    }
+
+    #[test]
+    fn corp_identity_holds_exactly() {
+        // S = MCB - DSC + UNC, to the last bit, on messy real-shaped input.
+        let mut state = 7u64;
+        let samples: Vec<Sample> = (0..300)
+            .map(|_| {
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                let p = ((u * 0.96 + 0.02) * 100.0).round() / 100.0;
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                Sample::new(p, u < p)
+            })
+            .collect();
+        let c = corp_brier(&samples).unwrap();
+        let residual = (c.score - (c.mcb - c.dsc + c.unc)).abs();
+        assert!(residual < 1e-12, "identity residual {residual:e}");
+    }
+
+    #[test]
+    fn corp_agrees_with_exact_decomposition_when_frequencies_are_monotone() {
+        // When observed frequencies already rise with the forecast, isotonic
+        // regression changes nothing, so MCB = REL and DSC = RES. This is what
+        // keeps the old "exact decomposition" promise true where it was true.
+        let samples = vec![
+            Sample::new(0.2, false),
+            Sample::new(0.2, false),
+            Sample::new(0.2, true),
+            Sample::new(0.5, false),
+            Sample::new(0.5, true),
+            Sample::new(0.9, true),
+            Sample::new(0.9, true),
+            Sample::new(0.9, false),
+        ];
+        let corp = corp_brier(&samples).unwrap();
+        let old = decompose(&samples).unwrap();
+        approx(corp.mcb, old.reliability);
+        approx(corp.dsc, old.resolution);
+        approx(corp.unc, old.uncertainty);
+    }
+
+    #[test]
+    fn corp_reports_zero_discrimination_when_confidence_carries_no_information() {
+        // 50 calls at 0.9 on coin flips + 50 at 0.6 on sure things. Higher
+        // confidence went with a LOWER hit rate, so after isotonic regression
+        // both groups collapse to one value: the forecasts order nothing.
+        let mut samples: Vec<Sample> = Vec::new();
+        for i in 0..50 {
+            samples.push(Sample::new(0.9, i % 2 == 0));
+        }
+        for _ in 0..50 {
+            samples.push(Sample::new(0.6, true));
+        }
+        let c = corp_brier(&samples).unwrap();
+        assert!(
+            c.dsc.abs() < 1e-12,
+            "DSC should be exactly 0, got {}",
+            c.dsc
+        );
+        // And the miscalibration is far above what luck alone would produce.
+        let floor = mcb_null_quantile(&samples, 400, 0.95, 0xA11CE).unwrap();
+        assert!(c.mcb > floor * 3.0, "mcb {} vs floor {floor}", c.mcb);
+    }
+
+    #[test]
+    fn corp_is_quieter_than_exact_grouping_on_a_calibrated_forecaster() {
+        // The defect that made this necessary: with two-decimal probabilities
+        // most exact-value groups hold one claim, whose observed frequency is
+        // always 0 or 1, so the old reliability term reports a large calibration
+        // error for someone who has none.
+        let mut state = 99u64;
+        let samples: Vec<Sample> = (0..200)
+            .map(|_| {
+                let p = (((splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64) * 0.96
+                    + 0.02)
+                    * 100.0;
+                let p = p.round() / 100.0;
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                Sample::new(p, u < p)
+            })
+            .collect();
+        let corp = corp_brier(&samples).unwrap();
+        let old = decompose(&samples).unwrap();
+        assert!(
+            corp.mcb < old.reliability * 0.5,
+            "CORP MCB {} should be far below exact-group REL {}",
+            corp.mcb,
+            old.reliability
+        );
+        // And it sits at or below its own noise floor: nothing to report.
+        let floor = mcb_null_quantile(&samples, 400, 0.95, 0xA11CE).unwrap();
+        assert!(corp.mcb <= floor, "mcb {} floor {floor}", corp.mcb);
+    }
+
+    #[test]
+    fn mcb_null_quantile_is_deterministic() {
+        let samples: Vec<Sample> = (0..50).map(|i| Sample::new(0.7, i % 3 != 0)).collect();
+        let a = mcb_null_quantile(&samples, 200, 0.95, 1234).unwrap();
+        let b = mcb_null_quantile(&samples, 200, 0.95, 1234).unwrap();
+        assert_eq!(a, b, "the noise floor must not move under a re-run");
+        assert!(mcb_null_quantile(&samples[..1], 200, 0.95, 1234).is_none());
+    }
+
+    // ─────────────────── multi-strategy e-process (P0-3a) ───────────────────
+
+    #[test]
+    fn eprocess_v2_detects_symmetric_overconfidence_that_v1_misses() {
+        // Says 90% when the truth is 65%; says 10% when the truth is 35%. The
+        // two errors cancel in the single-strategy statistic.
+        let mut state = 5u64;
+        let samples: Vec<Sample> = (0..200)
+            .map(|i| {
+                let p = if i % 2 == 0 { 0.9 } else { 0.1 };
+                let truth = if i % 2 == 0 { 0.65 } else { 0.35 };
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                Sample::new(p, u < truth)
+            })
+            .collect();
+        let v1 = calibration_eprocess(&samples).unwrap();
+        let v2 = calibration_eprocess_v2(&samples).unwrap();
+        assert!(v1 < 20.0, "v1 was supposed to be blind here, got {v1}");
+        assert!(v2 >= 20.0, "v2 must find it, got {v2}");
+    }
+
+    #[test]
+    fn eprocess_v2_stays_quiet_on_a_calibrated_forecaster() {
+        // The property that matters more than power: it must not cry wolf.
+        let mut state = 31u64;
+        let samples: Vec<Sample> = (0..500)
+            .map(|_| {
+                let p = (((splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64) * 0.9
+                    + 0.05)
+                    * 100.0;
+                let p = p.round() / 100.0;
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                Sample::new(p, u < p)
+            })
+            .collect();
+        // Anytime-valid: check at EVERY prefix, which is the whole point.
+        for k in 1..=samples.len() {
+            let e = calibration_eprocess_v2(&samples[..k]).unwrap();
+            assert!(e < 20.0, "false alarm at n={k}: e={e}");
+        }
+    }
+
+    #[test]
+    fn eprocess_v2_never_returns_infinity() {
+        // Extreme, perfectly wrong forecasts: the log form must stay printable.
+        let samples: Vec<Sample> = (0..2000).map(|_| Sample::new(0.99, false)).collect();
+        let e = calibration_eprocess_v2(&samples).unwrap();
+        assert!(e.is_finite(), "e must be finite, got {e}");
+        assert!(e <= EPROCESS_LOG_CAP.exp() + 1.0);
+        assert!(calibration_log_eprocess(&samples).unwrap() > 100.0);
     }
 
     #[test]

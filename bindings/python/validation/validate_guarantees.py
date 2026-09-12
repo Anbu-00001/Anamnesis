@@ -14,7 +14,9 @@ docstring says so — prove it by simulation, against the real compiled engine
      forecaster (train/test split) — it genuinely corrects, not just overfits.
   4. The **decision gate** (recalibrate, then Chow's stake-aware threshold) incurs
      lower expected *decision cost* than acting on the raw stated confidence — the
-     operational payoff, proven, not just asserted.
+     operational payoff, proven, not just asserted. It goes through
+     `gate_recalibration`, the same evidence gate the CLI and MCP tools use, so
+     what is measured here is the behaviour a user actually gets.
 
 Run locally:   python validation/validate_guarantees.py
 Run in Colab:  upload the wheel, then in a cell:
@@ -154,7 +156,14 @@ def study_4_decision_gate_lowers_cost(reps=300, n=600, b_true=0.4, stake=3.0, ve
         p_tr = RNG.uniform(0.05, 0.95, n)
         q_tr = _sigmoid(b_true * _logit(p_tr))  # b<1 ⇒ truth less extreme ⇒ overconfident
         y_tr = (RNG.uniform(size=n) < q_tr).astype(float)
-        rec = ana.fit_recalibration(p_tr.tolist(), y_tr.tolist())
+        # THROUGH THE REAL GATE, not around it. Calling `fit_recalibration`
+        # directly — which this study used to do — measures a correction the
+        # shipped tool would refuse to apply until the evidence test agrees it is
+        # real, so it validated a code path no user ever reaches.
+        rec_raw, earned, _e = ana.gate_recalibration(
+            p_tr.tolist(), y_tr.tolist(), p_tr.tolist(), y_tr.tolist()
+        )
+        rec = rec_raw if earned else None
 
         # Test split: fresh decisions, with the true success probabilities.
         p_te = RNG.uniform(0.05, 0.95, n)

@@ -20,9 +20,9 @@ calibration-vs-discrimination framing:
 
 ## Install
 
-```bash
-pip install anamnesis            # wheel bundles the Rust core; no toolchain needed
-```
+> **Not yet on PyPI.** `pip install anamnesis` installs an unrelated project of
+> the same name — do not run it expecting this library. The published name is
+> still being chosen; until a wheel is on PyPI, build from source.
 
 From source (needs a Rust toolchain):
 

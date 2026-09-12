@@ -76,6 +76,29 @@ pub struct Resolution {
     pub value: Option<f64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub note: Option<String>,
+    /// Who graded this claim: `self` (the forecaster said so), `auto` (a machine
+    /// observed it — a test run's exit status, say), or `human`.
+    ///
+    /// "Why would I trust a self-graded ledger?" is the first fair objection to
+    /// this whole idea, and the honest answer is to record which claims did not
+    /// depend on the forecaster's word. Absent in older ledgers, and not written
+    /// when it is the default, so existing files stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub resolved_by: Option<ResolvedBy>,
+}
+
+/// Provenance of a resolution. See [`Resolution::resolved_by`].
+#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum ResolvedBy {
+    /// The forecaster graded their own prediction.
+    #[default]
+    #[serde(rename = "self")]
+    Zelf,
+    /// Graded from an observed fact, with no human in the loop.
+    Auto,
+    /// Graded by someone other than the forecaster.
+    Human,
 }
 
 /// One belief tracked over its lifetime.
@@ -101,6 +124,43 @@ pub struct Claim {
     pub forecasts: Vec<Forecast>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub resolution: Option<Resolution>,
+    /// Annulled: the question turned out to be ambiguous, or to be about
+    /// something that never became knowable.
+    ///
+    /// A voided claim keeps its place in the history — nothing is ever deleted —
+    /// but it is excluded from every score, exactly as a forecasting platform
+    /// annuls a question rather than grading it. The alternative, hand-editing
+    /// the JSON, is worse: it removes the evidence that the question was ever
+    /// asked. Absent in older ledgers, and not serialised when absent.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub void: Option<Void>,
+    /// Corrections to the wording or tags, oldest first. Probabilities and
+    /// timestamps are never amendable — that immutability is the entire point of
+    /// the instrument — so only the parts that carry no forecast can change, and
+    /// even those leave a record of what they were.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub amendments: Vec<Amendment>,
+}
+
+/// Why a claim was annulled, and when.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Void {
+    pub at: DateTime<Utc>,
+    pub reason: String,
+}
+
+/// One correction to a claim's wording or tags.
+#[derive(Serialize, Deserialize, Clone, Debug)]
+pub struct Amendment {
+    pub at: DateTime<Utc>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_statement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_statement: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub old_tags: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub new_tags: Option<Vec<String>>,
 }
 
 fn default_stake() -> f64 {
@@ -158,6 +218,39 @@ impl Claim {
         self.resolution.is_some()
     }
 
+    /// Annulled, and therefore excluded from every score.
+    pub fn is_void(&self) -> bool {
+        self.void.is_some()
+    }
+
+    /// Voided before the answer was known.
+    ///
+    /// This is the honest case, and the only one the sequential evidence test
+    /// honours: a claim with no outcome carries no evidence, so removing it
+    /// cannot move the e-value in any direction.
+    pub fn voided_before_resolution(&self) -> bool {
+        match (&self.void, &self.resolution) {
+            (Some(v), Some(r)) => v.at <= r.at,
+            (Some(_), None) => true,
+            _ => false,
+        }
+    }
+
+    /// Voided *after* it had already resolved — an outcome deleted from the
+    /// record after being seen.
+    ///
+    /// Sometimes legitimate (the question really was ambiguous, and you only
+    /// noticed once it resolved), but it retroactively edits a sequence whose
+    /// whole guarantee rests on being fixed in advance, and the direction of
+    /// abuse is self-flattery: you void the ones that went badly, and the e-value
+    /// falls. Kept in the evidence sequence, and counted out loud.
+    pub fn voided_after_resolution(&self) -> bool {
+        match (&self.void, &self.resolution) {
+            (Some(v), Some(r)) => v.at > r.at,
+            _ => false,
+        }
+    }
+
     pub fn is_open(&self) -> bool {
         self.resolution.is_none()
     }
@@ -177,7 +270,43 @@ impl Claim {
     /// The scoreable binary sample: current probability paired with the resolved
     /// outcome. `None` unless this is a resolved binary claim.
     pub fn sample(&self) -> Option<Sample> {
-        if self.kind != ClaimKind::Binary {
+        if self.kind != ClaimKind::Binary || self.is_void() {
+            return None;
+        }
+        match (self.first_prob(), self.outcome()) {
+            (Some(p), Some(o)) => Some(Sample::new(p, o.happened())),
+            _ => None,
+        }
+    }
+
+    /// The sample as the **sequential evidence test** sees it.
+    ///
+    /// Differs from [`Claim::sample`] in exactly one way: a claim voided *after*
+    /// it resolved still counts here. Void annuls a question, and for every score
+    /// in the report that is the right thing — but the evidence sequence's whole
+    /// guarantee rests on being fixed before the outcomes are known, and dropping
+    /// an outcome you have already seen edits it retroactively. So the scores
+    /// forget it and the evidence test does not, and the report says how often
+    /// that has happened.
+    pub fn evidence_sample(&self) -> Option<Sample> {
+        if self.kind != ClaimKind::Binary || self.voided_before_resolution() {
+            return None;
+        }
+        match (self.first_prob(), self.outcome()) {
+            (Some(p), Some(o)) => Some(Sample::new(p, o.happened())),
+            _ => None,
+        }
+    }
+
+    /// The same sample scored on the **final** forecast instead of the first.
+    ///
+    /// Shown, never graded. Scoring the final forecast is what let ten claims
+    /// logged at 0.5, updated to 0.99 and then resolved YES earn a Brier score
+    /// of 0.000 and the compliment "your updates moved you TOWARD the truth" —
+    /// the exact self-deception this tool exists to prevent. The first forecast
+    /// is the one made before the answer was known, so it is the one that counts.
+    pub fn sample_final(&self) -> Option<Sample> {
+        if self.kind != ClaimKind::Binary || self.is_void() {
             return None;
         }
         match (self.current_prob(), self.outcome()) {
@@ -186,10 +315,81 @@ impl Claim {
         }
     }
 
+    /// Whether any forecast after the first landed too close to the answer to be
+    /// an honest update: after the resolve-by date, within 24 hours of the
+    /// resolution, or in the last 10% of the claim's window.
+    ///
+    /// This is a neutral flag, not an accusation — a genuine late update is
+    /// perfectly legitimate. It exists so the report can say which forecasts are
+    /// not being graded, instead of silently rewarding them.
+    pub fn has_late_update(&self) -> bool {
+        if self.forecasts.len() < 2 {
+            return false;
+        }
+        let Some(res) = self.resolution.as_ref() else {
+            return false;
+        };
+        let deadline = self
+            .resolve_by
+            .and_then(|d| d.and_hms_opt(23, 59, 59))
+            .map(|dt| dt.and_utc());
+        let window = (res.at - self.created_at).num_seconds().max(0) as f64;
+        self.forecasts.iter().skip(1).any(|f| {
+            if deadline.is_some_and(|d| f.at > d) {
+                return true;
+            }
+            if (res.at - f.at).num_seconds() <= 86_400 {
+                return true;
+            }
+            window > 0.0 && (f.at - self.created_at).num_seconds() as f64 > 0.9 * window
+        })
+    }
+
+    /// Brier weighted by **how long each forecast stood**, the way Metaculus
+    /// time-averages a question.
+    ///
+    /// The window runs from `created_at` to the earlier of the resolution and the
+    /// end of the resolve-by day, so a revision made after the deadline carries
+    /// no weight at all. Secondary, never the headline: someone who learns the
+    /// answer early can still farm it by updating the moment they know.
+    pub fn brier_time_averaged(&self) -> Option<f64> {
+        if self.kind != ClaimKind::Binary || self.is_void() {
+            return None;
+        }
+        let y = if self.outcome()?.happened() { 1.0 } else { 0.0 };
+        let first = self.first_prob()?;
+        let start = self.created_at;
+        let mut end = self.resolution.as_ref()?.at;
+        if let Some(d) = self.resolve_by {
+            end = end.min(d.and_hms_opt(23, 59, 59)?.and_utc());
+        }
+        let total = (end - start).num_seconds();
+        if total < 60 {
+            // Degenerate or inverted window: nothing to weight by.
+            return Some((first - y).powi(2));
+        }
+        let mut acc = 0.0;
+        for (k, f) in self.forecasts.iter().enumerate() {
+            let p = f.prob?;
+            let from = if k == 0 {
+                start
+            } else {
+                f.at.clamp(start, end)
+            };
+            let to = self
+                .forecasts
+                .get(k + 1)
+                .map_or(end, |next| next.at)
+                .clamp(from, end);
+            acc += (p - y).powi(2) * (to - from).num_seconds() as f64;
+        }
+        Some(acc / total as f64)
+    }
+
     /// The scoreable numeric sample: current interval paired with the resolved
     /// value. `None` unless this is a resolved numeric claim.
     pub fn numeric_sample(&self) -> Option<NumericSample> {
-        if self.kind != ClaimKind::Numeric {
+        if self.kind != ClaimKind::Numeric || self.is_void() {
             return None;
         }
         let iv = self.current_interval()?;
@@ -296,7 +496,10 @@ mod tests {
                 outcome: Some(o),
                 value: None,
                 note: None,
+                resolved_by: None,
             }),
+            void: None,
+            amendments: Vec::new(),
         }
     }
 
@@ -332,7 +535,10 @@ mod tests {
                 outcome: None,
                 value: Some(13.0),
                 note: None,
+                resolved_by: None,
             }),
+            void: None,
+            amendments: Vec::new(),
         };
         assert!(c.sample().is_none()); // not a binary sample
         let ns = c.numeric_sample().unwrap();
@@ -415,7 +621,20 @@ mod tests {
         // A ledger predating stakes loads with the default stake of 1.0…
         assert_eq!(c.stake, 1.0);
         // …and a default-stake claim does not re-introduce the field on save.
+        // Neither void nor amendments existed either, and a claim that has
+        // neither must not grow the fields on save — an old ledger stays
+        // byte-identical through a load/save round trip.
+        assert!(!c.is_void());
+        assert!(c.amendments.is_empty());
         let round = serde_json::to_string(&ledger).unwrap();
+        assert!(
+            !round.contains("void"),
+            "absent void must not be serialised"
+        );
+        assert!(
+            !round.contains("amendments"),
+            "an empty amendment list must not be serialised"
+        );
         assert!(
             !round.contains("stake"),
             "default stake must not be serialised"

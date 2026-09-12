@@ -24,8 +24,76 @@ use crate::model::{
 use crate::scoring::{self, NumericSample};
 use crate::{report, store};
 
-/// The protocol revision this server implements.
-const PROTOCOL_VERSION: &str = "2025-06-18";
+/// The **modern** (stateless, per-request `_meta`) revision this server speaks.
+/// Since 2026-07-28 there is no `initialize` handshake: every request carries its
+/// own protocol version, and `server/discover` replaces the negotiation round trip.
+const MODERN_VERSION: &str = "2026-07-28";
+
+/// The **legacy** (`initialize`-handshake) revisions this server speaks, newest
+/// first. Only revisions whose tool behaviour has actually been checked belong
+/// here — claiming support is a promise, not a wish.
+const SUPPORTED_LEGACY: &[&str] = &["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
+
+/// Every revision this server speaks, modern first. Reported by `server/discover`
+/// and by the `UnsupportedProtocolVersionError` payload.
+fn supported_versions() -> Vec<&'static str> {
+    let mut v = vec![MODERN_VERSION];
+    v.extend_from_slice(SUPPORTED_LEGACY);
+    v
+}
+
+/// JSON-RPC error code for `UnsupportedProtocolVersionError` (MCP 2026-07-28).
+const UNSUPPORTED_PROTOCOL_VERSION: i64 = -32022;
+
+/// Pick the legacy revision to answer an `initialize` with.
+///
+/// Echoing whatever the client asked for — which this used to do — meant a client
+/// requesting `"1999-01-01"` was solemnly told the server spoke `"1999-01-01"`.
+/// The spec says to reply with the newest revision the server actually supports
+/// when the requested one is not among them, and let the client decide.
+fn negotiate_legacy(requested: Option<&str>) -> &'static str {
+    requested
+        .and_then(|v| SUPPORTED_LEGACY.iter().copied().find(|s| *s == v))
+        .unwrap_or(SUPPORTED_LEGACY[0])
+}
+
+/// The protocol version a modern request declares in its `_meta`.
+fn meta_protocol_version(req: &Value) -> Option<&str> {
+    req.pointer("/params/_meta/io.modelcontextprotocol~1protocolVersion")
+        .or_else(|| {
+            req.get("params")
+                .and_then(|p| p.get("_meta"))
+                .and_then(|m| m.get("io.modelcontextprotocol/protocolVersion"))
+        })
+        .and_then(Value::as_str)
+}
+
+/// The client's self-reported name, from modern `_meta` or legacy `clientInfo`.
+fn client_name(req: &Value) -> Option<String> {
+    let v = req
+        .get("params")
+        .and_then(|p| p.get("_meta"))
+        .and_then(|m| m.get("io.modelcontextprotocol/clientInfo"))
+        .and_then(|c| c.get("name"))
+        .or_else(|| req.pointer("/params/clientInfo/name"))
+        .and_then(Value::as_str)?;
+    Some(sanitize_who(v))
+}
+
+/// Reduce a client name to a tag-safe `[a-z0-9-]` slug.
+pub fn sanitize_who(name: &str) -> String {
+    let s: String = name
+        .to_lowercase()
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
+        .collect();
+    let s = s.trim_matches('-').to_string();
+    if s.is_empty() {
+        "unknown".into()
+    } else {
+        s
+    }
+}
 
 /// Serve MCP over stdio against `ledger`, until the input stream closes.
 pub fn serve(ledger: PathBuf) -> io::Result<()> {
@@ -33,6 +101,15 @@ pub fn serve(ledger: PathBuf) -> io::Result<()> {
     let mut reader = stdin.lock();
     let mut out = io::stdout().lock();
     let mut line = String::new();
+    // Who we are talking to, learned from `initialize` (legacy) or from the
+    // `_meta` of any modern request. `ANAMNESIS_WHO` overrides both. Defaults to
+    // `unknown` rather than `claude`: tagging a Cursor client's predictions
+    // `who:claude` silently corrupts every per-client comparison in the ledger.
+    let mut who: Option<String> = std::env::var("ANAMNESIS_WHO")
+        .ok()
+        .filter(|s| !s.is_empty())
+        .map(|s| sanitize_who(&s));
+    let who_pinned = who.is_some();
 
     loop {
         line.clear();
@@ -60,13 +137,30 @@ pub fn serve(ledger: PathBuf) -> io::Result<()> {
         };
         let method = req.get("method").and_then(Value::as_str).unwrap_or("");
 
+        if !who_pinned {
+            if let Some(n) = client_name(&req) {
+                who = Some(n);
+            }
+        }
+
+        // A modern request declares its version in `_meta`; if we do not speak it,
+        // the spec requires `UnsupportedProtocolVersionError` listing what we do.
+        if let Some(v) = meta_protocol_version(&req) {
+            if !supported_versions().contains(&v) {
+                send(&mut out, &unsupported_version(id, v))?;
+                continue;
+            }
+        }
+
         let resp = match method {
+            // Modern era: no handshake, one discovery call. Servers MUST implement it.
+            "server/discover" => discover(id),
             "initialize" => initialize(&req, id),
             "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
             "tools/list" => {
                 json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tool_schemas() } })
             }
-            "tools/call" => tools_call(&req, id, &ledger),
+            "tools/call" => tools_call(&req, id, &ledger, who.as_deref()),
             other => rpc_error(id, -32601, &format!("method not found: {other}")),
         };
         send(&mut out, &resp)?;
@@ -84,21 +178,49 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "error": { "code": code, "message": message } })
 }
 
+/// `server/discover` — the modern replacement for the `initialize` handshake.
+/// A dual-era client probes with this first; a recognised modern reply tells it
+/// the server is modern, and anything else sends it back to `initialize`.
+fn discover(id: Value) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "result": {
+        "resultType": "complete",
+        "supportedVersions": supported_versions(),
+        "capabilities": { "tools": {} },
+        "_meta": {
+            "io.modelcontextprotocol/serverInfo": {
+                "name": "anamnesis",
+                "version": env!("CARGO_PKG_VERSION")
+            }
+        },
+        "instructions": SERVER_INSTRUCTIONS
+    }})
+}
+
+fn unsupported_version(id: Value, requested: &str) -> Value {
+    json!({ "jsonrpc": "2.0", "id": id, "error": {
+        "code": UNSUPPORTED_PROTOCOL_VERSION,
+        "message": "Unsupported protocol version",
+        "data": { "supported": supported_versions(), "requested": requested }
+    }})
+}
+
+const SERVER_INSTRUCTIONS: &str = "Log falsifiable predictions BEFORE acting (predict), resolve them the moment reality answers (resolve), and read your standing over/under-confidence (calibration). Always pass `resolve_by`: the sequential evidence test orders claims by that date, and a prediction without one is scored but cannot count as evidence. The engine is no-LLM and cannot flatter you — honesty is the optimal strategy.";
+
 fn initialize(req: &Value, id: Value) -> Value {
-    // Echo the client's protocol version when present (version negotiation).
-    let ver = req
-        .pointer("/params/protocolVersion")
-        .and_then(Value::as_str)
-        .unwrap_or(PROTOCOL_VERSION);
+    // Reply with a revision we actually support, not with whatever was asked for.
+    let ver = negotiate_legacy(
+        req.pointer("/params/protocolVersion")
+            .and_then(Value::as_str),
+    );
     json!({ "jsonrpc": "2.0", "id": id, "result": {
         "protocolVersion": ver,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": "anamnesis", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": "Log falsifiable predictions BEFORE acting (predict), resolve them the moment reality answers (resolve), and read your standing over/under-confidence (calibration). The engine is no-LLM and cannot flatter you — honesty is the optimal strategy."
+        "instructions": SERVER_INSTRUCTIONS
     }})
 }
 
-fn tools_call(req: &Value, id: Value, ledger: &Path) -> Value {
+fn tools_call(req: &Value, id: Value, ledger: &Path, who: Option<&str>) -> Value {
     let name = req
         .pointer("/params/name")
         .and_then(Value::as_str)
@@ -108,12 +230,14 @@ fn tools_call(req: &Value, id: Value, ledger: &Path) -> Value {
         .cloned()
         .unwrap_or_else(|| json!({}));
     let outcome = match name {
-        "predict" => tool_predict(&args, ledger),
+        "predict" => tool_predict(&args, ledger, who),
         "resolve" => tool_resolve(&args, ledger),
         "calibration" => tool_calibration(&args, ledger),
         "recalibrate" => tool_recalibrate(&args, ledger),
         "decide" => tool_decide(&args, ledger),
         "list" => tool_list(&args, ledger),
+        "void" => tool_void(&args, ledger),
+        "amend" => tool_amend(&args, ledger),
         other => Err(format!("unknown tool: {other}")),
     };
     match outcome {
@@ -135,7 +259,7 @@ fn tools_call(req: &Value, id: Value, ledger: &Path) -> Value {
 
 type ToolResult = Result<(String, Option<Value>), String>;
 
-fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
+fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
     let statement = args
         .get("statement")
         .and_then(Value::as_str)
@@ -193,7 +317,18 @@ fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
         return Err("give either `prob` (binary) or `interval` \"LOW..HIGH\" (numeric)".into());
     };
 
-    let mut tags: Vec<String> = vec!["who:claude".into()];
+    // Precedence: an explicit `who` argument, then the client's own name from the
+    // handshake or `_meta`, then `unknown`. Never a hardcoded "claude": a Cursor
+    // client's predictions tagged `who:claude` quietly ruin every per-client
+    // comparison the ledger can make.
+    let who = args
+        .get("who")
+        .and_then(Value::as_str)
+        .filter(|s| !s.is_empty())
+        .map(sanitize_who)
+        .or_else(|| who.map(String::from))
+        .unwrap_or_else(|| "unknown".into());
+    let mut tags: Vec<String> = vec![format!("who:{who}")];
     if let Some(p) = args
         .get("project")
         .and_then(Value::as_str)
@@ -228,6 +363,9 @@ fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
         return Err(format!("stake must be a finite number ≥ 0, got {stake}"));
     }
 
+    // Hold the exclusive lock across load and save: an MCP server and a human
+    // running `ana add` in a terminal are two writers on the same file.
+    let _guard = store::lock(ledger).map_err(|e| e.to_string())?;
     let mut led = store::load(ledger).map_err(|e| e.to_string())?;
     let mut salt = now.timestamp_nanos_opt().unwrap_or(0) as u64;
     let id = loop {
@@ -247,6 +385,8 @@ fn tool_predict(args: &Value, ledger: &Path) -> ToolResult {
         stake,
         forecasts: vec![forecast],
         resolution: None,
+        void: None,
+        amendments: Vec::new(),
     });
     store::save(ledger, &led).map_err(|e| e.to_string())?;
     Ok((
@@ -261,6 +401,7 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
         .and_then(Value::as_str)
         .ok_or("id is required")?;
     let note = args.get("note").and_then(Value::as_str).map(String::from);
+    let _guard = store::lock(ledger).map_err(|e| e.to_string())?;
     let mut led = store::load(ledger).map_err(|e| e.to_string())?;
     let idx = led.index_of(id)?;
     if led.claims[idx].is_resolved() {
@@ -289,6 +430,7 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
                 }),
                 value: None,
                 note,
+                resolved_by: None,
             });
             store::save(ledger, &led).map_err(|e| e.to_string())?;
             let brier = (prob - if happened { 1.0 } else { 0.0 }).powi(2);
@@ -314,6 +456,7 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
                 outcome: None,
                 value: Some(v),
                 note,
+                resolved_by: None,
             });
             store::save(ledger, &led).map_err(|e| e.to_string())?;
             let ns = NumericSample {
@@ -336,6 +479,91 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
     }
 }
 
+fn tool_void(args: &Value, ledger: &Path) -> ToolResult {
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("id is required")?;
+    let reason = args
+        .get("reason")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .ok_or("a void needs a reason — it is the whole record of why")?;
+    let _guard = store::lock(ledger).map_err(|e| e.to_string())?;
+    let mut led = store::load(ledger).map_err(|e| e.to_string())?;
+    let idx = led.index_of(id)?;
+    if led.claims[idx].is_void() {
+        return Err(format!("[{}] is already void", led.claims[idx].id));
+    }
+    led.claims[idx].void = Some(crate::model::Void {
+        at: Utc::now(),
+        reason: reason.to_string(),
+    });
+    let cid = led.claims[idx].id.clone();
+    store::save(ledger, &led).map_err(|e| e.to_string())?;
+    Ok((
+        format!("[{cid}] voided — excluded from every score, kept in history. reason: {reason}"),
+        Some(json!({ "id": cid, "void": true, "reason": reason })),
+    ))
+}
+
+fn tool_amend(args: &Value, ledger: &Path) -> ToolResult {
+    let id = args
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or("id is required")?;
+    let statement = args
+        .get("statement")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    let tags: Option<Vec<String>> = args.get("tags").and_then(Value::as_array).map(|a| {
+        a.iter()
+            .filter_map(Value::as_str)
+            .map(|t| t.trim().to_lowercase())
+            .filter(|t| !t.is_empty())
+            .collect()
+    });
+    if statement.is_none() && tags.is_none() {
+        return Err("nothing to amend — give `statement` and/or `tags`".into());
+    }
+    let _guard = store::lock(ledger).map_err(|e| e.to_string())?;
+    let mut led = store::load(ledger).map_err(|e| e.to_string())?;
+    let idx = led.index_of(id)?;
+    if led.claims[idx].is_resolved() {
+        return Err(format!(
+            "[{}] is already resolved — a resolved claim is the record, and the record does not change",
+            led.claims[idx].id
+        ));
+    }
+    let c = &mut led.claims[idx];
+    let mut am = crate::model::Amendment {
+        at: Utc::now(),
+        old_statement: None,
+        new_statement: None,
+        old_tags: None,
+        new_tags: None,
+    };
+    if let Some(new) = statement {
+        am.old_statement = Some(c.statement.clone());
+        am.new_statement = Some(new.to_string());
+        c.statement = new.to_string();
+    }
+    if let Some(new) = tags {
+        am.old_tags = Some(c.tags.clone());
+        am.new_tags = Some(new.clone());
+        c.tags = new;
+    }
+    c.amendments.push(am);
+    let (cid, stmt, tg) = (c.id.clone(), c.statement.clone(), c.tags.clone());
+    store::save(ledger, &led).map_err(|e| e.to_string())?;
+    Ok((
+        format!("[{cid}] amended — \"{stmt}\""),
+        Some(json!({ "id": cid, "statement": stmt, "tags": tg })),
+    ))
+}
+
 fn tool_calibration(args: &Value, ledger: &Path) -> ToolResult {
     let tag = args.get("tag").and_then(Value::as_str);
     let bins = args.get("bins").and_then(Value::as_u64).unwrap_or(10) as usize;
@@ -354,7 +582,11 @@ fn fit_and_gate(
     tag: Option<&str>,
 ) -> Result<(Option<scoring::Recalibration>, bool, usize, Option<f64>), String> {
     let led = store::load(ledger).map_err(|e| e.to_string())?;
-    Ok(report::earned_recalibration(&led, tag))
+    Ok(report::earned_recalibration(
+        &led,
+        tag,
+        chrono::Utc::now().date_naive(),
+    ))
 }
 
 fn tool_recalibrate(args: &Value, ledger: &Path) -> ToolResult {
@@ -550,8 +782,8 @@ fn tool_schemas() -> Value {
     json!([
         {
             "name": "predict",
-            "description": "Log a falsifiable prediction BEFORE acting. For best calibration: (1) take the OUTSIDE VIEW first — name a `reference_class` of similar past cases and its base rate; (2) make your `prob`, then a `second_prob` that assumes your first is wrong (give yourself two reasons it could be) — the tool logs their average (dialectical bootstrapping, the wisdom of your own crowd); (3) tag a `kind` to learn calibration per type of call. Use `prob` for yes/no or `interval` for a quantity.",
-            "inputSchema": { "type": "object", "properties": {
+            "description": "Log a falsifiable prediction BEFORE acting. ALWAYS pass `by`: the sequential evidence test orders claims by that date because it is fixed before the outcome is known, so a prediction without one is scored but can never count as evidence that you are (or are not) miscalibrated. For best calibration: (1) take the OUTSIDE VIEW first — name a `reference_class` of similar past cases and its base rate; (2) make your `prob`, then a `second_prob` that assumes your first is wrong (give yourself two reasons it could be) — the tool logs their average (dialectical bootstrapping, the wisdom of your own crowd); (3) tag a `kind` to learn calibration per type of call. Use `prob` for yes/no or `interval` for a quantity.",
+            "inputSchema": { "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {
                 "statement": { "type": "string", "description": "the falsifiable claim" },
                 "prob": { "type": "number", "description": "probability it is true, 0..1 (binary)" },
                 "second_prob": { "type": "number", "description": "a SECOND, consider-the-opposite estimate, 0..1; logged prob becomes the average of the two" },
@@ -561,9 +793,12 @@ fn tool_schemas() -> Value {
                 "kind": { "type": "string", "description": "estimate | tests-pass | bug-hypothesis | approach | compat" },
                 "stake": { "type": "number", "description": "how much this call matters (≥ 0, default 1) — weights the Brier toward consequential calls" },
                 "project": { "type": "string", "description": "project/repo slug" },
-                "by": { "type": "string", "description": "expected resolution date, YYYY-MM-DD" },
+                "by": { "type": "string", "description": "the date you expect to know the answer, YYYY-MM-DD. Pass this on every prediction: without it the claim cannot enter the anytime-valid evidence test." },
+                "who": { "type": "string", "description": "who is predicting; defaults to the MCP client's own name, so leave it unset unless you are logging on someone else's behalf" },
+                "session": { "type": "string", "description": "session identifier, tagged as session:<value>" },
+                "model": { "type": "string", "description": "the model making the call, tagged as model:<value>. Pooling calibration across model versions makes the numbers uninterpretable, so record it." },
                 "tags": { "type": "array", "items": { "type": "string" }, "description": "extra tags" }
-            }, "required": ["statement"] }
+            }, "required": ["statement", "by"] }
         },
         {
             "name": "resolve",
@@ -602,6 +837,23 @@ fn tool_schemas() -> Value {
             }, "required": ["prob"] }
         },
         {
+            "name": "void",
+            "description": "Annul an ambiguous or unanswerable question. It keeps its place in the history but is excluded from every score, the way a forecasting platform annuls a question rather than grading it. Use this instead of leaving a bad question to rot unresolved — an unresolved overdue claim pauses the evidence test.",
+            "inputSchema": { "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {
+                "id": { "type": "string", "description": "claim id (any unique prefix)" },
+                "reason": { "type": "string", "description": "why this question cannot fairly be graded" }
+            }, "required": ["id", "reason"] }
+        },
+        {
+            "name": "amend",
+            "description": "Fix a typo in a claim's statement, or correct its tags. Pre-resolution only, and never the probability or the timestamps — those are the record. The previous wording is kept.",
+            "inputSchema": { "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {
+                "id": { "type": "string", "description": "claim id (any unique prefix)" },
+                "statement": { "type": "string", "description": "replacement statement" },
+                "tags": { "type": "array", "items": { "type": "string" }, "description": "replacement tag set" }
+            }, "required": ["id"] }
+        },
+        {
             "name": "list",
             "description": "List predictions, optionally filtered by status and tag.",
             "inputSchema": { "type": "object", "properties": {
@@ -620,11 +872,55 @@ mod tests {
     fn schemas_are_well_formed() {
         let t = tool_schemas();
         let arr = t.as_array().unwrap();
-        assert_eq!(arr.len(), 6);
+        let names: Vec<&str> = arr.iter().filter_map(|t| t["name"].as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "predict",
+                "resolve",
+                "calibration",
+                "recalibrate",
+                "decide",
+                "void",
+                "amend",
+                "list"
+            ]
+        );
         for tool in arr {
             assert!(tool["name"].is_string());
+            assert!(tool["description"].is_string());
             assert_eq!(tool["inputSchema"]["type"], "object");
+            assert!(tool["inputSchema"]["properties"].is_object());
         }
+        // A prediction with no resolve-by date cannot enter the evidence test, so
+        // the schema asks for one rather than leaving it to the agent's judgement.
+        let predict = arr.iter().find(|t| t["name"] == "predict").unwrap();
+        let required: Vec<&str> = predict["inputSchema"]["required"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter_map(Value::as_str)
+            .collect();
+        assert!(required.contains(&"by"), "predict must require `by`");
+    }
+
+    #[test]
+    fn legacy_negotiation_never_echoes_an_unknown_version() {
+        // The server used to reply "1999-01-01" to a client that asked for it.
+        assert_eq!(negotiate_legacy(Some("1999-01-01")), SUPPORTED_LEGACY[0]);
+        assert_eq!(negotiate_legacy(None), SUPPORTED_LEGACY[0]);
+        assert_eq!(negotiate_legacy(Some("2025-06-18")), "2025-06-18");
+        for v in SUPPORTED_LEGACY {
+            assert_eq!(negotiate_legacy(Some(v)), *v);
+        }
+    }
+
+    #[test]
+    fn client_names_become_tag_safe_slugs() {
+        assert_eq!(sanitize_who("Cursor IDE"), "cursor-ide");
+        assert_eq!(sanitize_who("Claude Code"), "claude-code");
+        assert_eq!(sanitize_who("  "), "unknown");
+        assert_eq!(sanitize_who("a/b:c"), "a-b-c");
     }
 
     #[test]
