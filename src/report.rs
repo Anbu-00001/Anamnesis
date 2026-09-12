@@ -159,6 +159,18 @@ pub const VERDICT_CONFIDENT_N: usize = 50;
 /// The e-value at which miscalibration counts as demonstrated: `1/20 = α 0.05`
 /// by Ville's inequality, at any stopping time.
 pub const EVIDENCE_ALARM: f64 = 20.0;
+
+/// How much of the record has to carry a `kind:` tag before a per-type breakdown
+/// is worth showing.
+///
+/// A breakdown over a self-selected slice is the same defect as a calibration
+/// computed on a self-selected sample. Measured on a real 426-claim agent ledger,
+/// **363 of 422 binary claims carried no `kind:` tag at all** — the per-kind
+/// table, the per-kind e-values and the hook's "worst type" line all keyed off a
+/// field 86% of the data did not have, so the machinery was inert in practice and
+/// a new user's first report showed the same emptiness. Below this bar the
+/// section collapses to one line saying what is missing and how to fill it.
+pub const KIND_MIN_COVERAGE: f64 = 0.5;
 /// How far a directional (yes/no) lean has to run before it is the headline
 /// rather than a footnote.
 const BIAS_DOMINATES: f64 = 0.1;
@@ -247,13 +259,19 @@ impl Verdict {
         }
     }
 
-    /// The short label for the badge and the card. Deliberately never the words
-    /// "well calibrated" for anything short of demonstrated-and-plentiful
-    /// evidence — see [`Verdict::NoEvidenceOfMiscalibration`].
-    pub fn label(self, n: usize) -> &'static str {
+    /// The short label for the badge and the card.
+    ///
+    /// **Never the words "well calibrated."** Absence of evidence is not evidence
+    /// of calibration, and the two instruments this report runs have opposite
+    /// blind spots: the e-process is strong on sharp patterns and weak on gentle
+    /// shrinkage toward 0.5, while MCB-against-its-floor measures the *size* of an
+    /// error but cannot establish that it is real. Measured: a forecaster 11
+    /// points overconfident at n = 160 had MCB 0.022 against a 0.011 floor — twice
+    /// the noise — while the e-process sat at 16.5, under the alarm. That ledger
+    /// was labelled "WELL CALIBRATED" on every surface until this was removed.
+    pub fn label(self) -> &'static str {
         match self {
             Verdict::InsufficientData => "not enough data",
-            Verdict::NoEvidenceOfMiscalibration if n >= VERDICT_CONFIDENT_N => "well calibrated",
             Verdict::NoEvidenceOfMiscalibration => "no miscalibration found",
             Verdict::CalibratedButUninformative => "uninformative",
             Verdict::Overconfident => "overconfident",
@@ -457,6 +475,10 @@ pub struct ReportData {
     /// Per-`kind:` breakdown — calibration by *type* of prediction
     /// (estimate / tests-pass / bug-hypothesis …): the agent-facing view.
     pub by_kind: Vec<TagStat>,
+    /// Fraction of graded binary calls carrying a `kind:` tag. The per-kind
+    /// surfaces are suppressed below [`KIND_MIN_COVERAGE`] rather than describing
+    /// a self-selected slice as if it were the record.
+    pub kind_coverage: f64,
     pub mind_changing: Option<MindChange>,
     pub numeric: Option<NumericData>,
     /// Anytime-valid calibration e-value — evidence that you are *mis*calibrated,
@@ -902,6 +924,31 @@ impl ReportData {
             })
         };
 
+        // What fraction of the graded record is actually typed. Computed over the
+        // same claims the headline score uses, so it answers "of the calls being
+        // scored, how many could this breakdown see".
+        let kind_coverage = {
+            let graded: Vec<&crate::model::Claim> = ledger
+                .claims
+                .iter()
+                .filter(|c| {
+                    c.kind == crate::model::ClaimKind::Binary
+                        && tag_filter
+                            .as_deref()
+                            .is_none_or(|t| c.tags.iter().any(|x| x == t))
+                        && c.evidence_sample().is_some()
+                })
+                .collect();
+            if graded.is_empty() {
+                0.0
+            } else {
+                let typed = graded
+                    .iter()
+                    .filter(|c| c.tags.iter().any(|t| t.starts_with("kind:")))
+                    .count();
+                typed as f64 / graded.len() as f64
+            }
+        };
         let by_kind_len = by_kind.len();
         let by_kind_len_zero = by_kind_len == 0;
 
@@ -930,6 +977,7 @@ impl ReportData {
             calibration,
             by_tag,
             by_kind,
+            kind_coverage,
             mind_changing,
             numeric,
             eprocess,
@@ -1161,7 +1209,7 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         let _ = writeln!(
             out,
             "\n  VERDICT          {}",
-            d.verdict.label(d.evidence_n).to_uppercase()
+            d.verdict.label().to_uppercase()
         );
         if let (Some(brier), Some(logs), Some(base)) = (d.brier, d.log_score, d.base_rate) {
             let _ = writeln!(out, "\n  Brier score      {brier:.3}   (0 = perfect · 0.25 = always 50/50 · lower better)");
@@ -1403,6 +1451,30 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             let _ = writeln!(out, "\n  Is it real?      no evidence sequence yet");
         }
 
+        // The two instruments have opposite blind spots, and saying so is the
+        // honest answer to "why are there two numbers". The e-process is strong on
+        // sharp patterns and weak on gentle shrinkage toward 0.5; MCB against its
+        // floor measures the SIZE of an error but, being a single-look comparison,
+        // cannot establish that it is real. When they disagree, say which is which
+        // rather than letting the quiet one speak for both.
+        if d.resolved_binary > 0 && d.verdict == Verdict::NoEvidenceOfMiscalibration {
+            let above_floor = matches!((d.mcb, d.mcb_null_q95), (Some(m), Some(f)) if m > f);
+            if above_floor {
+                let _ = writeln!(
+                    out,
+                    "                   but your calibration error IS above its noise floor. the two checks disagree, and they fail in opposite directions:"
+                );
+                let _ = writeln!(
+                    out,
+                    "                   the e-process is strong on sharp patterns and weak on a gentle drift toward 50/50; the error above measures SIZE but one reading of it is a single look, not an anytime-valid test"
+                );
+                let _ = writeln!(
+                    out,
+                    "                   treat this as worth watching, not as settled either way — keep logging"
+                );
+            }
+        }
+
         // What the backlog is costing. It no longer halts the test, so this is a
         // price to be read, not a wall to be cleared.
         if d.resolved_binary > 0 && d.evidence_ungraded_due > 0 {
@@ -1530,7 +1602,29 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             }
         }
 
-        if !d.by_kind.is_empty() {
+        // A breakdown over a self-selected slice is the same defect as a score
+        // over a self-selected sample, so it stays collapsed until the tag
+        // actually covers the record.
+        if !d.by_kind.is_empty() && d.kind_coverage < KIND_MIN_COVERAGE {
+            let _ = writeln!(
+                out,
+                "\n  By prediction kind   hidden: only {:.0}% of your graded calls carry a `kind:` tag,",
+                d.kind_coverage * 100.0
+            );
+            let _ = writeln!(
+                out,
+                "                       so a per-type breakdown would describe a self-selected slice."
+            );
+            let _ = writeln!(
+                out,
+                "                       add `--tags kind:<type>` when you log (tests-pass, estimate,"
+            );
+            let _ = writeln!(
+                out,
+                "                       bug-hypothesis, approach, compat) and this fills in at {:.0}%.",
+                KIND_MIN_COVERAGE * 100.0
+            );
+        } else if !d.by_kind.is_empty() {
             let _ = writeln!(
                 out,
                 "\n  By prediction kind   (gap~ = shrunk toward your overall rate; trust it at small n)"
@@ -1794,9 +1888,6 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         Verdict::BiasedNo => ("Leans no".into(), "under"),
         Verdict::CalibratedButUninformative => ("Uninformative".into(), "uninformative"),
         Verdict::MiscalibratedBothWays => ("Miscalibrated".into(), "both"),
-        Verdict::NoEvidenceOfMiscalibration if n >= VERDICT_CONFIDENT_N => {
-            ("Well calibrated".into(), "good")
-        }
         Verdict::NoEvidenceOfMiscalibration => ("No miscalibration found".into(), "good"),
     };
     if let (Some(conf), Some(acc)) = (d.mean_confidence, d.accuracy) {
@@ -1961,8 +2052,14 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
             "Miscalibrated in both directions at once — the errors cancel in the average."
                 .to_string()
         }
+        Verdict::NoEvidenceOfMiscalibration
+            if n >= VERDICT_CONFIDENT_N
+                && matches!((d.mcb, d.mcb_null_q95), (Some(m), Some(f)) if m > f) =>
+        {
+            "The 'is it real' test is quiet, but the SIZE of your calibration error is above what luck alone produces. The two checks disagree — worth watching, not settled.".to_string()
+        }
         Verdict::NoEvidenceOfMiscalibration if n >= VERDICT_CONFIDENT_N => {
-            "Your confidence is honest — well calibrated.".to_string()
+            "Neither check finds your confidence off — which is not the same as proof that it is right.".to_string()
         }
         Verdict::NoEvidenceOfMiscalibration => {
             "Nothing shows your confidence is off — but this is still a small record.".to_string()
@@ -2024,6 +2121,7 @@ const MOOD_WORST_EXCESS: f64 = 0.10;
 /// cancelled to a gap of −1e-15. A cat is the most screenshot-able thing this
 /// program produces, so it is the last place a cancelling statistic belongs.
 fn mood(d: &ReportData) -> Mood {
+    let above_floor = matches!((d.mcb, d.mcb_null_q95), (Some(m), Some(f)) if m > f);
     let excess = match (d.mcb, d.mcb_null_q95) {
         (Some(m), Some(f)) => Some((m - f).max(0.0)),
         (Some(m), None) => Some(m.max(0.0)),
@@ -2053,11 +2151,16 @@ fn mood(d: &ReportData) -> Mood {
     // finding is about ranking.
     let (art, band) = match score {
         None => (CAT_SLEEPY, "WARMING UP"),
-        // "DIALED IN" is the same claim as "well calibrated", so it answers to
-        // the same evidence bar: absence of evidence at 24 graded calls is not
-        // evidence of calibration, and the friendliest face in the program should
-        // not say otherwise.
-        Some(s) if s >= 75 && d.evidence_n >= VERDICT_CONFIDENT_N => (CAT_DIALED, "DIALED IN"),
+        // "DIALED IN" is the same claim the words "well calibrated" used to make,
+        // so it answers to the same bar: absence of evidence at 24 graded calls is
+        // not evidence of calibration, and neither is a quiet e-process while the
+        // calibration error sits above its own noise floor. Measured: 11 points
+        // overconfident at n = 160 scored 90/100 and drew the happiest face in the
+        // program while MCB was twice the floor. The friendliest cat answers to
+        // BOTH instruments.
+        Some(s) if s >= 75 && d.evidence_n >= VERDICT_CONFIDENT_N && !above_floor => {
+            (CAT_DIALED, "DIALED IN")
+        }
         Some(s) if s >= 75 => (CAT_CLOSE, "NOTHING OFF YET"),
         Some(s) if s >= 50 => (CAT_CLOSE, "CLOSE"),
         Some(s) if s >= 25 => (CAT_DRIFT, "DRIFTING"),
@@ -2492,7 +2595,10 @@ pub fn render_html(
         "over" => "overconfident",
         "uninformative" => "uninformative",
         "both" => "miscalibrated",
-        "good" => "well-calibrated",
+        // Not "well-calibrated": this token names a verdict of *no evidence found*,
+        // and nothing downstream should be able to read calibration into it. No
+        // stylesheet keys off this value.
+        "good" => "no-miscalibration-found",
         _ => "not-enough-data",
     };
 

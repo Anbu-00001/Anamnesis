@@ -244,6 +244,40 @@ An undisciplined user's e-value therefore drifts down, meaning gaps can **hide**
 miscalibration. They could already do that by freezing the test under the old
 stopping rule, and neither direction can manufacture a false alarm.
 
+#### Why there are two numbers, and what each one cannot see
+
+The report runs two instruments on the same record, and **they fail in opposite
+directions**. Stating that is the honest answer to "why not just one number".
+
+| | what it answers | blind to |
+|---|---|---|
+| e-process (`Is it real?`) | is the miscalibration *real*, under repeated peeking | gentle shrinkage toward 0.5 |
+| MCB vs its noise floor | how *big* the calibration error is | whether it is real — one reading is a single look |
+
+The e-process is built from betting strategies on the stated forecast, so it is
+strong exactly where the discrepancy per claim is large — the symmetric pattern
+(0.9 when the truth is 0.65, 0.1 when it is 0.35) it exists to catch. It is weak
+where every claim is off by a little in the same direction. Its power envelope
+against that diffuse case is about **0.6 at n = 300 even with perfect grading** —
+that is the test's ceiling, not a gap-filling artefact; gaps lower it further.
+
+MCB against its null quantile is the complement: it measures a magnitude and will
+show a uniform drift long before the sequential test says anything. But comparing
+a statistic to its 95th percentile is a **fixed-n test**, and this program's whole
+position is that fixed-n tests are invalid under the per-session peeking users
+actually do. So MCB-above-floor is a reading to watch, never a verdict.
+
+**Consequently the report never renders "no evidence of miscalibration" as "you
+are calibrated."** It used to: at n ≥ 50 the verdict line read `WELL CALIBRATED`,
+the badge read `Well calibrated`, and the cat showed its happiest face. Measured
+— a forecaster 10 points overconfident at n = 120 had MCB 0.019 against a 0.014
+floor while the e-process sat at 5.4, far under the alarm at 20, and every surface
+called that ledger well calibrated. This is finding B of the pre-launch audit
+arriving by a different road, and the fix is not softer wording: a claim of
+calibration now answers to **both** instruments, and when they disagree the report
+says so and says which is which. Pinned by
+`hn_scenarios::a_quiet_eprocess_never_speaks_for_the_calibration_error_too`.
+
 #### The horizon
 
 The horizon answers "when is an answer fair to expect"; gap-pricing answers "what

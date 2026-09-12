@@ -189,6 +189,9 @@ ANAMNESIS — the shape of your judgement
 
   Is it real?      e-value      1.8   (anytime-valid p ≤ 0.556)
                    no evidence of miscalibration in 35 graded calls — the test can still miss patterns; read the calibration error above for the SIZE of any error
+                   but your calibration error IS above its noise floor. the two checks disagree, and they fail in opposite directions:
+                   the e-process is strong on sharp patterns and weak on a gentle drift toward 50/50; the error above measures SIZE but one reading of it is a single look, not an anytime-valid test
+                   treat this as worth watching, not as settled either way — keep logging
                    35 of 35 graded calls counted, 2 ungraded priced in at their worst case (`ana list --due`)
                    that backlog is costing you a factor of 1.392 on the evidence — grading it is how you get it back
                    oldest is [9870c0] — resolve it, or void it if it was never answerable. an ungraded bold call costs more than a cautious one

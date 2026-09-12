@@ -28,8 +28,10 @@ jobs:
       - name: Clippy (deny warnings)
         if: matrix.os == 'ubuntu-latest'
         run: cargo clippy --all-targets --all-features -- -D warnings
-      - name: Test
-        run: cargo test --all
+      # Runs the suite AND pins how many tests ran: a test that silently stops
+      # running is indistinguishable from one that passes. See the script header.
+      - name: Test (with test-count floor)
+        run: ./scripts/check-test-count.sh
       - name: Doc tests
         run: cargo test --doc
 

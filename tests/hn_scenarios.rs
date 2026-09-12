@@ -1181,3 +1181,142 @@ fn revising_then_resolving_reports_the_first_forecast_score() {
         "a revision after the fact is counted and surfaced, not hidden"
     );
 }
+
+// ───────────────── the two instruments have opposite blind spots ─────────────
+
+/// A forecaster drifting gently toward 50/50 is the e-process's blind spot, and
+/// the report used to let the quiet instrument speak for both.
+///
+/// 10 points overconfident at n = 120: MCB 0.019 against a 0.014 noise floor,
+/// while the e-process sits at 5.4 — far under the alarm at 20. Every surface
+/// called such a ledger **"well calibrated"**: the verdict line, the badge, the
+/// card, and the happiest cat in the program. (At 11 points and n = 160 the
+/// numbers were 0.022 against 0.011 with e = 16.5 — same story, still quiet.)
+///
+/// This is finding B of the original audit arriving by a different road. The fix
+/// is not softer wording, it is that a claim of calibration answers to BOTH
+/// checks: the e-process is strong on sharp patterns and weak on gentle
+/// shrinkage, while MCB-against-floor measures the size of an error but cannot
+/// establish it is real.
+#[test]
+fn a_quiet_eprocess_never_speaks_for_the_calibration_error_too() {
+    let dir = workdir("blindspot");
+    let ledger = dir.join("ledger.json");
+
+    // Deterministic: stated p cycles, truth is 11 points lower.
+    let mut st = 0xABCD_u64;
+    let claims: Vec<(f64, bool)> = (0..120)
+        .map(|i| {
+            let p = [0.60, 0.65, 0.70, 0.75, 0.80, 0.85, 0.90][i % 7];
+            (p, splitmix(&mut st) < p - 0.10)
+        })
+        .collect();
+    write_ledger(&ledger, &claims);
+
+    let d = report_json(&ledger);
+    let (mcb, floor) = (
+        d["mcb"].as_f64().unwrap(),
+        d["mcb_null_q95"].as_f64().unwrap(),
+    );
+    let e = d["eprocess"].as_f64().unwrap();
+
+    // The construction has to actually land in the blind spot, or the test is
+    // vacuous: magnitude above noise, sequential test still quiet.
+    assert!(mcb > floor, "MCB {mcb} must exceed the floor {floor}");
+    assert!(e < 20.0, "the e-process must still be quiet, got {e}");
+    assert_eq!(d["verdict"], "no_evidence_of_miscalibration");
+
+    // No surface may call this calibrated.
+    for mode in [
+        vec!["report"],
+        vec!["report", "--plain"],
+        vec!["report", "--badge"],
+        vec!["report", "--html"],
+    ] {
+        let text = run(&ledger, &mode).0.to_lowercase();
+        assert!(
+            !text.contains("well calibrated") && !text.contains("well-calibrated"),
+            "{mode:?} called a 10-points-overconfident ledger well calibrated:\n{text}"
+        );
+        assert!(
+            !text.contains("dialed in"),
+            "{mode:?} gave it the happiest face while MCB was above the floor:\n{text}"
+        );
+    }
+
+    // And the disagreement is stated, not hidden behind the quiet check.
+    let text = run(&ledger, &["report"]).0;
+    assert!(
+        text.contains("above its noise floor"),
+        "the report must say the other instrument disagrees:\n{text}"
+    );
+    let plain = run(&ledger, &["report", "--plain"]).0;
+    assert!(
+        plain.contains("two checks disagree"),
+        "and so must the plain view:\n{plain}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The per-kind breakdown describes only the calls that happen to be tagged, so
+/// below real coverage it describes a self-selected slice — the same defect as a
+/// calibration computed on a self-selected sample, one level down.
+///
+/// Measured on a real 426-claim agent ledger: 363 of 422 binary claims carried no
+/// `kind:` tag at all, so the per-kind table, the per-kind e-values and the hook's
+/// "worst type" line were all keyed off a field 86% of the data did not have.
+#[test]
+fn the_per_kind_breakdown_stays_collapsed_until_the_tag_covers_the_record() {
+    let build = |path: &Path, tagged: usize, total: usize| {
+        let mut out = String::from("{\"claims\":[");
+        for i in 0..total {
+            if i > 0 {
+                out.push(',');
+            }
+            let day = 1 + (i % 27);
+            let tags = if i < tagged {
+                r#"["who:test","kind:tests-pass"]"#
+            } else {
+                r#"["who:test"]"#
+            };
+            out.push_str(&format!(
+                r#"{{"id":"k{i:05}","statement":"claim {i}","created_at":"2024-01-{day:02}T00:00:00Z","resolve_by":"2024-03-{day:02}","tags":{tags},"kind":"binary","forecasts":[{{"at":"2024-01-{day:02}T00:00:00Z","prob":0.7}}],"resolution":{{"at":"2024-04-{day:02}T00:00:00Z","outcome":"{}"}}}}"#,
+                if i % 10 < 7 { "true" } else { "false" }
+            ));
+        }
+        out.push_str("]}");
+        fs::write(path, out).unwrap();
+    };
+
+    let dir = workdir("kindcov");
+
+    // 5 of 40 typed — a breakdown here would speak for an eighth of the record.
+    let sparse = dir.join("sparse.json");
+    build(&sparse, 5, 40);
+    let d = report_json(&sparse);
+    assert!((d["kind_coverage"].as_f64().unwrap() - 0.125).abs() < 1e-9);
+    let text = run(&sparse, &["report"]).0;
+    assert!(
+        text.contains("By prediction kind   hidden"),
+        "the table must stay collapsed:\n{text}"
+    );
+    assert!(
+        text.contains("% of your graded calls carry a `kind:` tag"),
+        "and say how thin the coverage is:\n{text}"
+    );
+    assert!(text.contains("--tags kind:"), "and how to fix it:\n{text}");
+
+    // 30 of 40 typed — now it is describing the record, so it opens.
+    let dense = dir.join("dense.json");
+    build(&dense, 30, 40);
+    let text = run(&dense, &["report"]).0;
+    assert!(
+        text.contains("By prediction kind   (gap~"),
+        "past the coverage bar the breakdown appears:\n{text}"
+    );
+    assert!(
+        !text.contains("hidden"),
+        "and no longer apologises for itself:\n{text}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

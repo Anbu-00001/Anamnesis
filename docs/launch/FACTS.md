@@ -17,7 +17,8 @@ Last verified: **2026-09-12**.
   them — it is `std` only.
 - **MSRV:** Rust 1.89 (`File::lock` is std from there).
 - **Release binary size:** 2.2 MB, x86_64 Linux, `--release` (measured 2026-09-12; it was 2.1 MB before this release's additions).
-- **Tests:** 117 — 86 unit, 8 CLI integration, 23 hostile-review scenarios. Plus
+- **Tests:** 119 — 86 unit, 8 CLI integration, 25 hostile-review scenarios, pinned by
+  `scripts/check-test-count.sh` in CI so a test that stops running is noticed. Plus
   36 Python binding tests. Verified 2026-09-12: wheel built with
   `maturin develop --release` (abi3, Python ≥ 3.8), `pytest` 36/36 green, and the
   wheel cross-checked against the CLI on the same ledger — `brier`, `mcb`, `dsc`,

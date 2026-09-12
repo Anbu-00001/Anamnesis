@@ -160,6 +160,34 @@ truthful one, and the reason is given below.
 
 ### Fixed
 
+- **"No evidence of miscalibration" was rendered as "well calibrated."** At n ≥ 50
+  the verdict line read `WELL CALIBRATED`, the badge read `Well calibrated`, the
+  plain view said "Your confidence is honest", and the cat showed its happiest
+  face — all from a *quiet* e-process, which is absence of evidence. The two
+  instruments fail in opposite directions: the e-process is strong on sharp
+  patterns and weak on a gentle drift toward 50/50, while MCB against its noise
+  floor measures the size of an error but cannot establish that it is real.
+  Measured: 10 points overconfident at n = 120 gave MCB 0.019 against a 0.014
+  floor with the e-process at 5.4, and every surface called it well calibrated.
+  The words are gone from the program; a claim of calibration now answers to both
+  checks, and when they disagree the report says so.
+  JSON/HTML: the card's `data-severity="well-calibrated"` token is now
+  `"no-miscalibration-found"` (no stylesheet keys off it).
+
+- **The per-`kind:` breakdown described a self-selected slice.** On a real
+  426-claim ledger, **363 of 422** binary claims carried no `kind:` tag, so the
+  per-kind table, the per-kind e-values and the hook's "worst type" line all keyed
+  off a field 86% of the data did not have. Below 50% coverage the section now
+  collapses to one line naming the coverage and how to fill it, and the hook stays
+  quiet rather than naming a worst type from an eighth of the record.
+  JSON: `kind_coverage`.
+
+- **`scripts/check-test-count.sh`** runs the suite and fails if the number of
+  tests that *ran* drops below a pinned floor, wired into CI in place of the bare
+  `cargo test --all`. A test in this repo lost its `#[test]` attribute during an
+  edit and kept "passing" by not existing — the software version of the ungraded
+  claim, missing data read as success.
+
 - **The Python package version was still `0.3.0`** while the crate was `0.4.0`, so
   `maturin build` produced a wheel labelled `anamnesis-0.3.0` carrying 0.4.0
   scoring semantics. PyPI versions cannot be reused, so publishing would have been
