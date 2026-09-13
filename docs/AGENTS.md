@@ -18,7 +18,7 @@ this repo:
   action anyway. `decide` closes that loop — it discounts your stated confidence by
   your own track record, then returns **proceed / verify / abstain** against a
   stake-aware threshold, so high-stakes calls demand near-certainty before you commit.
-- **A Claude Code plugin** ([plugin/](plugin/)) whose `SessionStart` hook injects
+- **A Claude Code plugin** ([plugin/](../plugin/)) whose `SessionStart` hook injects
   your standing over/under-confidence into *every* project before you plan — e.g.
   *"OVERCONFIDENT +20pts; worst on kind:bug-hypothesis — add slack."* A companion
   `UserPromptSubmit` hook then re-surfaces that calibration as a **self-introspection
@@ -37,7 +37,7 @@ this repo:
   > export ANAMNESIS_INTROSPECT_EVERY=10   # checkpoint every 10th prompt
   > ```
 
-  Design notes: [docs/agent-plugin-design.md](docs/agent-plugin-design.md).
+  Design notes: [docs/agent-plugin-design.md](agent-plugin-design.md).
 
 Three surfaces reach the same binary. Hooks fire on the session lifecycle, MCP
 tools are called deliberately by the agent, and both read and write one local JSON

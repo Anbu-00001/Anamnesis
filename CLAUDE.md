@@ -15,7 +15,9 @@ not the same as knowing how sure to be (calibration).** The report shows both.
 ## Architecture (one line each)
 
 - [src/scoring.rs](src/scoring.rs) — **pure `std` math, no I/O.** Brier, log score,
-  Murphy decomposition (exact, grouped by unique forecast value), rank-based AUC,
+  the CORP Brier decomposition (`corp_brier`, isotonic, reported against its
+  noise floor; the exact-value Murphy grouping survives only as a deprecated
+  alias), rank-based AUC,
   Lichtenstein–Fischhoff overconfidence, Winkler interval score, coverage, Wilson
   interval, empirical-Bayes shrinkage, an **anytime-valid calibration e-process**
   (`calibration_eprocess`: a mixture of betting martingales, valid under
@@ -136,21 +138,26 @@ not the same as knowing how sure to be (calibration).** The report shows both.
 2. **No NaN in serialized output.** serde_json silently turns `NaN`/`Inf` into
    `null` and cannot read it back. Model any undefinable metric as `Option<f64>`
    (→ `null`). `report::finite()` enforces this for floats that might be NaN.
-3. **Exact Brier decomposition** depends on grouping by the *exact* forecast value
-   (`f64::to_bits`). Don't switch it to range-binning — the
-   `decomposition_identity_holds_exactly` test asserts `REL−RES+UNC == Brier`.
-4. **Backward compatibility**: old ledgers have no `kind`, bare `prob` numbers, and
+3. **Both decompositions are exact identities; don't range-bin either.** The
+   headline is CORP (`scoring::corp_brier`: `MCB − DSC + UNC == Brier`). The older
+   exact-value grouping (`f64::to_bits`) survives only as a deprecated alias, and
+   `decomposition_identity_holds_exactly` still asserts `REL−RES+UNC == Brier`.
+4. **A ledger with unscorable numbers is refused at load** (`store::validate`): a
+   probability outside 0..1, or an interval with low above high or a level outside
+   (0,1). Scoring them does not fail — it silently produced a confident verdict
+   from a probability of 1.7.
+5. **Backward compatibility**: old ledgers have no `kind`, bare `prob` numbers, and
    string `outcome`s. The serde `default` + `Option` fields keep them loading. The
    `legacy_binary_json_still_loads` test guards this. Don't make those fields
    required.
-5. **The integration test depends on exact output substrings**: `added [id]`,
+6. **The integration test depends on exact output substrings**: `added [id]`,
    `30% → 60%`, `resolved TRUE`, `already resolved`, `between 0 and 1`,
    `no claim matches`. If you change these strings, update [tests/cli.rs](tests/cli.rs).
-6. **The headline score grades the FIRST forecast** (`Claim::sample`), never the
+7. **The headline score grades the FIRST forecast** (`Claim::sample`), never the
    last. `sample_final` exists for display only. Scoring the final forecast let a
    claim logged at 0.5, updated to 0.99 and resolved YES score 0.000 and be
    congratulated for it.
-7. **Never the words "well calibrated"** — `scripts/check-banned-phrases.sh`
+8. **Never the words "well calibrated"** — `scripts/check-banned-phrases.sh`
    fails CI if they become reachable, in `src/` or in anything shipped under
    `plugin/` (the 0.3.0 hook scripts are where the phrase actually reached users). A quiet e-process is absence of evidence.
    The two instruments have opposite blind spots: the e-process is strong on sharp
@@ -159,15 +166,15 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    95th percentile, crossing it is what a calibrated forecaster does one look in
    twenty. So the report prints the **ratio**, not a crossing, and reserves prose
    for `MCB_RATIO_NOTABLE`. This defect has arrived three times by three routes.
-8. **One verdict** (`report::verdict`). The plain report, the cat, the badge, the
+9. **One verdict** (`report::verdict`). The plain report, the cat, the badge, the
    card, `--json`, the MCP `calibration` tool and the hooks all read it. They used
    to each key off the confidence gap, in which over- and under-confidence cancel:
    a ledger with a −0.520 Brier skill had a gap of −1e-15 and was announced as
    `[DIALED IN] · well calibrated`. Never derive a pass/fail from the gap.
-9. **Every mutating command holds the lock** across load and save
+10. **Every mutating command holds the lock** across load and save
    (`Cmd::mutates()`, `store::lock`). Without it, 40 parallel `ana add` calls left
    7–19 claims of 40, almost silently.
-10. **Tests as oracles**: the fast `auc` is validated against a self-evidently
+11. **Tests as oracles**: the fast `auc` is validated against a self-evidently
    correct `O(n²)` `auc_pairwise` in tests. When optimising a metric, keep the slow
    version as a test oracle rather than deleting it.
 

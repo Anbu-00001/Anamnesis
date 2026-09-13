@@ -61,7 +61,7 @@ Three moving parts: **(a)** a global ledger, **(b)** a thin set of `ana` enhance
 | `kind:approach` | "this approach will work" | binary |
 | `kind:compat` | "this change is backward-compatible" | binary |
 
-The `kind:*` tags are the payoff: the report can then say *"+0.30 overconfident on `bug-hypothesis`, well-calibrated on `tests-pass`"* — per-failure-mode calibration, which is far more actionable than a single global number.
+The `kind:*` tags are the payoff: the report can then say *"+0.30 overconfident on `bug-hypothesis`, no miscalibration found on `tests-pass`"* — per-failure-mode calibration, which is far more actionable than a single global number.
 
 ## 5. `ana` enhancements required (small, additive, testable)
 

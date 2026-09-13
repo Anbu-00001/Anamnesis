@@ -3,7 +3,7 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] — unreleased
+## [0.4.0] — 2026-09-13
 
 The scoring changes in this release are **breaking**: the same ledger will produce
 different numbers than 0.3.0 did. In every case the new number is the more
@@ -184,6 +184,27 @@ actually running is visible in the session rather than inferred.
   evidence bar as its happiest words: no `[DIALED IN]` below 50 graded calls.
 
 ### Fixed
+
+- **A hand-edited ledger with impossible numbers was scored instead of refused.**
+  A probability of 1.7 or −0.4 loaded without complaint and produced a Brier score
+  and a confident `OVERCONFIDENT` verdict. The ledger is now validated on load: a
+  probability outside 0..1, or an interval with its low end above its high end or a
+  level outside (0,1), is refused with the claim's id, and the file is not modified.
+
+- **An empty ledger file** — `touch ~/.anamnesis.json`, say — failed with "EOF while
+  parsing a value". It now reads as an empty ledger, unless a backup of an earlier
+  ledger sits beside it, in which case it is refused: the file is then more likely a
+  ledger that was emptied, and the next save would copy it over the only good copy.
+
+- **The release smoke job tested nothing the README documents.** It ran
+  `cargo install --path .`, which touches neither the published binaries nor the
+  installer, so it could pass while every documented install line was broken. It
+  now installs the release's own binaries through `install-ana.sh` on Linux and
+  macOS, verifies the Windows binary against `sha256.sum`, runs the README's
+  prebuilt line exactly as written for final releases, and installs from source at
+  the tag. Release candidates are marked as pre-releases, so a `-rc` tag never
+  becomes the "latest" that the README's install line fetches.
+
 
 - **The same breakdown could print twice under two headings.** The descriptive
   by-domain table and the tested breakdown each carried their own rule for "bare

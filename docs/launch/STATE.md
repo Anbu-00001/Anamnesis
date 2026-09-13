@@ -285,3 +285,34 @@ repository: MIT-licensed, with Slack and Chrome integrations.
 
 HN's own rules still apply to what gets posted there: the title, the submission
 text and every comment are the author's to write.
+
+---
+
+## Pass 5 (2026-09-13): pre-submission sweep
+
+Run as a stranger would run it, against a fresh clone and clean environments.
+
+| Check | Result |
+|---|---|
+| Fresh clone, `cargo build --release --locked` | builds |
+| Fresh clone, `cargo test --all` | 123 passed (125 after this pass) |
+| Fresh clone, `./validation/repro.sh`, `validation/sims.py` | green |
+| Fresh clone, `validation/ratio.py` | **failed** — needs the Python binding, which the README did not say. Fixed: README note, and the script now explains what it needs |
+| Wheel from a fresh clone in a clean venv | 36 passed |
+| `ana mcp` from the clean build | `initialize` and `tools/list` answer; the tool list matches the README exactly |
+| Other operating systems | CI on the pushed commit passes on Linux, macOS, Windows and the MSRV job |
+| CI badge as GitHub serves it | "passing" |
+| `ana report` with no ledger, an empty ledger, one open prediction | friendly message, exit 0 |
+| Truncated JSON, missing fields, wrong types, `outcome: "maybe"` | precise error, exit 1, file untouched |
+| **0-byte ledger** | **"EOF while parsing a value"**. Fixed: reads as empty, unless a backup sits beside it, in which case it is refused so the next save cannot overwrite the only good copy |
+| **`prob: 1.7` in a hand-edited ledger** | **scored silently, verdict `OVERCONFIDENT`**. Fixed: refused at load, naming the claim. Both real ledgers on this machine (436 and 8 claims) were checked against the new rule first; neither contains anything it rejects |
+| README example commands, verbatim | run; `ana add` accepts a past `--by`, so the hard-coded dates will not break |
+| Every link and image in every doc | **four broken**, all in `docs/AGENTS.md` and `docs/PYTHON.md`, written relative to the repo root instead of `docs/` (including the langgraph example). Fixed; 79 of 79 now resolve |
+| External references | the five that return 403 to scripts all exist: four DOIs resolve through Crossref, and the Good Judgment page is bot-blocked, not missing |
+| `.github/workflows/*.yml` | actionlint clean |
+| Release workflow | asset names and `sha256.sum` format match `install-ana.sh` — confirmed by running the workflow's own package and publish commands locally, then the installer and the smoke check against the result. But its smoke job ran `cargo install --path .` and never touched the published binaries. Rewritten, and `-rc` tags are now marked pre-release so they cannot become "latest" |
+| History of `docs/agent-memory/` | exposes the local username in two paths; no token-shaped string anywhere in any commit. No rewrite needed |
+| GitHub description | was a different, longer text; now the README sentence. Topics `decision-making`, `claude-code`, `e-values` added |
+
+Still manual, because GitHub has no API for it: upload
+`docs/assets/social-preview.png` under Settings → General → Social preview.

@@ -130,9 +130,11 @@ command's actual exit status. See [docs/AGENTS.md](docs/AGENTS.md).
 ## How this compares
 
 Fatebook and Metaculus are better choices if you want to forecast with other
-people, and Fatebook is open source. Calibration quizzes are a quick check on
-trivia. This keeps a private record of the calls you make in your own work,
-including the ones your coding agent makes.
+people, and Fatebook is open source. PredictionBook, the older option, went
+read-only in 2024. Calibration quizzes are a quick check on trivia, and a
+decision journal keeps your reasoning without ever scoring it. This keeps a
+private record of the calls you make in your own work, including the ones your
+coding agent makes, and grades the number you wrote down before you knew.
 
 | | Anamnesis | Fatebook | Metaculus | calibration quizzes |
 |---|---|---|---|---|
@@ -184,6 +186,10 @@ cargo test --all             # the suite, including the hostile-review scenarios
 python3 validation/sims.py   # e-process power, CORP noise floor
 python3 validation/ratio.py  # the two instruments, and the ratio threshold
 ```
+
+`sims.py` needs numpy. `ratio.py` also uses the Python binding, so build it
+first with `cd bindings/python && maturin develop --release`; see
+[docs/PYTHON.md](docs/PYTHON.md).
 
 ## License
 

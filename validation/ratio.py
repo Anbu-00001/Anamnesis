@@ -10,8 +10,16 @@ certainty. That is the peeking problem in the one instrument with no anytime-val
 protection, which is why the report prints the RATIO and reserves prose for
 `report::MCB_RATIO_NOTABLE`. This script is where that constant comes from.
 """
-import numpy as np
-import anamnesis as ana
+try:
+    import numpy as np
+    import anamnesis as ana
+except ImportError as e:
+    raise SystemExit(
+        f"validation/ratio.py cannot run: {e}.\n"
+        "It needs numpy and the Python binding. Build the binding first:\n"
+        "    cd bindings/python && maturin develop --release\n"
+        "See docs/PYTHON.md."
+    )
 
 rng_master = np.random.default_rng(20260912)
 DRAWS, Q, SEED = 400, 0.95, 0xA11CE5EED0000001

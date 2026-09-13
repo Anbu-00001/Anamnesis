@@ -168,6 +168,11 @@ would have kept working whatever the manifest said.
 4. Smoke test again, against `v0.4.0`.
 5. Post.
 
+Steps 2 and 4 run automatically: the release workflow's `smoke` job installs that
+release's own binaries on Linux, macOS and Windows, runs the README's prebuilt line
+exactly as written for final tags, and installs from source at the tag. Watch it go
+green before moving on.
+
 Do not post on the day of the first successful release unless step 4 has run
 against that release. If the pipeline fails after the final tag, the README is
 wrong at the worst possible moment, and a fail-closed installer does not rescue a
@@ -193,8 +198,8 @@ first impression.
   `A local CLI for logging predictions before the outcome and checking whether your "80% sure" comes true 80% of the time.`
 - **Topics:** `calibration`, `forecasting`, `brier-score`, `decision-making`,
   `cli`, `rust`, `mcp`, `claude-code`, `e-values`.
-- **Social preview:** 1280×640 derived from `docs/assets/card-dark.png`.
-- Discussions: still to enable.
+- **Social preview:** 1280×640, at `docs/assets/social-preview.png`. Upload it by hand under Settings → General → Social preview; there is no API.
+- Discussions: off. Optional.
 - `CONTRIBUTING.md` — **done**.
 - Issue templates — **done**: `.github/ISSUE_TEMPLATE/bug.md` and
   `verdict-looks-wrong.md`, the latter asking for an `ana export --anonymize`

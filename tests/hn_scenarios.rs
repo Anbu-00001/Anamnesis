@@ -1876,3 +1876,97 @@ fn an_upgrade_never_runs_a_stale_engine_from_path() {
     );
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ─────────────────────────── a stranger's first commands ─────────────────────
+
+/// `touch ~/.anamnesis.json` then `ana report` failed with "EOF while parsing a
+/// value" — the first thing a curious new user might do, answered with a parser
+/// error. An empty file holds nothing, so it now reads as an empty ledger. The
+/// exception is the one case where that is dangerous: a backup beside it means
+/// the file is probably a ledger that was emptied, and the next save would copy
+/// the empty file over the only good copy.
+#[test]
+fn an_empty_ledger_file_is_empty_unless_it_would_cost_the_backup() {
+    let dir = workdir("emptyfile");
+
+    let fresh = dir.join("fresh.json");
+    fs::write(&fresh, "").unwrap();
+    let (out, err, ok) = run(&fresh, &["report"]);
+    assert!(
+        ok,
+        "an empty file should read as an empty ledger:\n{out}{err}"
+    );
+    assert!(out.contains("No resolved claims yet"), "{out}");
+    let (_, err, ok) = run(&fresh, &["add", "the first claim", "--prob", "0.6"]);
+    assert!(ok, "and accept a first claim:\n{err}");
+
+    // Two saves leave a backup beside the ledger; then the ledger is emptied.
+    let kept = dir.join("kept.json");
+    assert!(run(&kept, &["add", "one", "--prob", "0.6"]).2);
+    assert!(run(&kept, &["add", "two", "--prob", "0.7"]).2);
+    let sizes = || {
+        let mut v: Vec<(String, u64)> = fs::read_dir(&dir)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .map(|e| {
+                (
+                    e.file_name().to_string_lossy().to_string(),
+                    e.metadata().unwrap().len(),
+                )
+            })
+            .filter(|(n, _)| {
+                n.starts_with("kept.json") && n != "kept.json" && !n.ends_with(".lock")
+            })
+            .collect();
+        v.sort();
+        v
+    };
+    let before = sizes();
+    assert!(
+        before.iter().any(|(_, len)| *len > 0),
+        "the construction needs a non-empty backup: {before:?}"
+    );
+    fs::write(&kept, "").unwrap();
+    let (_, err, ok) = run(&kept, &["report"]);
+    assert!(!ok, "an emptied ledger with a backup must be refused");
+    assert!(err.contains("backup"), "and say why:\n{err}");
+    let (_, _, ok) = run(&kept, &["add", "three", "--prob", "0.5"]);
+    assert!(!ok, "a write must be refused too");
+    assert_eq!(sizes(), before, "the backup must survive untouched");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A hand-edited probability of 1.7 used to load and be scored: two such
+/// forecasts produced a Brier score and an `OVERCONFIDENT` verdict, with no hint
+/// that the inputs were impossible. Now the ledger is refused, the claim is named,
+/// and nothing is written.
+#[test]
+fn a_ledger_with_an_impossible_probability_is_refused_by_name() {
+    let dir = workdir("badprob");
+    let ledger = dir.join("ledger.json");
+    let mut claims: Vec<serde_json::Value> = (0..25)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("ok{i:03}"), "statement": "fine", "created_at": "2026-01-01T00:00:00Z",
+                "resolve_by": "2026-02-01", "kind": "binary",
+                "forecasts": [{ "at": "2026-01-01T00:00:00Z", "prob": 0.7 }],
+                "resolution": { "at": "2026-02-02T00:00:00Z", "outcome": if i % 10 < 7 { "true" } else { "false" } }
+            })
+        })
+        .collect();
+    claims[3]["id"] = serde_json::json!("hand1");
+    claims[3]["forecasts"][0]["prob"] = serde_json::json!(1.7);
+    fs::write(&ledger, serde_json::json!({ "claims": claims }).to_string()).unwrap();
+    let bytes = fs::read(&ledger).unwrap();
+
+    let (out, err, ok) = run(&ledger, &["report"]);
+    assert!(!ok, "an impossible probability must not be scored:\n{out}");
+    assert!(
+        err.contains("[hand1]") && err.contains("1.7"),
+        "the error must name the claim and the value:\n{err}"
+    );
+    assert!(err.contains("NOT modified"), "{err}");
+    assert!(!run(&ledger, &["add", "x", "--prob", "0.5"]).2);
+    assert_eq!(fs::read(&ledger).unwrap(), bytes, "nothing may be written");
+    let _ = fs::remove_dir_all(&dir);
+}

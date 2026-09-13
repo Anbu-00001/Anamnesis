@@ -71,11 +71,65 @@ pub fn lock_path(path: &Path) -> PathBuf {
 /// Load a ledger. A missing file is treated as an empty ledger, so the very
 /// first `add` just works without any `init` ceremony.
 pub fn load(path: &Path) -> io::Result<Ledger> {
-    match fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text).map_err(invalid_data),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(Ledger::default()),
-        Err(e) => Err(e),
+    let text = match fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(Ledger::default()),
+        Err(e) => return Err(e),
+    };
+    if text.trim().is_empty() {
+        // An empty file holds no claims, so reading it as an empty ledger loses
+        // nothing, and `touch ~/.anamnesis.json` should not greet a new user with
+        // "EOF while parsing a value". Unless a backup sits beside it: then this
+        // is more likely a ledger that was emptied than one never written, and the
+        // next save would copy the empty file over the only good copy.
+        if backup_path(path).exists() {
+            return Err(io::Error::new(
+                ErrorKind::InvalidData,
+                "the ledger file is empty, but a backup of an earlier ledger sits beside it; refusing to start a new ledger over it",
+            ));
+        }
+        return Ok(Ledger::default());
     }
+    let ledger: Ledger = serde_json::from_str(&text).map_err(invalid_data)?;
+    validate(&ledger).map_err(|m| io::Error::new(ErrorKind::InvalidData, m))?;
+    Ok(ledger)
+}
+
+/// Refuse a ledger whose numbers cannot be scored.
+///
+/// The CLI never writes these, but a hand-edited file can hold them, and scoring
+/// them does not fail: it quietly returns a Brier score and a confident verdict
+/// computed from a probability of 1.7. Measured before this check, a ledger with
+/// two such forecasts was reported as `OVERCONFIDENT`.
+fn validate(ledger: &Ledger) -> Result<(), String> {
+    for c in &ledger.claims {
+        for (i, f) in c.forecasts.iter().enumerate() {
+            let n = i + 1;
+            if let Some(p) = f.prob {
+                if !(0.0..=1.0).contains(&p) {
+                    return Err(format!(
+                        "claim [{}] forecast {n}: probability {p} is outside 0..1",
+                        c.id
+                    ));
+                }
+            }
+            if let Some(iv) = f.interval {
+                if iv.low > iv.high {
+                    return Err(format!(
+                        "claim [{}] forecast {n}: interval {}..{} has its low end above its high end",
+                        c.id, iv.low, iv.high
+                    ));
+                }
+                if iv.level <= 0.0 || iv.level >= 1.0 {
+                    return Err(format!(
+                        "claim [{}] forecast {n}: level {} is not strictly between 0 and 1",
+                        c.id, iv.level
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Save a ledger durably: write to a *uniquely named* temp file in the same

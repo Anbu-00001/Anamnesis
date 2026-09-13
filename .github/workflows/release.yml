@@ -46,7 +46,7 @@ jobs:
           echo "CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER=aarch64-linux-gnu-gcc" >> "$GITHUB_ENV"
 
       - name: Build
-        run: cargo build --release --bin ana --target ${{ matrix.target }}
+        run: cargo build --release --locked --bin ana --target ${{ matrix.target }}
 
       - name: Package
         shell: bash
@@ -82,26 +82,71 @@ jobs:
 
       - uses: softprops/action-gh-release@v2
         with:
+          # A `-rc` tag must not become "latest": the README's install line
+          # fetches releases/latest, and a release candidate is not what a
+          # visitor should get.
+          prerelease: ${{ contains(github.ref_name, '-') }}
           files: |
             dist/*
 
-  # The README's install command, run on a clean machine of each OS. Every
-  # documented install path 404'd before the first tag existed; this is what
-  # notices next time.
+  # Every install path the README documents, on a clean machine of each OS,
+  # against THIS release. The previous version of this job ran
+  # `cargo install --path .`, which touches neither the published binaries nor
+  # the installer the README tells people to run, so it could pass while every
+  # documented install line was broken.
   smoke:
+    name: smoke (${{ matrix.os }})
     needs: publish
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
+    env:
+      TAG: ${{ github.ref_name }}
     steps:
       - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@stable
-      - name: Install as the README says
-        run: cargo install --path . --locked
-      - name: It runs
+
+      - name: Prebuilt binary via install-ana.sh, pinned to this tag
+        if: runner.os != 'Windows'
+        shell: bash
         run: |
+          bash plugin/install-ana.sh "$TAG"
+          want="${TAG#v}"; want="${want%%-*}"
+          got="$("$HOME/.anamnesis/bin/ana" --version)"
+          [ "$got" = "ana $want" ] || { echo "installed '$got', expected 'ana $want'"; exit 1; }
+          "$HOME/.anamnesis/bin/ana" demo > /dev/null
+
+      - name: The README's prebuilt install line, exactly as written
+        if: runner.os != 'Windows' && !contains(github.ref_name, '-')
+        shell: bash
+        run: |
+          rm -rf "$HOME/.anamnesis/bin"
+          bash <(curl -fsSL "https://raw.githubusercontent.com/${{ github.repository }}/main/plugin/install-ana.sh")
+          [ "$("$HOME/.anamnesis/bin/ana" --version)" = "ana ${TAG#v}" ]
+
+      - name: Prebuilt Windows binary, checksum-verified
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $base = "https://github.com/${{ github.repository }}/releases/download/$env:TAG"
+          $asset = "ana-x86_64-pc-windows-msvc.exe"
+          Invoke-WebRequest "$base/$asset" -OutFile ana.exe
+          Invoke-WebRequest "$base/sha256.sum" -OutFile sha256.sum
+          $line = Select-String -Path sha256.sum -Pattern ([regex]::Escape($asset) + '$') | Select-Object -First 1
+          if (-not $line) { throw "sha256.sum does not list $asset" }
+          $want = $line.Line.Split(' ')[0]
+          $got = (Get-FileHash ana.exe -Algorithm SHA256).Hash.ToLower()
+          if ($want -ne $got) { throw "checksum mismatch: expected $want, got $got" }
+          ./ana.exe --version
+          ./ana.exe demo | Out-Null
+          if ($LASTEXITCODE -ne 0) { throw "ana demo failed" }
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - name: From source, as the README's first install line does
+        shell: bash
+        run: |
+          cargo install --git "https://github.com/${{ github.repository }}" --tag "$TAG" --locked
           ana --version
-          ana where
-          ana demo
+          ana demo > /dev/null
