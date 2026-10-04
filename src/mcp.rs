@@ -22,7 +22,12 @@ use crate::model::{
     Outcome, Resolution,
 };
 use crate::scoring::{self, NumericSample};
-use crate::{report, store};
+use crate::{report, store, untrusted};
+
+/// How much of a stored statement `list` returns in its structured reply. Longer
+/// than the one-line text form, because a program may want the claim whole; still
+/// bounded, because one 500 KB statement should not become 500 KB of context.
+const STRUCTURED_STATEMENT: usize = 300;
 
 /// The **modern** (stateless, per-request `_meta`) revision this server speaks.
 /// Since 2026-07-28 there is no `initialize` handshake: every request carries its
@@ -865,28 +870,44 @@ fn tool_list(args: &Value, ledger: &Path) -> ToolResult {
             }
         })
         .collect();
+    // Everything below that came out of the ledger is somebody's text, possibly
+    // another client's or an import's, not necessarily this agent's own. It goes
+    // out one line long, bounded, and labelled as data. See `untrusted`.
     let preds: Vec<Value> = items
         .iter()
         .map(|c| {
             json!({
-                "id": c.id, "kind": c.kind, "statement": c.statement,
+                "id": untrusted::tag(&c.id), "kind": c.kind,
+                "statement": untrusted::line(&c.statement, STRUCTURED_STATEMENT),
                 "prob": c.current_prob(), "interval": c.current_interval(),
-                "tags": c.tags, "resolve_by": c.resolve_by, "resolved": c.is_resolved(),
+                "tags": c.tags.iter().map(|t| untrusted::tag(t)).collect::<Vec<_>>(),
+                "resolve_by": c.resolve_by, "resolved": c.is_resolved(),
             })
         })
         .collect();
     let text = if preds.is_empty() {
         "(no matching predictions)".to_string()
     } else {
-        items
+        let body = items
             .iter()
-            .map(|c| format!("[{}] {}", c.id, c.statement))
+            .map(|c| {
+                format!(
+                    "[{}] {}",
+                    untrusted::tag(&c.id),
+                    untrusted::line(&c.statement, untrusted::MAX_LINE)
+                )
+            })
             .collect::<Vec<_>>()
-            .join("\n")
+            .join("\n");
+        format!("({})\n{body}", untrusted::FRAME)
     };
     Ok((
         text,
-        Some(json!({ "count": preds.len(), "predictions": preds })),
+        Some(json!({
+            "count": preds.len(),
+            "note": untrusted::FRAME,
+            "predictions": preds,
+        })),
     ))
 }
 

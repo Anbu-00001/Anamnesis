@@ -177,6 +177,11 @@ not the same as knowing how sure to be (calibration).** The report shows both.
 11. **Tests as oracles**: the fast `auc` is validated against a self-evidently
    correct `O(n²)` `auc_pairwise` in tests. When optimising a metric, keep the slow
    version as a test oracle rather than deleting it.
+12. **Ledger text reaches a model only through `untrusted::line`.** A statement, tag
+   or id is whatever its author wrote, and the hooks and the MCP server hand it to
+   an agent. It goes out as one bounded line, with markup and the `⟢` header mark
+   neutralised, labelled as stored data (`untrusted::FRAME`). Do not interpolate
+   `c.statement` or `c.tags` into hook or MCP output directly.
 
 ## Build / test / lint
 

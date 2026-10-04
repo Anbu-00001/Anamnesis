@@ -17,9 +17,10 @@ use std::io::Read;
 use chrono::{NaiveDate, Utc};
 use serde_json::{json, Value};
 
-use crate::model::{Ledger, Outcome, Resolution, ResolvedBy};
+use crate::model::{Claim, Ledger, Outcome, Resolution, ResolvedBy};
 use crate::report::{ReportData, Verdict};
 use crate::store;
+use crate::untrusted;
 
 /// Which hook is firing.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,8 +132,11 @@ fn worst_kind(d: &ReportData) -> Option<String> {
         None => "miscalibrated",
     };
     Some(format!(
-        "  worst group: {ns}:{} is really {dir} (e={e:.0}, n={}, K={}) — trust those calls least",
-        row.tag, row.n, d.group_k
+        "  worst group: {}:{} is really {dir} (e={e:.0}, n={}, K={}) — trust those calls least",
+        untrusted::tag(ns),
+        untrusted::tag(&row.tag),
+        row.n,
+        d.group_k
     ))
 }
 
@@ -148,14 +152,42 @@ fn project_slug(cwd: Option<&str>) -> String {
 }
 
 fn due_lines(ledger: &Ledger, today: NaiveDate, slug: &str) -> Vec<String> {
-    ledger
+    let lines: Vec<String> = ledger
         .claims
         .iter()
         .filter(|c| !c.is_void() && c.is_due(today))
         .filter(|c| c.tags.iter().any(|t| t == &format!("project:{slug}")))
         .take(5)
-        .map(|c| format!("  DUE [{}] {} — resolve it", c.id, c.statement))
-        .collect()
+        .map(|c| format!("  DUE {} — resolve it", quoted(c)))
+        .collect();
+    framed(lines)
+}
+
+/// One claim as a single quoted line of stored data: `[id] "statement"`.
+fn quoted(c: &Claim) -> String {
+    format!(
+        "[{}] \"{}\"",
+        untrusted::tag(&c.id),
+        untrusted::line(&c.statement, untrusted::MAX_LINE)
+    )
+}
+
+/// Put the "this is data" label in front of any block of ledger text.
+fn framed(lines: Vec<String>) -> Vec<String> {
+    if lines.is_empty() {
+        return lines;
+    }
+    let mut out = vec![format!("  ({})", untrusted::FRAME)];
+    out.extend(lines);
+    out
+}
+
+/// A claim belongs to this project if it is tagged for it, or for no project at
+/// all. A claim tagged for another project is not this session's business: the
+/// ledger is global, so without this a claim logged anywhere is shown everywhere.
+fn in_scope(c: &Claim, slug: &str) -> bool {
+    let mine = format!("project:{slug}");
+    c.tags.iter().any(|t| t == &mine) || !c.tags.iter().any(|t| t.starts_with("project:"))
 }
 
 /// The per-session prompt counter, kept next to the ledger. Returns the new count.
@@ -258,8 +290,9 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
             if d.evidence_ungraded_due > 0 {
                 if let Some(id) = &d.evidence_oldest_gap {
                     context.push(format!(
-                        "  {} ungraded call(s) are costing you evidence, oldest [{id}] — resolve or void them",
-                        d.evidence_ungraded_due
+                        "  {} ungraded call(s) are costing you evidence, oldest [{}] — resolve or void them",
+                        d.evidence_ungraded_due,
+                        untrusted::tag(id)
                     ));
                 }
             }
@@ -295,7 +328,11 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                         "⟢ Anamnesis (ana {VERSION}): resolved {} prediction(s) from the command's exit status ({code}) — {}, not self-reported: {}",
                         resolved.len(),
                         if happened { "it passed" } else { "it failed" },
-                        resolved.join(", ")
+                        resolved
+                            .iter()
+                            .map(|i| untrusted::tag(i))
+                            .collect::<Vec<_>>()
+                            .join(", ")
                     ));
                     user_message = Some(format!(
                         "anamnesis: auto-resolved {} prediction(s) from exit code {code}",
@@ -314,7 +351,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                                 || c.tags.iter().any(|t| t == "kind:approach")
                         })
                         .take(5)
-                        .map(|c| c.id.clone())
+                        .map(|c| untrusted::tag(&c.id))
                         .collect();
                     if open.is_empty() {
                         return Ok(());
@@ -328,7 +365,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
         }
 
         Event::Stop => {
-            let overdue: Vec<&crate::model::Claim> = ledger
+            let overdue: Vec<&Claim> = ledger
                 .claims
                 .iter()
                 .filter(|c| !c.is_void() && c.is_due(today))
@@ -340,8 +377,24 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 "⟢ Anamnesis (ana {VERSION}): {} prediction(s) are past their due date and ungraded. Until they are resolved the calibration numbers rest on a self-selected sample, and each one is priced into the evidence test at the worst factor it could have contributed.",
                 overdue.len()
             ));
-            for c in overdue.iter().take(5) {
-                context.push(format!("  [{}] {}", c.id, c.statement));
+            // The count is the whole ledger's. The wording shown is only this
+            // project's, and only as quoted data.
+            let here: Vec<&Claim> = overdue
+                .iter()
+                .copied()
+                .filter(|c| in_scope(c, &slug))
+                .collect();
+            context.extend(framed(
+                here.iter()
+                    .take(5)
+                    .map(|c| format!("  {}", quoted(c)))
+                    .collect(),
+            ));
+            if here.len() < overdue.len() {
+                context.push(format!(
+                    "  ({} more belong to other projects)",
+                    overdue.len() - here.len()
+                ));
             }
         }
     }

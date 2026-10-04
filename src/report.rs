@@ -17,6 +17,7 @@ use chrono::NaiveDate;
 
 use crate::model::Ledger;
 use crate::scoring::{self, NumericSample, Sample};
+use crate::untrusted;
 
 const LANE_W: usize = 34;
 
@@ -1855,7 +1856,14 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                     .confidence_gap
                     .map(|x| format!("{x:+.3}"))
                     .unwrap_or_else(|| "   —".into());
-                let _ = writeln!(out, "    {:<14} {:>4}  {:>7}  {:>9}", t.tag, t.n, br, g);
+                let _ = writeln!(
+                    out,
+                    "    {:<14} {:>4}  {:>7}  {:>9}",
+                    untrusted::tag(&t.tag),
+                    t.n,
+                    br,
+                    g
+                );
             }
         }
 
@@ -1915,14 +1923,14 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             let _ = writeln!(
                 out,
                 "\n  By {:<17}(K={} groups · {:.0}% covered · gap~ shrunk toward your overall rate)",
-                d.group_by.as_deref().unwrap_or("group"),
+                untrusted::tag(d.group_by.as_deref().unwrap_or("group")),
                 d.group_k,
                 d.group_coverage * 100.0
             );
             let _ = writeln!(
                 out,
                 "    {:<16} {:>4}  {:>7}  {:>8}  {:>8}",
-                d.group_by.as_deref().unwrap_or("group"),
+                untrusted::tag(d.group_by.as_deref().unwrap_or("group")),
                 "n",
                 "brier",
                 "gap",
@@ -1944,7 +1952,11 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 let _ = writeln!(
                     out,
                     "    {:<16} {:>4}  {:>7}  {:>8}  {:>8}",
-                    t.tag, t.n, br, g, gs
+                    untrusted::tag(&t.tag),
+                    t.n,
+                    br,
+                    g,
+                    gs
                 );
             }
             // Multicalibration verdict. The per-kind e-process is anytime-valid, so
@@ -1971,7 +1983,9 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 let _ = writeln!(
                     out,
                     "    → '{}' is really {dir} (e={:.0}) — trust your '{}' calls least.",
-                    t.tag, e, t.tag
+                    untrusted::tag(&t.tag),
+                    e,
+                    untrusted::tag(&t.tag)
                 );
             }
         }

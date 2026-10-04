@@ -3,6 +3,45 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Security
+
+- **Ledger text no longer reaches an agent raw.** A claim's statement, tags and id
+  are whatever the person or client that logged them wrote: an imported CSV, another
+  MCP client's `predict`, or a ledger copied from someone else all put text in the
+  file that nobody at this machine wrote, and the hooks and the MCP server read it
+  straight into the agent's context. Measured on 0.4.0: a statement carrying "IGNORE
+  ALL PREVIOUS INSTRUCTIONS", a forged `⟢ Anamnesis` header and a closing tag came
+  back verbatim, newlines intact, from `ana hook stop`, `ana hook session-start` and
+  the MCP `list` tool, and a 500 KB statement produced 2.5 MB of hook output. That
+  text is now cut to one line of at most 120 characters (the MCP structured reply
+  keeps 300), `<` and `>` become look-alike angle quotes, zero-width characters and
+  the Unicode tag block are dropped, `⟢` is replaced so nothing can imitate our own
+  header, and every block of it is labelled as stored data. Tag names in the text
+  report that the MCP `calibration` tool returns get the same treatment. This removes the cheap
+  attacks; it does not make prompt injection impossible, and nothing claims it does.
+  See `src/untrusted.rs`.
+- **The Stop hook lists only this project's overdue claims**, plus claims tagged for
+  no project. The count still covers the whole ledger. Before, a claim logged under
+  any project was quoted in every session's Stop output.
+
+### Changed
+
+- MCP `list` returns each statement cut to 300 characters, each tag and id cleaned,
+  and a top-level `note` saying the text is data. A client that needs a longer
+  statement must read the ledger file.
+
+### Known issues
+
+- **`kind:tests-pass` auto-resolution does not fire under Claude Code.** The hook
+  reads an exit-status field, `tool_result_exit_code`, that Claude Code does not send.
+  Captured against 2.1.251: a command that succeeds arrives as `PostToolUse` with no
+  status at all; one that fails arrives as `PostToolUseFailure`, which the plugin does
+  not register, with the code only inside the text of `error`. In 689 real claims,
+  none was ever graded this way. The fix is in progress; until it lands, treat every
+  resolution as self-graded.
+
 ## [0.4.0] — 2026-09-13
 
 The scoring changes in this release are **breaking**: the same ledger will produce

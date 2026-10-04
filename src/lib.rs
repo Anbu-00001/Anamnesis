@@ -20,6 +20,7 @@ pub mod model;
 pub mod report;
 pub mod scoring;
 pub mod store;
+pub mod untrusted;
 
 pub use model::{gen_id, Claim, ClaimKind, Forecast, Ledger, NumericForecast, Outcome, Resolution};
 pub use scoring::{NumericSample, Sample};

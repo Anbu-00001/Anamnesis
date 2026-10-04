@@ -98,6 +98,11 @@ The `PostToolUse` hook watches for test and build commands and resolves any open
 `kind:tests-pass` claim for the current project **from the command's exit status**,
 recording `resolved_by: "auto"` and the command that produced it.
 
+> **Known issue (0.4.0):** this does not currently fire under Claude Code. The hook
+> reads a field Claude Code does not send, and the plugin does not register
+> `PostToolUseFailure`. Until it is fixed, every resolution is self-graded. See the
+> CHANGELOG.
+
 "Why would I trust a self-graded ledger?" is the first fair objection to this whole
 idea. This is the part of the answer that is a number: the report shows what
 fraction of your resolutions were graded by a machine rather than by you.
@@ -106,6 +111,15 @@ fraction of your resolutions were graded by a machine rather than by you.
 
 Pooling calibration across model versions makes the numbers uninterpretable. The
 MCP `predict` tool takes a `model` argument, tagged `model:<value>`.
+
+## Ledger text is data
+
+A claim's statement, tags and id are whatever the person or client that logged
+them wrote, and the hooks and `list` hand them to an agent. They are shown as one
+bounded line, with markup neutralised, under a label saying they are stored data
+and not instructions. That removes the cheap attacks. It does not make prompt
+injection impossible: a short, plain-text sentence can still be persuasive, so do
+not import a ledger or accept claims from a client you do not trust.
 
 ## Identity
 
