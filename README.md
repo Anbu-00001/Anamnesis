@@ -25,6 +25,7 @@ cargo install --git https://github.com/Anbu-00001/Anamnesis --locked
 
 # or a prebuilt binary; installs nothing unless the release checksum matches
 bash <(curl -fsSL https://raw.githubusercontent.com/Anbu-00001/Anamnesis/main/plugin/install-ana.sh)
+export PATH="$HOME/.anamnesis/bin:$PATH"   # the installer puts ana here
 ```
 
 ## Try it
