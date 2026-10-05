@@ -26,6 +26,21 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   no project. The count still covers the whole ledger. Before, a claim logged under
   any project was quoted in every session's Stop output.
 
+### Fixed
+
+- **The plugin's hook never saw what the plugin's own MCP server logged.** Claude Code
+  introduces itself to an MCP server as `claude-code` (captured from 2.1.251), so
+  predictions logged through the MCP tools carry `who:claude-code`, while the standing
+  line read only `who:claude`, the tag the CLI protocol uses. 25 MCP predictions at 95%,
+  all wrong, gave an OVERCONFIDENT report and a hook that said nothing. The hook now
+  counts both as one agent, and no other client. Nothing on disk changes: each claim
+  keeps the client that really logged it.
+- **The MCP server's instructions told agents to pass `resolve_by`; the argument is
+  `by`.** An agent that did as it was told had its date silently dropped and its claim
+  written without one, which the sequential evidence test cannot use. Both spellings are
+  accepted now, the instructions say `by`, and a prediction logged with no date says so
+  in its reply.
+
 ### Changed
 
 - MCP `list` returns each statement cut to 300 characters, each tag and id cleaned,

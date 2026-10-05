@@ -140,6 +140,45 @@ fn worst_kind(d: &ReportData) -> Option<String> {
     ))
 }
 
+/// The identities that count as this agent in the standing line.
+///
+/// Claude Code introduces itself to an MCP server as `claude-code` (captured from
+/// 2.1.251), so everything the plugin's own MCP server logs carries
+/// `who:claude-code`, while claims logged from the CLI under the documented
+/// protocol carry `who:claude`. The standing line read only the second, so it was
+/// blind to what the plugin itself had logged: 25 MCP predictions at 95%, all
+/// wrong, produced an OVERCONFIDENT report and a hook that said nothing.
+const AGENT_WHO: [&str; 2] = ["who:claude", "who:claude-code"];
+
+/// This agent's claims, under either identity, as one agent.
+///
+/// The ledger on disk keeps the true client on every claim. In this private copy
+/// both identities are `who:claude`, so the report logic sees one agent and the
+/// grouping selector cannot mistake the two names for a two-group breakdown.
+fn agent_claims(ledger: &Ledger) -> Ledger {
+    let mut claims = Vec::new();
+    for c in &ledger.claims {
+        if !c.tags.iter().any(|t| AGENT_WHO.contains(&t.as_str())) {
+            continue;
+        }
+        let mut c = c.clone();
+        let mut tags: Vec<String> = Vec::with_capacity(c.tags.len());
+        for t in c.tags.drain(..) {
+            let t = if t == "who:claude-code" {
+                "who:claude".to_string()
+            } else {
+                t
+            };
+            if !tags.contains(&t) {
+                tags.push(t);
+            }
+        }
+        c.tags = tags;
+        claims.push(c);
+    }
+    Ledger { claims }
+}
+
 /// The project slug, used to scope "what is due here".
 fn project_slug(cwd: Option<&str>) -> String {
     let dir = cwd
@@ -280,7 +319,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 ));
             }
 
-            let d = ReportData::compute(&ledger, Some("who:claude"), 10, today);
+            let d = ReportData::compute(&agent_claims(&ledger), Some("who:claude"), 10, today);
             if let Some(line) = standing_line(&d) {
                 context.push(line);
                 if let Some(k) = worst_kind(&d) {
@@ -486,6 +525,38 @@ mod tests {
 
     fn today_for_test() -> NaiveDate {
         NaiveDate::from_ymd_opt(2026, 1, 1).unwrap()
+    }
+
+    #[test]
+    fn claude_and_claude_code_are_one_agent_and_other_clients_are_not() {
+        let claim = |id: &str, tags: &[&str]| -> Claim {
+            serde_json::from_value(serde_json::json!({
+                "id": id, "statement": "s", "created_at": "2024-01-01T00:00:00Z",
+                "tags": tags, "kind": "binary",
+                "forecasts": [{"at": "2024-01-01T00:00:00Z", "prob": 0.7}]
+            }))
+            .unwrap()
+        };
+        let ledger = Ledger {
+            claims: vec![
+                claim("a", &["who:claude", "kind:x"]),
+                claim("b", &["who:claude-code"]),
+                claim("c", &["who:claude", "who:claude-code"]),
+                claim("d", &["who:cursor"]),
+                claim("e", &["kind:x"]),
+            ],
+        };
+        let mine = agent_claims(&ledger);
+        let ids: Vec<&str> = mine.claims.iter().map(|c| c.id.as_str()).collect();
+        assert_eq!(ids, ["a", "b", "c"]);
+        // One identity, spelled once, whichever name it arrived under.
+        for c in &mine.claims {
+            assert_eq!(c.tags.iter().filter(|t| t.starts_with("who:")).count(), 1);
+            assert!(c.tags.contains(&"who:claude".to_string()));
+        }
+        assert!(ledger.claims[1]
+            .tags
+            .contains(&"who:claude-code".to_string()));
     }
 
     #[test]

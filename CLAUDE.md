@@ -75,7 +75,9 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   wrote it (`(ana X.Y.Z)`), and both launchers (`plugin/hooks/_run.sh`,
   `plugin/mcp-server.sh`) run the newest engine available rather than the first on
   `PATH` — an older `ana` earlier on `PATH` once made every hook on a machine run
-  0.3.0 for a whole release cycle, silently.
+  0.3.0 for a whole release cycle, silently. The standing line counts `who:claude`
+  (CLI protocol) and `who:claude-code` (what Claude Code calls itself over MCP) as one
+  agent; the ledger keeps the true client on every claim.
 - [src/demo.rs](src/demo.rs) — the fictional demo ledger, shared by `ana demo` and
   `examples/seed.rs` so they cannot drift.
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest

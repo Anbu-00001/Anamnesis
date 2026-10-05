@@ -209,7 +209,7 @@ fn unsupported_version(id: Value, requested: &str) -> Value {
     }})
 }
 
-const SERVER_INSTRUCTIONS: &str = "Log falsifiable predictions BEFORE acting (predict), resolve them the moment reality answers (resolve), and read your standing over/under-confidence (calibration). Always pass `resolve_by`: the sequential evidence test orders claims by that date, and a prediction without one is scored but cannot count as evidence. The engine is no-LLM and cannot flatter you — honesty is the optimal strategy.";
+const SERVER_INSTRUCTIONS: &str = "Log falsifiable predictions BEFORE acting (predict), resolve them the moment reality answers (resolve), and read your standing over/under-confidence (calibration). Always pass `by` (the date you expect to know the answer, YYYY-MM-DD): the sequential evidence test orders claims by that date, and a prediction without one is scored but cannot count as evidence. The engine is no-LLM and cannot flatter you — honesty is the optimal strategy.";
 
 fn initialize(req: &Value, id: Value) -> Value {
     // Reply with a revision we actually support, not with whatever was asked for.
@@ -359,8 +359,12 @@ fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
     if let Some(extra) = args.get("tags").and_then(Value::as_array) {
         tags.extend(extra.iter().filter_map(Value::as_str).map(String::from));
     }
+    // The server's own instructions used to say `resolve_by`, while the argument is
+    // `by`; an agent that followed the instructions had its date silently dropped
+    // and its claim written without one. Both spellings are accepted.
     let resolve_by = args
         .get("by")
+        .or_else(|| args.get("resolve_by"))
         .and_then(Value::as_str)
         .map(parse_date)
         .transpose()?;
@@ -399,7 +403,12 @@ fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
     });
     store::save(ledger, &led).map_err(|e| e.to_string())?;
     Ok((
-        format!("logged [{id}] \"{statement}\""),
+        match resolve_by {
+            Some(_) => format!("logged [{id}] \"{statement}\""),
+            None => format!(
+                "logged [{id}] \"{statement}\" — with no `by` date. It is scored, but it cannot count as evidence in the sequential test."
+            ),
+        },
         Some(json!({ "id": id, "kind": kind })),
     ))
 }

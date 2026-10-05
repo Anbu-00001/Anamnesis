@@ -2163,3 +2163,140 @@ fn mcp_calibration_shows_a_hostile_tag_name_as_one_inert_line() {
     assert!(!text.contains("<b>"), "markup reached the model:\n{text}");
     let _ = fs::remove_dir_all(&dir);
 }
+
+// ───────────────── the plugin's two halves must describe the same agent ─────────────────
+
+/// Claude Code introduces itself to an MCP server as `claude-code` (captured from
+/// 2.1.251), so everything the plugin's own MCP server logged carried
+/// `who:claude-code`, while the standing line read only `who:claude`, the tag the
+/// CLI protocol uses. The plugin's halves never met: 25 MCP predictions at 95%, all
+/// wrong, gave an OVERCONFIDENT report and a hook that said nothing.
+#[test]
+fn predictions_logged_through_mcp_reach_the_standing_line() {
+    let dir = workdir("mcptohook");
+    let home = dir.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let ledger = dir.join("agent.json");
+
+    let mut requests = vec![
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25","clientInfo":{"name":"claude-code","version":"2.1.251"}}}"#.to_string(),
+    ];
+    for i in 0..25 {
+        requests.push(format!(
+            r#"{{"jsonrpc":"2.0","id":{},"method":"tools/call","params":{{"name":"predict","arguments":{{"statement":"mcp call {i}","prob":0.95,"by":"2024-02-01"}}}}}}"#,
+            i + 2
+        ));
+    }
+    let refs: Vec<&str> = requests.iter().map(String::as_str).collect();
+    mcp(&ledger, &refs, &[]);
+
+    // Grade every one wrong, as the world did.
+    let mut v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&ledger).unwrap()).unwrap();
+    for c in v["claims"].as_array_mut().unwrap() {
+        assert!(
+            c["tags"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|t| t == "who:claude-code"),
+            "the MCP server should tag the real client: {c}"
+        );
+        c["resolution"] = serde_json::json!({ "at": "2026-10-04T00:00:00Z", "outcome": "false" });
+    }
+    fs::write(&ledger, v.to_string()).unwrap();
+
+    let cwd = dir.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let input =
+        serde_json::json!({ "session_id": "m2h", "cwd": cwd.display().to_string() }).to_string();
+    let out = drive_hook("session-start", &input, &ledger, &home, &[]);
+    assert!(
+        out.contains("OVERCONFIDENT"),
+        "the hook is blind to what the plugin's own MCP server logged:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A claim logged by some other client is not this agent's, whatever its name.
+#[test]
+fn the_standing_line_ignores_other_clients() {
+    let dir = workdir("othersclients");
+    let home = dir.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let ledger = dir.join("agent.json");
+    let claims: Vec<serde_json::Value> = (0..25)
+        .map(|i| {
+            serde_json::json!({
+                "id": format!("o{i:03}"), "statement": format!("cursor call {i}"),
+                "created_at": "2024-01-01T00:00:00Z", "resolve_by": "2024-02-01",
+                "tags": ["who:cursor"], "kind": "binary",
+                "forecasts": [{"at": "2024-01-01T00:00:00Z", "prob": 0.95}],
+                "resolution": {"at": "2024-03-01T00:00:00Z", "outcome": "false"}
+            })
+        })
+        .collect();
+    fs::write(&ledger, serde_json::json!({ "claims": claims }).to_string()).unwrap();
+    let cwd = dir.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let input =
+        serde_json::json!({ "session_id": "oc", "cwd": cwd.display().to_string() }).to_string();
+    let out = drive_hook("session-start", &input, &ledger, &home, &[]);
+    assert!(
+        !out.contains("OVERCONFIDENT"),
+        "another client's record was read as ours:\n{out}"
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The server's own instructions said `resolve_by`; the argument is `by`. An agent
+/// that did as it was told had its date silently dropped, and its claim was written
+/// without one, which the evidence test cannot use.
+#[test]
+fn mcp_predict_accepts_resolve_by_and_says_so_when_there_is_no_date() {
+    let dir = workdir("mcpby");
+    let ledger = dir.join("ledger.json");
+    let call = |id: u32, args: &str| {
+        format!(
+            r#"{{"jsonrpc":"2.0","id":{id},"method":"tools/call","params":{{"name":"predict","arguments":{args}}}}}"#
+        )
+    };
+    let replies = mcp(
+        &ledger,
+        &[
+            &call(
+                1,
+                r#"{"statement":"followed the instructions","prob":0.7,"resolve_by":"2027-03-01"}"#,
+            ),
+            &call(
+                2,
+                r#"{"statement":"used the schema","prob":0.7,"by":"2027-03-02"}"#,
+            ),
+            &call(3, r#"{"statement":"gave no date","prob":0.7}"#),
+        ],
+        &[],
+    );
+    let raw: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&ledger).unwrap()).unwrap();
+    let by = |i: usize| raw["claims"][i]["resolve_by"].as_str().map(String::from);
+    assert_eq!(
+        by(0).as_deref(),
+        Some("2027-03-01"),
+        "`resolve_by` was dropped"
+    );
+    assert_eq!(by(1).as_deref(), Some("2027-03-02"));
+    assert_eq!(by(2), None);
+    let said = |i: usize| {
+        replies[i]["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .to_string()
+    };
+    assert!(!said(0).contains("no `by` date"), "{}", said(0));
+    assert!(
+        said(2).contains("no `by` date"),
+        "a dateless claim must say so: {}",
+        said(2)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}

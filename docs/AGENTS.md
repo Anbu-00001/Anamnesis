@@ -127,6 +127,12 @@ Predictions are tagged `who:<client>`, derived from the MCP client's own name an
 sanitized to `[a-z0-9-]`. Override with the `who` argument or `ANAMNESIS_WHO`.
 It defaults to `who:unknown` rather than guessing.
 
+Claude Code introduces itself as `claude-code`, so predictions logged through the
+plugin's MCP server carry `who:claude-code`, while ones you log from the CLI under
+the protocol carry `who:claude`. The ledger keeps whichever is true. The standing
+line the hooks print counts both as one agent and counts no one else's. `ana report
+--tag who:claude-code` shows the MCP-logged ones on their own.
+
 ## Supported MCP revisions
 
 The server is **dual-era**. It answers both the modern stateless protocol and the
