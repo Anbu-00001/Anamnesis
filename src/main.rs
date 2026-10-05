@@ -371,9 +371,9 @@ fn cmd_run(cli: &Cli, id: &str, command: &[String]) -> Result<ExitCode, String> 
         return Ok(ExitCode::FAILURE);
     };
     // The command's own code is ana's, so `ana run -- cargo test` can stand in for it.
-    let exit = ExitCode::from((code & 0xff) as u8);
+    let exit = ExitCode::from(anamnesis::check::exit_byte(code));
     let cmdline = collapse_spaces(&command.join(" "));
-    let happened = match judge_run(&cmdline, i64::from(code), &ran.tail) {
+    let happened = match judge_run(command, i64::from(code), &ran.facts) {
         RunJudgement::Passed => true,
         RunJudgement::Failed => false,
         RunJudgement::NotGraded(why) => {
@@ -871,6 +871,7 @@ fn cmd_import(
             }),
             void: None,
             check: None,
+            extra: Default::default(),
             amendments: Vec::new(),
         });
         added += 1;
@@ -1131,6 +1132,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 resolution: None,
                 void: None,
                 check: check.clone(),
+                extra: Default::default(),
                 amendments: Vec::new(),
             });
             store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;

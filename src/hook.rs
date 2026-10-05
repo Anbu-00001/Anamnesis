@@ -52,6 +52,10 @@ const MIN_N: usize = 6;
 /// Re-surface the standing calibration every Nth user prompt. A counter, not
 /// willpower: nobody remembers to audit themselves unprompted.
 const DEFAULT_EVERY: u64 = 7;
+/// How long a hook waits for the ledger lock before giving up, in milliseconds.
+/// Claude Code's own default for a command hook is 600 seconds (30 on UserPromptSubmit),
+/// so a hook that waited forever would stall the session instead of failing.
+const DEFAULT_LOCK_WAIT_MS: u64 = 2000;
 
 /// The engine's own version, stamped on the first line of everything a hook
 /// injects.
@@ -184,7 +188,10 @@ fn agent_claims(ledger: &Ledger) -> Ledger {
         c.tags = tags;
         claims.push(c);
     }
-    Ledger { claims }
+    Ledger {
+        claims,
+        ..Default::default()
+    }
 }
 
 /// The project slug, used to scope "what is due here".
@@ -276,11 +283,9 @@ enum Runner {
 impl Runner {
     /// The exit codes that mean "the tests ran and at least one failed".
     ///
-    /// Any other non-zero status means the run itself went wrong: a missing
-    /// directory, a usage error, a crash before a test started. It says nothing about
-    /// the claim, and grading it FALSE would record a failure that did not happen.
-    /// Measured: `cd tiny && cargo test` with no `tiny` exits 1 without cargo ever
-    /// running; cargo's code for a failing test is 101.
+    /// Any other non-zero status means the run itself went wrong: a missing directory, a
+    /// usage error, a crash before a test started. It says nothing about the claim, and
+    /// grading it FALSE would record a failure that did not happen.
     fn failure_codes(self) -> &'static [i64] {
         match self {
             Runner::Cargo => &[101],
@@ -288,56 +293,197 @@ impl Runner {
         }
     }
 
-    /// Whether the output of a failed run shows the claim's suite failing, not merely
-    /// the runner stopping.
+    /// Whether the evidence shows the suite failing, not merely the runner stopping.
     ///
     /// Cargo exits 101 for a failing test, but also for a manifest it cannot find, an
-    /// unknown subcommand and most other errors. Caught live: a session whose project
-    /// directory was missing ran `cargo test --manifest-path tiny/Cargo.toml`, exited
-    /// 101 having tested nothing, and was graded FALSE. So for cargo the output must
-    /// say the tests failed, or that the code under test does not compile.
-    fn confirms_failure(self, output: &str) -> bool {
+    /// unknown subcommand and most other errors, and a live session once graded a run
+    /// that tested nothing as a failed suite. Every other runner exits 1 for a missing
+    /// directory, a missing module and a project with no test script, as well as for a
+    /// failing test; an independent review found each of those graded FALSE. So a
+    /// failure needs the runner's own words for one, and none of the words for the other.
+    fn confirms_failure(self, f: &RunFacts) -> bool {
         match self {
-            Runner::Cargo => {
-                output.contains("test result: FAILED") || output.contains("could not compile")
-            }
+            Runner::Cargo => f.cargo_failed || f.compile_error,
+            Runner::Other => f.fail_marker && !f.env_error,
+        }
+    }
+
+    /// Whether the evidence shows a test passing, so a pass and a failure are judged by
+    /// the same standard. `cargo test > log 2>&1` hides the output: its failure stayed
+    /// ungraded while its pass was graded TRUE on nothing.
+    fn confirms_pass(self, f: &RunFacts) -> bool {
+        match self {
+            Runner::Cargo => f.cargo_passed > 0,
             Runner::Other => true,
         }
     }
 }
 
-/// Flags that make a test command not run any test.
-const NON_RUNNING: [&str; 10] = [
+/// What a runner's output says, gathered line by line so that it holds however much was
+/// printed. `ana run` feeds it as the command streams past; a hook feeds it the output
+/// Claude Code reports. Reading only the end of the output once lost a passing run: a
+/// loud `cargo test -- --nocapture` pushed `running 1 test` out of a 64 KB tail.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RunFacts {
+    /// The total from every cargo `test result: ok. N passed` line.
+    pub cargo_passed: u64,
+    /// A cargo `test result: FAILED` line.
+    pub cargo_failed: bool,
+    /// Cargo's `could not compile`: the code under test does not build.
+    pub compile_error: bool,
+    /// Any runner's own words for a failing test: `1 failed`, `--- FAIL`, `FAIL`.
+    pub fail_marker: bool,
+    /// Words that mean the run never got going: `command not found`, `No module named`.
+    pub env_error: bool,
+}
+
+/// Phrases that say the run itself went wrong, whatever the exit code.
+const ENV_ERRORS: [&str; 10] = [
+    "command not found",
+    "no such file or directory",
+    "no module named",
+    "no test specified",
+    "missing script",
+    "cannot find module",
+    "go.mod file not found",
+    "is not recognized as",
+    "permission denied",
+    "enoent",
+];
+
+impl RunFacts {
+    /// The facts in a whole block of output.
+    pub fn of(text: &str) -> RunFacts {
+        let mut f = RunFacts::default();
+        for line in text.lines() {
+            f.observe_line(line);
+        }
+        f
+    }
+
+    /// Fold one line of output in.
+    pub fn observe_line(&mut self, line: &str) {
+        let l = line.trim();
+        if l.is_empty() {
+            return;
+        }
+        if let Some(rest) = l.strip_prefix("test result: ok.") {
+            if let Some(n) = rest
+                .split(';')
+                .next()
+                .and_then(|part| counts_before(part, "passed").next())
+            {
+                self.cargo_passed = self.cargo_passed.saturating_add(n);
+            }
+        } else if l.starts_with("test result: FAILED") {
+            self.cargo_failed = true;
+        }
+        if l.contains("could not compile") {
+            self.compile_error = true;
+        }
+        let lower = l.to_ascii_lowercase();
+        if lower.starts_with("--- fail")
+            || l == "FAIL"
+            || l.starts_with("FAIL\t")
+            || l.starts_with("FAIL ")
+            || l.starts_with("FAILED ")
+            || ["failed", "failing", "failures"]
+                .iter()
+                .any(|w| counts_before(&lower, w).any(|n| n > 0))
+        {
+            self.fail_marker = true;
+        }
+        if ENV_ERRORS.iter().any(|e| lower.contains(e)) {
+            self.env_error = true;
+        }
+    }
+
+    /// Fold another stream's facts into these (stdout and stderr are read separately).
+    pub fn merge(&mut self, other: &RunFacts) {
+        self.cargo_passed = self.cargo_passed.saturating_add(other.cargo_passed);
+        self.cargo_failed |= other.cargo_failed;
+        self.compile_error |= other.compile_error;
+        self.fail_marker |= other.fail_marker;
+        self.env_error |= other.env_error;
+    }
+}
+
+/// Every `N` that is directly followed by a word starting with `word`, in `text`:
+/// `1 failed, 3 passed` gives 1 for "failed" and 3 for "passed".
+fn counts_before<'a>(text: &'a str, word: &'a str) -> impl Iterator<Item = u64> + 'a {
+    let toks: Vec<&str> = text.split_whitespace().collect();
+    (0..toks.len().saturating_sub(1)).filter_map(move |i| {
+        if toks[i + 1].starts_with(word) {
+            toks[i]
+                .trim_matches(|c: char| !c.is_ascii_digit())
+                .parse()
+                .ok()
+        } else {
+            None
+        }
+    })
+}
+
+/// Flags that make a test command not run any test, by exact match or by prefix.
+const NON_RUNNING_EXACT: [&str; 3] = ["--co", "-h", "-V"];
+const NON_RUNNING_PREFIX: [&str; 11] = [
     "--no-run",
     "--collect-only",
-    "--co",
     "--help",
-    "-h",
     "--version",
-    "-V",
     "--list",
-    "--listTests",
+    "-list",
+    "--setup-",
+    "--fixtures",
+    "--markers",
+    "--trace-config",
     "--dry-run",
+];
+
+/// Environment variables that cannot change whether, or which, tests run. Anything else
+/// can: `PYTEST_ADDOPTS=--co` and `GOFLAGS=-run=^$` turn a runner into a no-op that
+/// exits 0, and `CARGO_TARGET_<triple>_RUNNER=true` replaces the test binary with `true`.
+const HARMLESS_ENV: [&str; 12] = [
+    "RUST_BACKTRACE",
+    "RUST_LOG",
+    "CI",
+    "NO_COLOR",
+    "FORCE_COLOR",
+    "CARGO_TERM_COLOR",
+    "PYTHONUNBUFFERED",
+    "PYTHONDONTWRITEBYTECODE",
+    "PYTHONPATH",
+    "NODE_ENV",
+    "TERM",
+    "TZ",
+];
+
+/// Characters that let a shell do something other than run one command and report its
+/// status. Quoting is refused wholesale, not parsed: a quoted flag reaches the runner
+/// unquoted (`cargo test '--no-run'` is `cargo test --no-run`), so the matcher cannot
+/// judge a command it has not read the way the shell will.
+const SHELL_SYNTAX: [char; 14] = [
+    '|', ';', '`', '(', ')', '\n', '#', '\'', '"', '\\', '$', '{', '}', '!',
 ];
 
 /// A test run whose exit status is a trustworthy answer, or `None`.
 ///
-/// Claude Code sends no exit status. It sends a command that exited 0 as
-/// `PostToolUse`, and one that exited non-zero as `PostToolUseFailure`, so the
-/// event stands in for the status, and it stands in for the *shell's* status.
-/// Anything that can make that differ from the runner's own is refused: a pipe
-/// (the status is the last stage's), `||` (swallowed), `;` or `&` (a later command
-/// wins, or it ran in the background), a subshell, a substitution, a negation.
+/// Claude Code sends no exit status. It sends a command that exited 0 as `PostToolUse`,
+/// and one that exited non-zero as `PostToolUseFailure`, so the event stands in for the
+/// status, and it stands in for the *shell's* status. Anything that can make that differ
+/// from the runner's own is refused: a pipe (the status is the last stage's), `||`
+/// (swallowed), `;` or `&` (a later command wins, or it ran in the background), a
+/// comment (`cd #x && cargo test` never runs cargo), a subshell, a substitution, a
+/// negation, any quoting, and an environment variable that is not on a short allowlist.
 /// Measured: `cargo test 2>&1 | tail -3` over a failing test and `cargo test || true`
 /// both arrive as ordinary successes.
 ///
-/// A leading `cd DIR &&` and `NAME=value` assignments are allowed, since they are how
-/// agents actually run tests; the runner must then be the command itself, not a word
-/// in an `echo`. Builds and lints are not tests: `cargo build` is not an answer to
-/// "the tests pass".
+/// A leading `cd DIR &&` is allowed, with a plain directory word, since it is how agents
+/// run tests. The runner must then be the command itself, not a word in an `echo`.
+/// Builds and lints are not tests: `cargo build` is not an answer to "the tests pass".
 fn test_run(cmd: &str) -> Option<Runner> {
     let cmd = cmd.trim();
-    if cmd.is_empty() || cmd.contains(['|', ';', '`', '(', ')', '\n']) {
+    if cmd.is_empty() || cmd.contains(SHELL_SYNTAX) {
         return None;
     }
     // `2>&1` and friends are redirections, not background jobs.
@@ -348,22 +494,39 @@ fn test_run(cmd: &str) -> Option<Runner> {
         .replace("&>", " ");
     let mut segments: Vec<&str> = flat.split("&&").map(str::trim).collect();
     let last = segments.pop()?;
-    let is_cd = |s: &str| {
-        let t: Vec<&str> = s.split_whitespace().collect();
-        t.len() == 2 && t[0] == "cd"
-    };
-    if segments.iter().any(|s| !is_cd(s)) || last.starts_with('!') || last.contains('&') {
+    if segments.iter().any(|s| !is_plain_cd(s)) || last.contains('&') {
         return None;
     }
     let mut toks: Vec<&str> = last.split_whitespace().collect();
-    while toks.first().is_some_and(|t| is_assignment(t)) {
+    while let Some((name, _)) = toks.first().and_then(|t| assignment(t)) {
+        if !HARMLESS_ENV.contains(&name) {
+            return None;
+        }
         toks.remove(0);
     }
-    if toks.iter().any(|t| NON_RUNNING.contains(t)) {
+    runner_of(&toks)
+}
+
+/// `cd DIR` where DIR is a plain path word, so nothing in it can be an operator.
+fn is_plain_cd(segment: &str) -> bool {
+    let t: Vec<&str> = segment.split_whitespace().collect();
+    t.len() == 2
+        && t[0] == "cd"
+        && !t[1].is_empty()
+        && t[1]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._/~+-".contains(c))
+}
+
+/// The runner a command line starts, from its words. Shared by the hook, which reads
+/// them out of a shell command, and `ana run`, which is handed them directly.
+fn runner_of(t: &[&str]) -> Option<Runner> {
+    if t.iter().any(|w| {
+        NON_RUNNING_EXACT.contains(w) || NON_RUNNING_PREFIX.iter().any(|p| w.starts_with(p))
+    }) {
         return None;
     }
-    let t = toks.as_slice();
-    let runner = match t {
+    match t {
         ["cargo", rest @ ..] => {
             // Skip a toolchain selector: `cargo +nightly test`.
             let rest: &[&str] = match rest {
@@ -371,36 +534,34 @@ fn test_run(cmd: &str) -> Option<Runner> {
                 _ => rest,
             };
             match rest {
-                ["test", ..] => Runner::Cargo,
-                ["nextest", "run", ..] => Runner::Cargo,
-                _ => return None,
+                ["test", ..] => Some(Runner::Cargo),
+                _ => None,
             }
         }
         ["npm" | "pnpm" | "yarn" | "bun", "test" | "t" | "tst", ..]
-        | ["npm" | "pnpm" | "yarn" | "bun", "run" | "run-script", "test", ..] => Runner::Other,
+        | ["npm" | "pnpm" | "yarn" | "bun", "run" | "run-script", "test", ..] => {
+            Some(Runner::Other)
+        }
         ["pytest" | "py.test" | "jest" | "vitest", ..]
         | ["python" | "python3", "-m", "pytest", ..]
         | ["npx" | "pnpx" | "bunx", "jest" | "vitest" | "pytest", ..]
-        | ["go" | "flutter" | "dart", "test", ..] => Runner::Other,
+        | ["go" | "flutter" | "dart", "test", ..] => Some(Runner::Other),
         ["gradle" | "./gradlew" | "gradlew" | "mvn" | "./mvnw", rest @ ..]
             if rest.contains(&"test") =>
         {
-            Runner::Other
+            Some(Runner::Other)
         }
-        _ => return None,
-    };
-    Some(runner)
+        _ => None,
+    }
 }
 
-fn is_assignment(tok: &str) -> bool {
-    match tok.split_once('=') {
-        Some((name, _)) => {
-            !name.is_empty()
-                && !name.starts_with(|c: char| c.is_ascii_digit())
-                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
-        }
-        None => false,
-    }
+/// `NAME=value`, with a valid shell identifier for a name.
+fn assignment(tok: &str) -> Option<(&str, &str)> {
+    let (name, value) = tok.split_once('=')?;
+    let ok = !name.is_empty()
+        && !name.starts_with(|c: char| c.is_ascii_digit())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+    ok.then_some((name, value))
 }
 
 /// Whether `cmd` is `ana run ...`, which settles its own claim and needs no nudge.
@@ -415,7 +576,12 @@ fn is_ana_run(cmd: &str) -> bool {
         let name = t.rsplit(['/', '\\']).next().unwrap_or(t);
         name == "ana" || name == "ana.exe"
     };
-    toks.first().is_some_and(|t| is_ana(t)) && toks.iter().take(4).skip(1).any(|t| *t == "run")
+    toks.first().is_some_and(|t| is_ana(t))
+        && toks
+            .iter()
+            .skip(1)
+            .take_while(|t| **t != "--")
+            .any(|t| *t == "run")
 }
 
 /// Whether `cmd` mentions a test runner at all, even one whose status we will not
@@ -441,17 +607,6 @@ fn mentions_test_runner(cmd: &str) -> bool {
     .any(|n| lower.contains(n))
 }
 
-/// Cargo exits 0 for a filter that matches nothing, printing `running 0 tests` for
-/// every test binary. Nothing was tested, so a zero status is not a pass.
-fn cargo_ran_no_tests(stdout: &str) -> bool {
-    let counts: Vec<u64> = stdout
-        .lines()
-        .filter_map(|l| l.trim().strip_prefix("running "))
-        .filter_map(|r| r.split_whitespace().next()?.parse().ok())
-        .collect();
-    !counts.is_empty() && counts.iter().all(|&n| n == 0)
-}
-
 /// The exit code Claude Code puts inside a failed call's `error` text, which reads
 /// `"Exit code 101\n<output>"`.
 fn exit_code_in(error: &str) -> Option<i64> {
@@ -472,31 +627,33 @@ pub enum RunJudgement {
     NotGraded(&'static str),
 }
 
-/// Judge a pinned command from its exit `code` and the tail of its `output`.
-///
-/// `ana run` started the process itself, so there is no shell to swallow the status
-/// and the shape checks a hook needs do not apply. The runner knowledge does: a test
-/// runner's failure code is not every non-zero code (cargo exits 101 for a missing
-/// manifest), and a run that ran no tests is not a pass. A command that is not a test
-/// runner, `make ci` or a script, is simply judged by its own exit status, since
-/// pinning it was the claim-maker's choice.
-pub fn judge_run(cmd: &str, code: i64, output: &str) -> RunJudgement {
-    match test_run(cmd) {
-        Some(runner) => {
-            if code == 0 {
-                if runner == Runner::Cargo && cargo_ran_no_tests(output) {
-                    RunJudgement::NotGraded("it ran no tests")
-                } else {
-                    RunJudgement::Passed
-                }
-            } else if runner.failure_codes().contains(&code) && runner.confirms_failure(output) {
-                RunJudgement::Failed
-            } else {
-                RunJudgement::NotGraded(
-                    "that exit status is not a failed suite for this runner; the run itself went wrong",
-                )
-            }
+/// Judge a finished run of `runner` from its exit `code` and what its output showed.
+fn judge(runner: Runner, code: i64, facts: &RunFacts) -> RunJudgement {
+    if code == 0 {
+        if runner.confirms_pass(facts) {
+            RunJudgement::Passed
+        } else {
+            RunJudgement::NotGraded("no test was seen to pass")
         }
+    } else if runner.failure_codes().contains(&code) && runner.confirms_failure(facts) {
+        RunJudgement::Failed
+    } else {
+        RunJudgement::NotGraded(
+            "that exit status is not a failed suite for this runner, or its output does not show one",
+        )
+    }
+}
+
+/// Judge a pinned command from its exit `code` and the facts its output showed.
+///
+/// `ana run` started the process itself and was handed its words directly, so there is
+/// no shell to swallow the status and the shape checks a hook needs do not apply. The
+/// runner knowledge does. A command that is not a test runner, `make ci` or a script, is
+/// simply judged by its own exit status, since pinning it was the claim-maker's choice.
+pub fn judge_run(argv: &[String], code: i64, facts: &RunFacts) -> RunJudgement {
+    let toks: Vec<&str> = argv.iter().map(String::as_str).collect();
+    match runner_of(&toks) {
+        Some(runner) => judge(runner, code, facts),
         None if code == 0 => RunJudgement::Passed,
         None => RunJudgement::Failed,
     }
@@ -513,6 +670,15 @@ enum Grade {
 }
 
 fn grade_of(event: Event, input: &Value, cmd: &str) -> Grade {
+    // Claude Code returns a background call at once, before anything has run: a suite
+    // that fails a minute later has already been "passed".
+    if input
+        .pointer("/tool_input/run_in_background")
+        .and_then(Value::as_bool)
+        == Some(true)
+    {
+        return Grade::NotATest;
+    }
     let Some(runner) = test_run(cmd) else {
         return if event == Event::PostTool && !is_ana_run(cmd) && mentions_test_runner(cmd) {
             Grade::Untrusted
@@ -520,31 +686,31 @@ fn grade_of(event: Event, input: &Value, cmd: &str) -> Grade {
             Grade::NotATest
         };
     };
+    let text = |p: &str| input.pointer(p).and_then(Value::as_str).unwrap_or("");
     match event {
         // Claude Code sends this event only for a call that succeeded.
         Event::PostTool => {
-            let stdout = input
-                .pointer("/tool_response/stdout")
-                .and_then(Value::as_str)
-                .unwrap_or("");
-            if runner == Runner::Cargo && cargo_ran_no_tests(stdout) {
-                Grade::Untrusted
-            } else {
-                Grade::Exit(0)
+            let out = format!(
+                "{}\n{}",
+                text("/tool_response/stdout"),
+                text("/tool_response/stderr")
+            );
+            match judge(runner, 0, &RunFacts::of(&out)) {
+                RunJudgement::Passed => Grade::Exit(0),
+                _ => Grade::Untrusted,
             }
         }
         Event::PostToolFailure => {
             if input.get("is_interrupt").and_then(Value::as_bool) == Some(true) {
                 return Grade::NotATest;
             }
-            let error = input.get("error").and_then(Value::as_str).unwrap_or("");
+            let error = text("/error");
             match exit_code_in(error) {
-                Some(code)
-                    if runner.failure_codes().contains(&code) && runner.confirms_failure(error) =>
-                {
-                    Grade::Exit(code)
-                }
-                _ => Grade::NotATest,
+                Some(code) => match judge(runner, code, &RunFacts::of(error)) {
+                    RunJudgement::Failed => Grade::Exit(code),
+                    _ => Grade::NotATest,
+                },
+                None => Grade::NotATest,
             }
         }
         _ => Grade::NotATest,
@@ -560,7 +726,14 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
     // Every path below fails soft into "say nothing" — except a missing engine,
     // which cannot happen here because the engine IS this binary. That was the
     // point of moving the logic in.
-    let ledger = store::load(ledger_path).unwrap_or_default();
+    //
+    // Except that "silent" must not mean "silently broken": a ledger that cannot be read
+    // is remembered, so the session hooks can say so. A user whose hooks never fired had
+    // no way to find out why, which is what moving them into the binary was meant to end.
+    let (ledger, load_error) = match store::load(ledger_path) {
+        Ok(l) => (l, None),
+        Err(e) => (Ledger::default(), Some(e)),
+    };
     let today = Utc::now().date_naive();
     let cwd = input.get("cwd").and_then(Value::as_str);
     let slug = project_slug(cwd);
@@ -589,6 +762,16 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 ));
             }
 
+            if let Some(e) = &load_error {
+                println!(
+                    "{}",
+                    json!({ "systemMessage": format!(
+                        "anamnesis: the agent ledger could not be read ({}), so the calibration hooks have nothing to say. Nothing was changed; fix or restore it, or the hooks stay quiet.",
+                        untrusted::line(&e.to_string(), 200)
+                    ) })
+                );
+                return Ok(());
+            }
             let d = ReportData::compute(&agent_claims(&ledger), Some("who:claude"), 10, today);
             if let Some(line) = standing_line(&d) {
                 context.push(line);
@@ -625,25 +808,34 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
             match grade_of(event, &input, cmd) {
                 Grade::NotATest => return Ok(()),
                 Grade::Exit(code) => {
-                    let resolved = auto_resolve(ledger_path, &slug, cmd, code)?;
-                    if resolved.is_empty() {
-                        return Ok(());
+                    match auto_resolve(ledger_path, &slug, cmd, code) {
+                        // The ledger was busy or unreadable: the run is not graded, and
+                        // the user is told so rather than left to wonder.
+                        Err(e) => {
+                            user_message = Some(format!(
+                                "anamnesis: this test run was not graded ({})",
+                                untrusted::line(&e, 160)
+                            ));
+                        }
+                        Ok(resolved) if resolved.is_empty() => return Ok(()),
+                        Ok(resolved) => {
+                            let happened = code == 0;
+                            context.push(format!(
+                                "⟢ Anamnesis (ana {VERSION}): resolved {} prediction(s) from the command's exit status ({code}) — {}, not self-reported: {}",
+                                resolved.len(),
+                                if happened { "it passed" } else { "it failed" },
+                                resolved
+                                    .iter()
+                                    .map(|i| untrusted::tag(i))
+                                    .collect::<Vec<_>>()
+                                    .join(", ")
+                            ));
+                            user_message = Some(format!(
+                                "anamnesis: auto-resolved {} prediction(s) from exit code {code}",
+                                resolved.len()
+                            ));
+                        }
                     }
-                    let happened = code == 0;
-                    context.push(format!(
-                        "⟢ Anamnesis (ana {VERSION}): resolved {} prediction(s) from the command's exit status ({code}) — {}, not self-reported: {}",
-                        resolved.len(),
-                        if happened { "it passed" } else { "it failed" },
-                        resolved
-                            .iter()
-                            .map(|i| untrusted::tag(i))
-                            .collect::<Vec<_>>()
-                            .join(", ")
-                    ));
-                    user_message = Some(format!(
-                        "anamnesis: auto-resolved {} prediction(s) from exit code {code}",
-                        resolved.len()
-                    ));
                 }
                 Grade::Untrusted => {
                     // A test command ran, but its exit status cannot be trusted
@@ -664,7 +856,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                         return Ok(());
                     }
                     context.push(format!(
-                        "⟢ Anamnesis (moment of truth): a test command just ran, but its exit status cannot be trusted here (it was piped, chained, or ran no tests), so nothing was graded automatically. Resolve your open prediction(s) about it NOW ({}), before hindsight rewrites how sure you were; this one is on your word.",
+                        "⟢ Anamnesis (ana {VERSION}) (moment of truth): a test command just ran, but its exit status cannot be trusted here (it was piped, chained, or ran no tests), so nothing was graded automatically. Resolve your open prediction(s) about it NOW ({}), before hindsight rewrites how sure you were; this one is on your word.",
                         open.join(", ")
                     ));
                 }
@@ -706,15 +898,16 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
         }
     }
 
-    if context.is_empty() {
+    if context.is_empty() && user_message.is_none() {
         return Ok(());
     }
-    let mut out = json!({
-        "hookSpecificOutput": {
+    let mut out = json!({});
+    if !context.is_empty() {
+        out["hookSpecificOutput"] = json!({
             "hookEventName": event.name(),
             "additionalContext": context.join("\n"),
-        }
-    });
+        });
+    }
     if let Some(msg) = user_message {
         out["systemMessage"] = json!(msg);
     }
@@ -733,7 +926,11 @@ fn auto_resolve(
     cmd: &str,
     exit_code: i64,
 ) -> Result<Vec<String>, String> {
-    let _guard = store::lock(ledger_path).map_err(|e| e.to_string())?;
+    let wait = std::time::Duration::from_millis(env_usize(
+        "ANAMNESIS_HOOK_LOCK_WAIT_MS",
+        DEFAULT_LOCK_WAIT_MS,
+    ));
+    let _guard = store::lock_within(ledger_path, wait).map_err(|e| e.to_string())?;
     let mut ledger = store::load(ledger_path).map_err(|e| e.to_string())?;
     let now = Utc::now();
     let passed = exit_code == 0;
@@ -787,7 +984,6 @@ mod tests {
             "cargo test",
             "cargo test --all -- --nocapture",
             "cargo +nightly test -p foo",
-            "cargo nextest run",
             "  PYTHONPATH=. pytest -q ",
             "python3 -m pytest tests/",
             "npm test",
@@ -801,6 +997,7 @@ mod tests {
             "mvn test",
             "cd /work/project && cargo test",
             "cd sub && RUST_LOG=debug cargo test 2>&1",
+            "RUST_BACKTRACE=1 CI=true cargo test --color always",
         ] {
             assert!(test_run(cmd).is_some(), "should be graded: {cmd}");
         }
@@ -822,6 +1019,22 @@ mod tests {
             "cargo test\nexit 0",
             "cd a && cd b && cargo test | cat",
             "make && cargo test",
+            // Found by an independent review: an operator hidden in the cd segment.
+            "cd #x && cargo test",
+            "cd .&exit && cargo test",
+            "cd a;b && cargo test",
+            "cd $(pwd) && cargo test",
+            "cd 'a b' && cargo test",
+            "cargo test # && false",
+            // Quoting reaches the runner unquoted; an unlisted environment variable can
+            // turn a runner into a no-op.
+            "cargo test '--no-run'",
+            "cargo test \"--no-run\"",
+            "cargo test --no\\-run",
+            "PYTEST_ADDOPTS=--co pytest",
+            "GOFLAGS=-run=^$ go test ./...",
+            "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=true cargo test",
+            "cargo nextest run",
         ] {
             assert!(test_run(cmd).is_none(), "must not be graded: {cmd}");
         }
@@ -836,6 +1049,9 @@ mod tests {
             "cargo test -- --list",
             "pytest --collect-only",
             "pytest --help",
+            "pytest --setup-plan",
+            "pytest --fixtures",
+            "go test -list .",
             "npm run build",
             "go build ./...",
             "ls -la",
@@ -855,6 +1071,10 @@ mod tests {
         ));
         assert!(is_ana_run("ana --data x.json run abc123 -- pytest"));
         assert!(is_ana_run("cd /work && ana run abc123 -- cargo test"));
+        assert!(is_ana_run(
+            "ana --data x.json --json run abc123 -- cargo test"
+        ));
+        assert!(!is_ana_run("ana report -- run"));
         assert!(!is_ana_run("cargo test"));
         assert!(!is_ana_run("echo ana run"));
         assert!(!is_ana_run("ana report"));
@@ -869,46 +1089,70 @@ mod tests {
     #[test]
     fn cargo_must_say_the_suite_failed_not_merely_that_it_stopped() {
         let cargo = Runner::Cargo;
-        assert!(cargo.confirms_failure("Exit code 101\n\ntest result: FAILED. 0 passed; 1 failed"));
-        assert!(cargo.confirms_failure("Exit code 101\nerror: could not compile `x` (lib test)"));
-        assert!(!cargo.confirms_failure(
+        let f = RunFacts::of;
+        assert!(cargo.confirms_failure(&f(
+            "Exit code 101\n\ntest result: FAILED. 0 passed; 1 failed"
+        )));
+        assert!(
+            cargo.confirms_failure(&f("Exit code 101\nerror: could not compile `x` (lib test)"))
+        );
+        assert!(!cargo.confirms_failure(&f(
             "Exit code 101\nerror: manifest path `tiny/Cargo.toml` does not exist"
-        ));
-        assert!(!cargo.confirms_failure("Exit code 101\nerror: no such command: `tset`"));
-        assert!(Runner::Other.confirms_failure("Exit code 1"));
+        )));
+        assert!(!cargo.confirms_failure(&f("Exit code 101\nerror: no such command: `tset`")));
+    }
+
+    #[test]
+    fn other_runners_must_show_a_failing_suite_and_no_sign_the_run_never_started() {
+        let other = Runner::Other;
+        let f = RunFacts::of;
+        assert!(other.confirms_failure(&f("=== 1 failed, 3 passed in 0.1s ===")));
+        assert!(other.confirms_failure(&f("--- FAIL: TestX (0.00s)\nFAIL\tpkg\t0.004s")));
+        assert!(other.confirms_failure(&f("Tests:       2 failed, 4 passed, 6 total")));
+        assert!(other.confirms_failure(&f("  2 passing\n  1 failing")));
+        // Nothing failed, or the run never began.
+        assert!(!other.confirms_failure(&f("=== 4 passed, 0 failed in 0.1s ===")));
+        assert!(!other.confirms_failure(&f("Exit code 1")));
+        assert!(!other.confirms_failure(&f("bash: pytest: command not found")));
+        assert!(!other.confirms_failure(&f("/usr/bin/python3: No module named pytest")));
+        assert!(!other.confirms_failure(&f(
+            "1 failed\nbash: cd: /nonexistent: No such file or directory"
+        )));
     }
 
     #[test]
     fn a_pinned_command_is_judged_by_its_own_status_and_the_runners_rules() {
         use RunJudgement::*;
+        let argv = |s: &str| crate::check::split_command(s).unwrap();
+        let j = |cmd: &str, code: i64, out: &str| judge_run(&argv(cmd), code, &RunFacts::of(out));
         // A plain script or make target: its exit status is the answer.
-        assert_eq!(judge_run("make ci", 0, ""), Passed);
-        assert_eq!(judge_run("make ci", 2, ""), Failed);
-        assert_eq!(judge_run("./scripts/check.sh", 1, "anything"), Failed);
-        // A test runner: only its own failure code, and for cargo only with output that
-        // shows a failing suite.
-        assert_eq!(judge_run("cargo test", 0, "running 2 tests\n"), Passed);
+        assert_eq!(j("make ci", 0, ""), Passed);
+        assert_eq!(j("make ci", 2, ""), Failed);
+        assert_eq!(j("./scripts/check.sh", 1, "anything"), Failed);
+        // A test runner: only its own failure code, and evidence for either answer.
+        assert_eq!(
+            j("cargo test", 0, "test result: ok. 2 passed; 0 failed"),
+            Passed
+        );
         assert!(matches!(
-            judge_run("cargo test", 0, "running 0 tests\n"),
+            j("cargo test", 0, "test result: ok. 0 passed; 0 failed"),
             NotGraded(_)
         ));
+        assert!(matches!(j("cargo test", 0, ""), NotGraded(_)));
         assert_eq!(
-            judge_run("cargo test", 101, "test result: FAILED. 0 passed; 1 failed"),
+            j("cargo test", 101, "test result: FAILED. 0 passed; 1 failed"),
             Failed
         );
         assert!(matches!(
-            judge_run("cargo test", 101, "error: manifest path does not exist"),
+            j("cargo test", 101, "error: manifest path does not exist"),
             NotGraded(_)
         ));
-        assert!(matches!(
-            judge_run("cargo test", 2, "usage error"),
-            NotGraded(_)
-        ));
-        assert_eq!(judge_run("pytest -q", 1, ""), Failed);
-        assert!(matches!(
-            judge_run("pytest -q", 5, "no tests ran"),
-            NotGraded(_)
-        ));
+        assert!(matches!(j("cargo test", 2, "usage error"), NotGraded(_)));
+        assert_eq!(j("pytest -q", 1, "=== 1 failed in 0.1s ==="), Failed);
+        assert!(matches!(j("pytest -q", 1, ""), NotGraded(_)));
+        assert!(matches!(j("pytest -q", 5, "no tests ran"), NotGraded(_)));
+        // `ana run` is handed words, so quotes are fine there: pytest is still pytest.
+        assert_eq!(j(r#"pytest -k "not slow""#, 1, "1 failed"), Failed);
     }
 
     #[test]
@@ -920,10 +1164,28 @@ mod tests {
     }
 
     #[test]
-    fn cargo_with_nothing_to_run_is_not_a_pass() {
-        assert!(cargo_ran_no_tests("running 0 tests\n\nrunning 0 tests\n"));
-        assert!(!cargo_ran_no_tests("running 2 tests\n\nrunning 0 tests\n"));
-        assert!(!cargo_ran_no_tests("no cargo output at all"));
+    fn a_cargo_pass_is_the_sum_of_every_binary_and_needs_one_test() {
+        let n = |t: &str| RunFacts::of(t).cargo_passed;
+        assert_eq!(
+            n("running 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored\n"),
+            0
+        );
+        assert_eq!(
+            n("test result: ok. 0 passed; 0 failed; 1 ignored"),
+            0,
+            "only an ignored test"
+        );
+        assert_eq!(
+            n("test result: ok. 40 passed; 0 failed\ntest result: ok. 0 passed; 0 failed"),
+            40,
+            "empty doc-tests after a real suite"
+        );
+        assert_eq!(
+            n("test result: ok. 2 passed; 0 failed\ntest result: ok. 3 passed; 0 failed"),
+            5
+        );
+        assert_eq!(n("no cargo output at all"), 0);
+        assert!(!RunFacts::of("test result: ok. 4 passed; 0 failed").cargo_failed);
     }
 
     #[test]
@@ -954,6 +1216,7 @@ mod tests {
                 claim("d", &["who:cursor"]),
                 claim("e", &["kind:x"]),
             ],
+            ..Default::default()
         };
         let mine = agent_claims(&ledger);
         let ids: Vec<&str> = mine.claims.iter().map(|c| c.id.as_str()).collect();

@@ -136,6 +136,9 @@ pub struct Claim {
     /// serialised when absent, so existing ledgers stay byte-identical.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub check: Option<String>,
+    /// Fields written by a newer version, kept so a save does not erase them.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: Extra,
     /// Every forecast you ever made, oldest first. The last is your current
     /// belief; the first is where you started.
     pub forecasts: Vec<Forecast>,
@@ -272,13 +275,12 @@ impl Claim {
         self.resolution.is_none()
     }
 
-    /// Whether `argv` is the command this claim is pinned to. Compared as the command
-    /// line it spells, with runs of whitespace collapsed, so `cargo   test` is
-    /// `cargo test`. This is a guard on honesty, not a security boundary: nothing is
-    /// executed on the strength of it.
+    /// Whether `argv` is the command this claim is pinned to: the pinned line, split into
+    /// words as a shell would, equals the words given. This is a guard on honesty, not a
+    /// security boundary: nothing is executed on the strength of it.
     pub fn check_matches(&self, argv: &[String]) -> bool {
         match &self.check {
-            Some(check) => collapse_spaces(check) == collapse_spaces(&argv.join(" ")),
+            Some(check) => crate::check::split_command(check).is_ok_and(|words| words == argv),
             None => false,
         }
     }
@@ -440,11 +442,23 @@ pub fn collapse_spaces(s: &str) -> String {
     s.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
+/// Fields a newer version wrote that this one does not know.
+///
+/// Kept on the claim and on the ledger so that loading and saving does not erase
+/// them. Without this, an older `ana` earlier on `PATH` silently dropped every field
+/// it did not recognise on the next `add`: a ledger written with `check` pins came
+/// back with none. Only the claim and the ledger keep unknown fields; one nested
+/// inside a forecast or a resolution is still dropped.
+pub type Extra = serde_json::Map<String, serde_json::Value>;
+
 /// The whole ledger.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Ledger {
     #[serde(default)]
     pub claims: Vec<Claim>,
+    /// Anything else at the top level of the file, kept as it was read.
+    #[serde(flatten, default, skip_serializing_if = "serde_json::Map::is_empty")]
+    pub extra: Extra,
 }
 
 impl Ledger {
@@ -534,6 +548,7 @@ mod tests {
             }),
             void: None,
             check: None,
+            extra: Default::default(),
             amendments: Vec::new(),
         }
     }
@@ -575,6 +590,7 @@ mod tests {
             }),
             void: None,
             check: None,
+            extra: Default::default(),
             amendments: Vec::new(),
         };
         assert!(c.sample().is_none()); // not a binary sample
@@ -601,6 +617,7 @@ mod tests {
                 claim("ab99ff", &[0.5], None),
                 claim("ff0000", &[0.5], None),
             ],
+            ..Default::default()
         };
         assert_eq!(ledger.index_of("ff0000").unwrap(), 2);
         assert_eq!(ledger.index_of("ff").unwrap(), 2);
@@ -612,6 +629,7 @@ mod tests {
     fn exact_id_beats_prefix_collision() {
         let ledger = Ledger {
             claims: vec![claim("ab", &[0.5], None), claim("ab12cd", &[0.5], None)],
+            ..Default::default()
         };
         assert_eq!(ledger.index_of("ab").unwrap(), 0);
     }

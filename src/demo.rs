@@ -73,6 +73,7 @@ fn claim(
         }),
         void: None,
         check: None,
+        extra: Default::default(),
         amendments: Vec::new(),
     }
 }
@@ -120,6 +121,7 @@ fn numeric_claim(
         }),
         void: None,
         check: None,
+        extra: Default::default(),
         amendments: Vec::new(),
     }
 }
@@ -695,5 +697,8 @@ pub fn ledger() -> Ledger {
         Some(ymd(2026, 4, 30)),
     ));
 
-    Ledger { claims: c }
+    Ledger {
+        claims: c,
+        ..Default::default()
+    }
 }

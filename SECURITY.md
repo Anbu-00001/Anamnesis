@@ -48,9 +48,11 @@ Only the latest release gets fixes.
   `install-ana.sh` verifies the binary against `sha256.sum` from the same release. It
   fails closed if that file is missing or does not match. Release attestation is not
   set up yet, so there is no independent proof a binary came from the workflow.
-- **The ledger is not private by default.** It is a plain JSON file written with your
-  default file permissions, and it holds your claims and your reasoning. Do not keep
-  it inside a repository you publish.
+- **The ledger is private on Unix, not encrypted.** It is a plain JSON file holding your
+  claims and your reasoning, written readable by its owner alone (0600, in a 0700 directory
+  when `ana` creates it; a directory that already exists is left as it was). On Windows
+  it inherits its folder's access list. Do not keep it inside a repository you publish,
+  and note that anyone who can read your files as you can read it.
 - **`ana run` runs only what you give it.** The command pinned to a claim is stored text
   that is compared and never executed, so importing a ledger cannot run anything. The
   command that runs is the one typed after `--`, directly with no shell, and only if it

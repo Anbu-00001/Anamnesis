@@ -108,17 +108,28 @@ captured from a real session, in `tests/fixtures/`.)
 What is graded, and what is deliberately not:
 
 - **Plain test runs only:** `cargo test`, `pytest`, `npm test`, `go test` and their
-  kin, optionally after a `cd DIR &&` and with `NAME=value` prefixes. Builds and lints
-  are not tests, and a `--no-run` or `--collect-only` is not a run.
-- **Nothing that can change the shell's status.** A pipe (`cargo test | tail`), `||`,
-  `;`, a background `&`, a subshell or a negation are refused, because Claude Code
-  reports those as successes whatever the test did. When one is seen, the hook says it
-  could not grade it and that resolving it is then on your word.
-- **A failure needs the runner's own failure code**, and for cargo, output that says a
-  test failed or the code did not compile. Cargo exits 101 for a missing manifest as
-  well, and a run that tested nothing is not a failed suite.
-- **A pass needs a test to have run.** `cargo test` with a filter that matches nothing
-  exits 0 having run nothing, and is not graded.
+  kin, optionally after a `cd DIR &&` (a plain path word) and with a few harmless
+  environment prefixes (`RUST_BACKTRACE`, `CI`, `NO_COLOR` and the like). Builds and
+  lints are not tests, `--no-run`, `--collect-only`, `--setup-plan` and `go test -list`
+  are not runs, and nextest is not recognised yet.
+- **Nothing that can change the shell's status or what runs.** A pipe, `||`, `;`, a
+  background `&`, a subshell, a negation, a comment (`cd #x && cargo test` never runs
+  cargo) and any quoting are refused, because Claude Code reports those as successes
+  whatever the test did, and a quoted flag reaches the runner unquoted. A call Claude Code
+  returned in the background has not finished and is not graded. An environment variable
+  that is not on the short list (`PYTEST_ADDOPTS=--co`, `GOFLAGS=-run=…`) can turn a runner
+  into a no-op, so it is refused too. When a test command is seen and refused, the hook
+  says it could not grade it and that resolving it is then on your word. The cost is that
+  a command with a quoted argument, `pytest -k "not slow"`, is not graded by the hook;
+  `ana run`, below, takes quotes.
+- **A failure needs evidence of a failed suite**, not just a failure code. For cargo,
+  exit 101 plus output that says a test failed or the code did not compile (cargo exits
+  101 for a missing manifest too). For every other runner, exit 1 plus the runner's own
+  words for a failure (`1 failed`, `--- FAIL`, `Tests: 1 failed`) and none of the words for a
+  run that never started (`command not found`, `No module named`, `no test specified`).
+- **A pass needs a test to have visibly passed.** For cargo, a `test result: ok. N
+  passed` with N above 0, summed across every test binary: a filter that matches nothing,
+  or output hidden by `> log`, is not graded.
 
 What it cannot do. The exit status says the command passed, not that the claim was
 about the right command: an agent that logs "the tests pass" and then runs one narrow
@@ -144,6 +155,10 @@ any command that is not the pinned one, without running it; `ana resolve` and th
 `resolve` refuse a pinned claim too, so there is no way round; and the hooks leave a
 pinned claim alone. The command's own exit code is `ana`'s, so `ana run <id> --
 cargo test` can stand in for `cargo test`. Over MCP, `predict` takes the same `check`.
+The pinned line is split into words as a shell would (quotes work, nothing is expanded)
+and compared word for word, so `--check 'pytest -k "not slow"'` is settled by
+`ana run <id> -- pytest -k "not slow"`. A runner is judged by the same evidence rules as
+above, however much it printed.
 
 The pinned text is only compared, never executed: a ledger holds words anyone can have
 written, and a command read from one would be remote code execution by import. A

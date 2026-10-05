@@ -1487,6 +1487,11 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             "\n  VERDICT          {}",
             d.verdict.label().to_uppercase()
         );
+        if d.verdict == Verdict::InsufficientData {
+            if let Some(note) = pending_due_note(&d) {
+                let _ = writeln!(out, "                   {note}.");
+            }
+        }
         if d.verdict == Verdict::Withheld {
             let _ = writeln!(
                 out,
@@ -1724,8 +1729,9 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                     .to_string()
             } else if n < VERDICT_MIN_N {
                 format!(
-                    "not enough graded calls yet — {n} in the test, about {} more to reach a usable {VERDICT_MIN_N}",
-                    VERDICT_MIN_N.saturating_sub(n)
+                    "not enough graded calls yet — {n} in the test, about {} more to reach a usable {VERDICT_MIN_N}{}",
+                    VERDICT_MIN_N.saturating_sub(n),
+                    pending_due_note(&d).map(|s| format!("; {s}")).unwrap_or_default()
                 )
             } else if e >= RECAL_MIN_E {
                 "suggestive, not yet conclusive — keep logging".to_string()
@@ -2180,6 +2186,21 @@ struct PlainSummary {
     footer: String,
 }
 
+/// Why resolved calls may be missing from the sequential test, when some are.
+///
+/// The test reads claims in due-date order, which is what keeps it valid however often
+/// you look, so a call joins it once its due date has passed, however early you
+/// resolved it. A person who logs 30 calls and resolves them the same week saw "not
+/// enough data" with 30 resolved, and no way to know why.
+fn pending_due_note(d: &ReportData) -> Option<String> {
+    let k = d.resolved_binary.saturating_sub(d.evidence_n);
+    (k > 0).then(|| {
+        format!(
+            "{k} resolved call(s) are not in the test yet: it reads claims in due-date order, which is what keeps it valid however often you look, so a call joins once its due date has passed, however early you resolved it"
+        )
+    })
+}
+
 fn plain_summary(d: &ReportData) -> PlainSummary {
     let n = d.resolved_binary;
     let mut insights: Vec<Insight> = Vec::new();
@@ -2305,7 +2326,11 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         let ev = if e >= EVIDENCE_ALARM {
             "Yes, it's real. Even though you check this every session, the pattern above is statistically solid — you can act on it.".to_string()
         } else if en < VERDICT_MIN_N {
-            format!("Not yet answerable. Only {en} of your calls are in the test, and about {} more are needed before it can say anything either way.", VERDICT_MIN_N.saturating_sub(en))
+            format!(
+                "Not yet answerable. Only {en} of your calls are in the test, and about {} more are needed before it can say anything either way.{}",
+                VERDICT_MIN_N.saturating_sub(en),
+                pending_due_note(d).map(|s| format!(" Note: {s}.")).unwrap_or_default()
+            )
         } else if e >= RECAL_MIN_E {
             "Maybe — the signs are suggestive but not yet conclusive. Keep logging.".to_string()
         } else {
@@ -2457,9 +2482,10 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         Verdict::NoEvidenceOfMiscalibration => {
             "Nothing shows your confidence is off — but this is still a small record.".to_string()
         }
-        Verdict::InsufficientData => {
-            "Too few resolved calls to read your calibration yet.".to_string()
-        }
+        Verdict::InsufficientData => format!(
+            "Too few resolved calls to read your calibration yet.{}",
+            pending_due_note(d).map(|s| format!(" {s}.")).unwrap_or_default()
+        ),
     };
     let evidence_tag = match d.eprocess {
         _ if d.verdict == Verdict::Withheld => "verdict withheld",
@@ -3178,6 +3204,7 @@ mod tests {
             }),
             void: None,
             check: None,
+            extra: Default::default(),
             amendments: Vec::new(),
         }
     }
@@ -3207,6 +3234,7 @@ mod tests {
             }),
             void: None,
             check: None,
+            extra: Default::default(),
             amendments: Vec::new(),
         }
     }
@@ -3231,6 +3259,7 @@ mod tests {
                 binary("c", 0.2, false, &["world"]),
                 binary("d", 0.8, true, &["world"]),
             ],
+            ..Default::default()
         };
         let j = render_json(&ledger, None, 10, td());
         // Must be valid JSON and contain no bare NaN/Infinity tokens.
@@ -3248,6 +3277,7 @@ mod tests {
     fn text_and_json_agree_on_brier() {
         let ledger = Ledger {
             claims: vec![binary("a", 0.7, true, &[]), binary("b", 0.3, false, &[])],
+            ..Default::default()
         };
         let data = ReportData::compute(&ledger, None, 10, td());
         let v: serde_json::Value =
@@ -3263,6 +3293,7 @@ mod tests {
                 numeric("n1", 10.0, 20.0, 0.8, 15.0), // inside
                 numeric("n2", 10.0, 20.0, 0.8, 40.0), // outside
             ],
+            ..Default::default()
         };
         let r = render(&ledger, None, 10, td());
         assert!(r.contains("Numeric forecasts"));
@@ -3280,6 +3311,7 @@ mod tests {
                 binary("a", 0.9, true, &["tech"]),
                 binary("b", 0.2, false, &["world"]),
             ],
+            ..Default::default()
         };
         let r = render(&ledger, Some("tech"), 10, td());
         assert!(r.contains("[tag: tech]"));
@@ -3294,6 +3326,7 @@ mod tests {
             claims: (0..40)
                 .map(|i| binary(&format!("c{i}"), 0.9, i % 3 == 0, &[]))
                 .collect(),
+            ..Default::default()
         };
         let p = render_plain(&ledger, None, 10, td());
         assert!(p.contains("plain English"));
@@ -3324,6 +3357,7 @@ mod tests {
                 binary("d", 0.0, false, &[]),
                 binary("e", 0.0, false, &[]),
             ],
+            ..Default::default()
         };
         let td5 = ReportData::compute(&tiny, None, 10, td());
         assert_eq!(td5.verdict, Verdict::InsufficientData);
@@ -3370,6 +3404,7 @@ mod tests {
                 binary("c", 0.0, false, &[]),
                 binary("d", 0.0, false, &[]),
             ],
+            ..Default::default()
         };
         assert_eq!(
             mood(&ReportData::compute(&tiny, None, 10, td())).name,
@@ -3389,6 +3424,7 @@ mod tests {
                     )
                 })
                 .collect(),
+            ..Default::default()
         };
         // Its 0.95s never happen and its 0.05s always do: perfectly inverted, so
         // the isotonic fit pools everything and DSC is 0. The headline finding is
@@ -3421,7 +3457,10 @@ mod tests {
         for i in 0..50 {
             claims.push(binary(&format!("s{i}"), 0.6, true, &[]));
         }
-        let ledger = Ledger { claims };
+        let ledger = Ledger {
+            claims,
+            ..Default::default()
+        };
         let d = ReportData::compute(&ledger, None, 10, td());
 
         // The gap that fooled the old code is still ~0 — that is the point.

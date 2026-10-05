@@ -431,6 +431,7 @@ mod tests {
             }),
             void: None,
             check: None,
+            extra: Default::default(),
             amendments: Vec::new(),
         }
     }

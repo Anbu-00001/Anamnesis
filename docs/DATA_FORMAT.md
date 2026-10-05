@@ -50,6 +50,19 @@ are appended, never overwritten — the claim is a palimpsest, and the whole poi
 the instrument is that the record of what you believed cannot be quietly revised
 once you know how it turned out.
 
+## Ids
+
+A claim's id is letters, digits, `.`, `_` and `-`, up to 64 characters. Generated ids are
+six hex digits. A ledger holding any other id is refused at load, because every message the
+tool prints names a claim by it.
+
+## Fields this version does not know
+
+A claim, or the file itself, may carry fields a newer version wrote. They are kept
+through a load and a save and written back as they were, so an older `ana` no longer
+erases them (it used to, silently). A field nested inside a forecast, a resolution or a
+void is not kept. The file is written readable by its owner alone on Unix (0600).
+
 ## The threat model, stated plainly
 
 This guards against **hindsight bias** — your own memory rewriting how sure you

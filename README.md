@@ -20,7 +20,7 @@ model or the network to decide anything.
 ## Install
 
 ```bash
-# from source
+# from source (needs Rust 1.89 or newer)
 cargo install --git https://github.com/Anbu-00001/Anamnesis --locked
 
 # or a prebuilt binary; installs nothing unless the release checksum matches
@@ -32,7 +32,7 @@ export PATH="$HOME/.anamnesis/bin:$PATH"   # the installer puts ana here
 
 ```bash
 ana demo      # a fictional year of predictions, reported on. Touches nothing of yours.
-ana add "this refactor takes under an hour" --prob 0.7 --by 2026-09-20
+ana add "this refactor takes under an hour" --prob 0.7 --by 2027-01-15
 ana report
 ```
 
@@ -90,7 +90,7 @@ outcome, resolved_at, tags`).
 The same three commands, if you would rather read than watch:
 
 ```bash
-ana add "the flaky test is a race in the connection pool" --prob 0.7 --by 2026-10-01
+ana add "the flaky test is a race in the connection pool" --prob 0.7 --by 2027-01-15
 ana resolve <id> yes
 ana report
 ```

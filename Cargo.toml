@@ -1,12 +1,29 @@
 [package]
 name = "anamnesis"
-version = "0.4.0"
+version = "0.4.1"
 edition = "2021"
 # File::lock (src/store.rs) is std as of 1.89.
 rust-version = "1.89"
 description = "A local-first instrument against self-deception: log what you believe and how sure, then face the real shape of your mind."
 license = "MIT"
 readme = "README.md"
+repository = "https://github.com/Anbu-00001/Anamnesis"
+homepage = "https://github.com/Anbu-00001/Anamnesis"
+keywords = ["calibration", "forecasting", "brier-score", "decision-making", "cli"]
+categories = ["command-line-utilities", "science"]
+# An allowlist, not an exclude list: the crate is the engine and its CLI. The plugin,
+# the launch notes, the validation scripts and the test suite (which reads ../plugin/)
+# stay in the repository. Anything added here ships to crates.io for good.
+include = [
+    "src/**",
+    "examples/**",
+    "/Cargo.toml",
+    "/Cargo.lock",
+    "/README.md",
+    "/LICENSE",
+    "/CHANGELOG.md",
+    "/SECURITY.md",
+]
 
 [[bin]]
 name = "ana"

@@ -138,7 +138,7 @@ fn run_grades_true_from_a_zero_exit_and_passes_it_through() {
 fn run_grades_false_from_a_nonzero_exit_and_passes_the_code_through() {
     let dir = workdir("false");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "the check passes", "sh -c exit 3");
+    let id = add_pinned(&ledger, "the check passes", "sh -c 'exit 3'");
     let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit 3"]);
     assert_eq!(
         o.status.code(),
@@ -280,7 +280,7 @@ fn the_ledger_is_not_locked_while_the_command_runs() {
 fn a_command_ended_by_a_signal_is_not_graded() {
     let dir = workdir("signal");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "the check survives", "sh -c kill -9 $$");
+    let id = add_pinned(&ledger, "the check survives", "sh -c 'kill -9 $$'");
     let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "kill -9 $$"]);
     let (_, err) = text(&o);
     assert!(!o.status.success());
@@ -323,6 +323,65 @@ fn ana_run_never_executes_text_from_the_ledger() {
     ana(&ledger, &["report"]);
     ana(&ledger, &["run", &id, "--", "true"]);
     assert!(!marker.exists(), "text read from the ledger was executed");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The check is the command line as it was typed, so a quoted argument is one argument.
+/// Compared as words joined by spaces, `pytest -k "not slow"` was refused by the very
+/// command the refusal message suggested.
+#[test]
+fn a_quoted_check_matches_the_command_it_spells() {
+    let dir = workdir("quoted");
+    let ledger = dir.join("l.json");
+    let id = add_pinned(&ledger, "quoted", "sh -c 'exit 4'");
+    // Four words is not three: the quotes make "exit 4" one argument.
+    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit", "4"]);
+    assert!(!o.status.success());
+    assert!(text(&o).1.contains("pinned to"), "{}", text(&o).1);
+    assert!(outcome(&ledger, &id).is_none());
+    // The command as typed matches, and exits with its own code.
+    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit 4"]);
+    assert_eq!(o.status.code(), Some(4), "{}", text(&o).1);
+    assert_eq!(outcome(&ledger, &id).as_deref(), Some("false"));
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// An unbalanced quote cannot be pinned: nobody could ever type a command that matches.
+#[test]
+fn a_check_with_an_unbalanced_quote_is_refused_when_pinned() {
+    let dir = workdir("unbalanced");
+    let ledger = dir.join("l.json");
+    let o = ana(
+        &ledger,
+        &["add", "x", "--prob", "0.5", "--check", "sh -c 'exit 4"],
+    );
+    assert!(!o.status.success());
+    assert!(text(&o).1.contains("quote"), "{}", text(&o).1);
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A grandchild that inherits the output pipes keeps them open after the command itself
+/// has exited. `ana run` waited for the pipes to close: 8 seconds here, forever for a daemon.
+#[test]
+fn a_grandchild_holding_the_pipes_does_not_hang_ana_run() {
+    let dir = workdir("grandchild");
+    let ledger = dir.join("l.json");
+    let id = add_pinned(&ledger, "it returns", "sh -c 'sleep 6 & echo started'");
+    let t = Instant::now();
+    let o = ana(
+        &ledger,
+        &["run", &id, "--", "sh", "-c", "sleep 6 & echo started"],
+    );
+    let took = t.elapsed();
+    assert!(
+        took < Duration::from_secs(4),
+        "ana run waited {took:?} for a grandchild"
+    );
+    assert!(
+        text(&o).0.contains("started"),
+        "the output it did get must still arrive"
+    );
+    assert_eq!(outcome(&ledger, &id).as_deref(), Some("true"));
     let _ = fs::remove_dir_all(&dir);
 }
 

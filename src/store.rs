@@ -7,6 +7,52 @@ use std::io::{self, ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
 use crate::model::Ledger;
+use crate::untrusted;
+
+/// Create `dir` (and any missing parents) readable by its owner alone.
+///
+/// The ledger holds a person's claims and their reasoning, and used to be created with
+/// the default mode, 0664 under a typical umask, in a 0775 directory. A directory that
+/// already exists is left exactly as it was: `~` is not ours to change.
+fn create_private_dir(dir: &Path) -> io::Result<()> {
+    if dir.exists() {
+        return Ok(());
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::DirBuilderExt;
+        fs::DirBuilder::new()
+            .recursive(true)
+            .mode(0o700)
+            .create(dir)
+    }
+    #[cfg(not(unix))]
+    {
+        fs::create_dir_all(dir)
+    }
+}
+
+/// Open options for a file only its owner may read. A no-op off Unix, where files
+/// inherit their folder's access list.
+fn private_file() -> OpenOptions {
+    let mut o = OpenOptions::new();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        o.mode(0o600);
+    }
+    o
+}
+
+/// Make an existing file owner-only. The backup is a copy of the previous ledger, and
+/// the first save after an upgrade copies one that was written with the old mode.
+#[cfg(unix)]
+fn make_private(path: &Path) {
+    use std::os::unix::fs::PermissionsExt;
+    let _ = fs::set_permissions(path, fs::Permissions::from_mode(0o600));
+}
+#[cfg(not(unix))]
+fn make_private(_path: &Path) {}
 
 fn invalid_data(e: impl std::fmt::Display) -> io::Error {
     io::Error::new(ErrorKind::InvalidData, e.to_string())
@@ -47,8 +93,8 @@ fn parent_dir(path: &Path) -> &Path {
 /// `File::lock` is std since Rust 1.89 (`flock` on Unix, `LockFileEx` on
 /// Windows), so this costs no dependency.
 pub fn lock(path: &Path) -> io::Result<LedgerLock> {
-    fs::create_dir_all(parent_dir(path))?;
-    let file = OpenOptions::new()
+    create_private_dir(parent_dir(path))?;
+    let file = private_file()
         .read(true)
         .write(true)
         .create(true)
@@ -56,6 +102,38 @@ pub fn lock(path: &Path) -> io::Result<LedgerLock> {
         .open(sidecar(path, ".lock"))?;
     file.lock()?;
     Ok(LedgerLock { _file: file })
+}
+
+/// [`lock`], but giving up after `wait`.
+///
+/// Hooks run on Claude Code's clock, not ours: a command hook defaults to a 600-second
+/// timeout (30 on UserPromptSubmit), so one waiting forever behind a writer stalls the
+/// session. A hook that cannot get the ledger in a couple of seconds should say so and
+/// move on.
+pub fn lock_within(path: &Path, wait: std::time::Duration) -> io::Result<LedgerLock> {
+    create_private_dir(parent_dir(path))?;
+    let file = private_file()
+        .read(true)
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .open(sidecar(path, ".lock"))?;
+    let start = std::time::Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(LedgerLock { _file: file }),
+            Err(std::fs::TryLockError::WouldBlock) => {
+                if start.elapsed() >= wait {
+                    return Err(io::Error::new(
+                        ErrorKind::TimedOut,
+                        "the ledger is busy (another ana process holds its lock)",
+                    ));
+                }
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+            Err(std::fs::TryLockError::Error(e)) => return Err(e),
+        }
+    }
 }
 
 /// Path of the backup `save` keeps of the last good ledger.
@@ -101,8 +179,26 @@ pub fn load(path: &Path) -> io::Result<Ledger> {
 /// them does not fail: it quietly returns a Brier score and a confident verdict
 /// computed from a probability of 1.7. Measured before this check, a ledger with
 /// two such forecasts was reported as `OVERCONFIDENT`.
+/// An id is plain letters, digits, `.`, `_` and `-`, at most 64 characters. Every message
+/// the tool prints names a claim by its id, and the MCP server, the hooks and the report
+/// all echo it to a person or an agent, so it is checked once, here. Generated ids are six
+/// hex digits; anything else came from a hand-edited or imported file.
+fn valid_id(id: &str) -> bool {
+    !id.is_empty()
+        && id.len() <= 64
+        && id
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || "._-".contains(c))
+}
+
 fn validate(ledger: &Ledger) -> Result<(), String> {
     for c in &ledger.claims {
+        if !valid_id(&c.id) {
+            return Err(format!(
+                "a claim has an id that is not a plain identifier ({}); ids are letters, digits, '.', '_' and '-', at most 64 characters",
+                untrusted::tag(&c.id)
+            ));
+        }
         for (i, f) in c.forecasts.iter().enumerate() {
             let n = i + 1;
             if let Some(p) = f.prob {
@@ -143,7 +239,7 @@ fn validate(ledger: &Ledger) -> Result<(), String> {
 /// real filesystem rather than only in program order.
 pub fn save(path: &Path, ledger: &Ledger) -> io::Result<()> {
     let dir = parent_dir(path).to_path_buf();
-    fs::create_dir_all(&dir)?;
+    create_private_dir(&dir)?;
     let json = serde_json::to_vec_pretty(ledger).map_err(invalid_data)?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -155,7 +251,7 @@ pub fn save(path: &Path, ledger: &Ledger) -> io::Result<()> {
         .unwrap_or("ledger");
     let tmp = dir.join(format!(".{name}.{}.{nanos}.tmp", std::process::id()));
     {
-        let mut f = OpenOptions::new().write(true).create_new(true).open(&tmp)?;
+        let mut f = private_file().write(true).create_new(true).open(&tmp)?;
         // Clean the temp file up if the write or fsync fails, rather than
         // leaving litter next to the ledger.
         if let Err(e) = f.write_all(&json).and_then(|()| f.sync_all()) {
@@ -165,7 +261,10 @@ pub fn save(path: &Path, ledger: &Ledger) -> io::Result<()> {
         }
     }
     if path.exists() {
-        let _ = fs::copy(path, backup_path(path));
+        let bak = backup_path(path);
+        if fs::copy(path, &bak).is_ok() {
+            make_private(&bak);
+        }
     }
     if let Err(e) = fs::rename(&tmp, path) {
         let _ = fs::remove_file(&tmp);
@@ -183,6 +282,70 @@ mod tests {
     use super::*;
     use crate::model::{Claim, ClaimKind, Forecast, Outcome, Resolution};
     use chrono::{TimeZone, Utc};
+
+    #[cfg(unix)]
+    #[test]
+    fn a_ledger_is_written_private_and_an_existing_directory_is_left_alone() {
+        use std::os::unix::fs::PermissionsExt;
+        let mode = |p: &Path| fs::metadata(p).unwrap().permissions().mode() & 0o777;
+        let root = std::env::temp_dir().join(format!("ana_private_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(&root).unwrap();
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+
+        // A directory we create is private.
+        let fresh = root.join("made-by-ana");
+        let path = fresh.join("l.json");
+        save(&path, &Ledger::default()).unwrap();
+        save(&path, &Ledger::default()).unwrap(); // the second save makes a backup
+        assert_eq!(mode(&fresh), 0o700);
+        assert_eq!(mode(&path), 0o600);
+        assert_eq!(mode(&backup_path(&path)), 0o600);
+        drop(lock(&path).unwrap()); // `save` does not make the sidecar; `lock` does
+        assert_eq!(mode(&lock_path(&path)), 0o600);
+
+        // A directory that was already there (a home directory, say) is not ours to change.
+        let existing = root.join("l2.json");
+        save(&existing, &Ledger::default()).unwrap();
+        assert_eq!(
+            mode(&root),
+            0o755,
+            "an existing directory must be left as it was"
+        );
+        assert_eq!(mode(&existing), 0o600);
+
+        // A ledger left world-readable by an older version is tightened on its next save.
+        fs::set_permissions(&existing, fs::Permissions::from_mode(0o664)).unwrap();
+        save(&existing, &Ledger::default()).unwrap();
+        assert_eq!(mode(&existing), 0o600);
+        assert_eq!(
+            mode(&backup_path(&existing)),
+            0o600,
+            "the copy of the old file too"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_bounded_lock_gives_up_instead_of_waiting_forever() {
+        let dir = std::env::temp_dir().join(format!("ana_lockwithin_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("l.json");
+        let held = lock(&path).unwrap();
+        let t = std::time::Instant::now();
+        let err = lock_within(&path, std::time::Duration::from_millis(150))
+            .expect_err("the lock is held, so this must time out");
+        assert_eq!(err.kind(), ErrorKind::TimedOut);
+        assert!(
+            t.elapsed() < std::time::Duration::from_secs(2),
+            "{:?}",
+            t.elapsed()
+        );
+        drop(held);
+        assert!(lock_within(&path, std::time::Duration::from_millis(150)).is_ok());
+        let _ = fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn missing_file_is_empty_ledger() {
@@ -232,8 +395,10 @@ mod tests {
                 }),
                 void: None,
                 check: None,
+                extra: Default::default(),
                 amendments: Vec::new(),
             }],
+            ..Default::default()
         };
 
         save(&path, &ledger).unwrap();

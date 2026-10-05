@@ -152,10 +152,12 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    headline is CORP (`scoring::corp_brier`: `MCB − DSC + UNC == Brier`). The older
    exact-value grouping (`f64::to_bits`) survives only as a deprecated alias, and
    `decomposition_identity_holds_exactly` still asserts `REL−RES+UNC == Brier`.
-4. **A ledger with unscorable numbers is refused at load** (`store::validate`): a
-   probability outside 0..1, or an interval with low above high or a level outside
-   (0,1). Scoring them does not fail — it silently produced a confident verdict
-   from a probability of 1.7.
+4. **A ledger with unscorable numbers or unsafe ids is refused at load**
+   (`store::validate`): a probability outside 0..1, an interval with low above high or a
+   level outside (0,1), or an id that is not letters, digits, `.`, `_` and `-` (at most 64).
+   Scoring bad numbers does not fail — it silently produced a confident verdict from a
+   probability of 1.7 — and every message names a claim by its id, so a hostile id would
+   reach an agent through every one of them.
 5. **Backward compatibility**: old ledgers have no `kind`, bare `prob` numbers, and
    string `outcome`s. The serde `default` + `Option` fields keep them loading. The
    `legacy_binary_json_still_loads` test guards this. Don't make those fields

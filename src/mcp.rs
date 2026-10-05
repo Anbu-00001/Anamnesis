@@ -24,6 +24,13 @@ use crate::model::{
 use crate::scoring::{self, NumericSample};
 use crate::{report, store, untrusted};
 
+/// How many claims `list` returns when not told, and the most it will.
+///
+/// It used to return every claim: 3.3 MB of context at 10,000. The newest are the ones an
+/// agent wants, so those are what a limit keeps.
+const DEFAULT_LIST: u64 = 100;
+const MAX_LIST: u64 = 1000;
+
 /// How much of a stored statement `list` returns in its structured reply. Longer
 /// than the one-line text form, because a program may want the claim whole; still
 /// bounded, because one 500 KB statement should not become 500 KB of context.
@@ -404,6 +411,7 @@ fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
         resolution: None,
         void: None,
         check,
+        extra: Default::default(),
         amendments: Vec::new(),
     });
     store::save(ledger, &led).map_err(|e| e.to_string())?;
@@ -893,6 +901,13 @@ fn tool_list(args: &Value, ledger: &Path) -> ToolResult {
             }
         })
         .collect();
+    let limit = args
+        .get("limit")
+        .and_then(Value::as_u64)
+        .map_or(DEFAULT_LIST, |n| n.clamp(1, MAX_LIST)) as usize;
+    let total = items.len();
+    let omitted = total.saturating_sub(limit);
+    let items: Vec<&Claim> = items.into_iter().skip(omitted).collect();
     // Everything below that came out of the ledger is somebody's text, possibly
     // another client's or an import's, not necessarily this agent's own. It goes
     // out one line long, bounded, and labelled as data. See `untrusted`.
@@ -922,12 +937,22 @@ fn tool_list(args: &Value, ledger: &Path) -> ToolResult {
             })
             .collect::<Vec<_>>()
             .join("\n");
-        format!("({})\n{body}", untrusted::FRAME)
+        let shown = if omitted > 0 {
+            format!(
+                "(showing the newest {} of {total}; pass `limit` for more, up to {MAX_LIST})\n",
+                items.len()
+            )
+        } else {
+            String::new()
+        };
+        format!("{shown}({})\n{body}", untrusted::FRAME)
     };
     Ok((
         text,
         Some(json!({
             "count": preds.len(),
+            "total": total,
+            "omitted": omitted,
             "note": untrusted::FRAME,
             "predictions": preds,
         })),
@@ -1052,7 +1077,8 @@ fn tool_schemas() -> Value {
             "description": "List predictions, optionally filtered by status and tag.",
             "inputSchema": { "type": "object", "properties": {
                 "filter": { "type": "string", "enum": ["all", "open", "resolved", "due"], "description": "default all" },
-                "tag": { "type": "string", "description": "only claims carrying this tag" }
+                "tag": { "type": "string", "description": "only claims carrying this tag" },
+                "limit": { "type": "integer", "minimum": 1, "maximum": 1000, "description": "how many of the NEWEST matching claims to return (default 100); the reply says how many were left out" }
             } }
         }
     ])

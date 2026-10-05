@@ -204,8 +204,7 @@ fn a_run_that_ran_no_tests_is_not_graded() {
 #[test]
 fn an_invented_exit_status_field_is_not_believed() {
     let s = setup("invented");
-    let mut v: serde_json::Value = serde_json::from_str(&fixture("pass_echo")).unwrap();
-    v["tool_input"]["command"] = "cargo test".into();
+    let mut v: serde_json::Value = serde_json::from_str(&fixture("pass_cargo_test")).unwrap();
     v["tool_result_exit_code"] = 1.into();
     hook(&s, "post-tool", &v.to_string());
     let (outcome, ..) = resolution(&s).expect("graded");
@@ -299,4 +298,272 @@ fn the_hook_leaves_a_pinned_claim_alone() {
         "a hook graded a claim that is pinned to `ana run`"
     );
     let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// A hook runs on Claude Code's clock: a command hook defaults to a 600-second timeout
+/// (30 on UserPromptSubmit). Waiting forever behind a writer would stall the session, so
+/// a hook that cannot get the ledger gives up, says so, and writes nothing.
+#[test]
+fn a_hook_that_cannot_get_the_ledger_gives_up_and_says_so() {
+    let s = setup("busy");
+    let held = anamnesis::store::lock(&s.ledger).unwrap();
+    let t = std::time::Instant::now();
+    let mut child = Command::new(ANA)
+        .args(["hook", "post-tool"])
+        .env("ANAMNESIS_AGENT_DATA", &s.ledger)
+        .env("ANAMNESIS_HOOK_LOCK_WAIT_MS", "300")
+        .env("HOME", &s.dir)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(fixture("pass_cargo_test").as_bytes())
+        .unwrap();
+    let out = child.wait_with_output().unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        t.elapsed() < std::time::Duration::from_secs(5),
+        "{:?}",
+        t.elapsed()
+    );
+    assert!(out.status.success(), "a busy ledger must not fail the hook");
+    assert!(
+        stdout.contains("not graded"),
+        "it must say it gave up:\n{stdout}"
+    );
+    assert!(stdout.contains("busy"), "{stdout}");
+    drop(held);
+    assert!(
+        resolution(&s).is_none(),
+        "nothing may be written without the lock"
+    );
+
+    // Released, the same payload grades the claim.
+    hook(&s, "post-tool", &fixture("pass_cargo_test"));
+    assert!(resolution(&s).is_some());
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// "Fails soft into silence" used to cover a ledger that could not be read at all, so a
+/// user with a corrupt file had hooks that never fired and no way to find out why.
+#[test]
+fn a_ledger_that_cannot_be_read_is_reported_not_swallowed() {
+    let s = setup("corrupt");
+    fs::write(&s.ledger, "{ this is not json").unwrap();
+    let before = fs::read(&s.ledger).unwrap();
+    let out = hook(
+        &s,
+        "session-start",
+        &serde_json::json!({"session_id": "c", "cwd": "/work/project"}).to_string(),
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(out.trim()).unwrap_or_else(|e| panic!("{e}: {out}"));
+    let msg = v["systemMessage"]
+        .as_str()
+        .unwrap_or_else(|| panic!("no message:\n{out}"));
+    assert!(msg.contains("could not be read"), "{msg}");
+    assert!(msg.contains("Nothing was changed"), "{msg}");
+    assert_eq!(
+        fs::read(&s.ledger).unwrap(),
+        before,
+        "the hook must never touch a ledger it cannot read"
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+// ──────────────── found by an independent adversarial review of 0.4.1 ────────────────
+
+/// Feed a `cargo test` payload with `command` swapped in, and say whether it was graded.
+fn graded_command(name: &str, command: &str) -> bool {
+    let s = setup(name);
+    let mut v: serde_json::Value = serde_json::from_str(&fixture("pass_cargo_test")).unwrap();
+    v["tool_input"]["command"] = command.into();
+    hook(&s, "post-tool", &v.to_string());
+    let graded = resolution(&s).is_some();
+    let _ = fs::remove_dir_all(&s.dir);
+    graded
+}
+
+/// `cd #x && cargo test`: `#` starts a comment, so bash runs `cd` and never cargo, and
+/// exits 0. `cd .&exit && cargo test` backgrounds the `cd` and then runs `exit`. The
+/// matcher only counted the tokens of a `cd` segment and checked `&` in the last one.
+#[test]
+fn a_cd_segment_cannot_hide_an_operator() {
+    for (i, cmd) in [
+        "cd #x && cargo test",
+        "cd .&exit && cargo test",
+        "cd a;b && cargo test",
+        "cd $(pwd) && cargo test",
+        "cd 'a b' && cargo test",
+        "cargo test # && false",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            !graded_command(&format!("cd{i}"), cmd),
+            "graded a run that may not have happened: {cmd}"
+        );
+    }
+    // The honest forms still grade.
+    assert!(graded_command("cdok", "cd /work/project && cargo test"));
+    assert!(graded_command("cdok2", "cd tiny && cargo test -q"));
+}
+
+/// Claude Code returns a background Bash call at once with empty output. A suite that
+/// later fails has already been graded TRUE by then.
+#[test]
+fn a_background_run_is_not_graded() {
+    let s = setup("background");
+    let mut v: serde_json::Value = serde_json::from_str(&fixture("pass_cargo_test")).unwrap();
+    v["tool_input"]["run_in_background"] = true.into();
+    hook(&s, "post-tool", &v.to_string());
+    assert!(
+        resolution(&s).is_none(),
+        "a call that returned before the tests finished was graded"
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// A quoted flag reaches the runner unquoted, and an environment variable can change what
+/// the runner does: `cargo test '--no-run'` and `PYTEST_ADDOPTS=--co pytest` both exit 0
+/// without running a test.
+#[test]
+fn quoting_and_environment_cannot_turn_a_runner_into_a_non_run() {
+    for (i, cmd) in [
+        "cargo test '--no-run'",
+        "cargo test -- '--list'",
+        "cargo test \"--no-run\"",
+        "cargo test --no\\-run",
+        "PYTEST_ADDOPTS=--co pytest",
+        "GOFLAGS=-run=^$ go test ./...",
+        "CARGO_TARGET_X86_64_UNKNOWN_LINUX_GNU_RUNNER=true cargo test",
+        "pytest --setup-plan",
+        "pytest --fixtures",
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert!(
+            !graded_command(&format!("q{i}"), cmd),
+            "graded a command that may not run tests: {cmd}"
+        );
+    }
+    // Harmless, listed environment prefixes still grade.
+    assert!(graded_command(
+        "envok",
+        "RUST_BACKTRACE=1 CI=true cargo test"
+    ));
+}
+
+fn failure_graded(name: &str, command: &str, error: &str) -> Option<String> {
+    let s = setup(name);
+    let mut v: serde_json::Value = serde_json::from_str(&fixture("fail_cargo_test_101")).unwrap();
+    v["tool_input"]["command"] = command.into();
+    v["error"] = error.into();
+    hook(&s, "post-tool-failure", &v.to_string());
+    let r = resolution(&s).map(|(o, ..)| o);
+    let _ = fs::remove_dir_all(&s.dir);
+    r
+}
+
+/// 0.4.1 fixed this for cargo: exit 101 is not always a failed suite. Every other runner
+/// still graded FALSE on any exit 1, which is also what a missing directory, a missing
+/// module and a project with no test script produce.
+#[test]
+fn other_runners_need_evidence_of_a_failed_suite_too() {
+    // Not a failed suite.
+    for (i, (cmd, err)) in [
+        (
+            "cd /nonexistent && pytest",
+            "Exit code 1\nbash: line 1: cd: /nonexistent: No such file or directory",
+        ),
+        (
+            "python3 -m pytest",
+            "Exit code 1\n/usr/bin/python3: No module named pytest",
+        ),
+        (
+            "npm test",
+            "Exit code 1\nnpm error Missing script: \"test\"",
+        ),
+        ("npm test", "Exit code 1\nError: no test specified"),
+        (
+            "go test ./...",
+            "Exit code 1\ngo: go.mod file not found in current directory or any parent directory",
+        ),
+        ("pytest", "Exit code 1\nbash: pytest: command not found"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(
+            failure_graded(&format!("nf{i}"), cmd, err),
+            None,
+            "graded FALSE without a failing suite: {cmd}"
+        );
+    }
+    // A failed suite, with the runner's own evidence.
+    for (i, (cmd, err)) in [
+        ("pytest -q", "Exit code 1\nFAILED tests/test_x.py::test_a - assert 1 == 2\n=== 1 failed, 3 passed in 0.12s ==="),
+        ("go test ./...", "Exit code 1\n--- FAIL: TestX (0.00s)\nFAIL\tpkg\t0.004s"),
+        ("npx jest", "Exit code 1\nTests:       1 failed, 4 passed, 5 total"),
+        ("npm test", "Exit code 1\n  2 passing\n  1 failing"),
+    ]
+    .iter()
+    .enumerate()
+    {
+        assert_eq!(failure_graded(&format!("f{i}"), cmd, err).as_deref(), Some("false"), "a real failure was not graded: {cmd}");
+    }
+}
+
+/// A pass needs a test to have visibly run, so a pass and a failure are judged by the same
+/// standard. `cargo test > log 2>&1` hid the output: the failure stayed open, but the pass
+/// was graded TRUE on nothing.
+#[test]
+fn a_cargo_pass_needs_to_have_run_a_test() {
+    let s = setup("redirected");
+    let mut v: serde_json::Value = serde_json::from_str(&fixture("pass_cargo_test")).unwrap();
+    v["tool_input"]["command"] = "cargo test > log 2>&1".into();
+    v["tool_response"]["stdout"] = "".into();
+    hook(&s, "post-tool", &v.to_string());
+    assert!(resolution(&s).is_none(), "graded a pass nobody could see");
+
+    // Only ignored tests: 0 passed.
+    v["tool_input"]["command"] = "cargo test".into();
+    v["tool_response"]["stdout"] =
+        "running 1 test\ni\ntest result: ok. 0 passed; 0 failed; 1 ignored; 0 measured".into();
+    hook(&s, "post-tool", &v.to_string());
+    assert!(
+        resolution(&s).is_none(),
+        "graded a run in which no test passed"
+    );
+
+    // Several binaries, the last of them doc-tests with nothing in them.
+    v["tool_response"]["stdout"] = "running 40 tests\n........\ntest result: ok. 40 passed; 0 failed; 0 ignored\n\nrunning 0 tests\n\ntest result: ok. 0 passed; 0 failed; 0 ignored".into();
+    hook(&s, "post-tool", &v.to_string());
+    assert!(
+        resolution(&s).is_some(),
+        "a suite with 40 passing tests and empty doc-tests must grade"
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// nextest exits 100 on a failed run and prints a summary, not `test result: FAILED`, so
+/// a failure was never graded while a pass was. Not recognised yet: neither is graded.
+#[test]
+fn nextest_is_not_graded_in_either_direction() {
+    assert!(!graded_command("nextest_pass", "cargo nextest run"));
+    assert_eq!(
+        failure_graded(
+            "nextest_fail",
+            "cargo nextest run",
+            "Exit code 100\nSummary 5 tests run: 4 passed, 1 failed"
+        ),
+        None
+    );
 }

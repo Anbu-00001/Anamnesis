@@ -42,6 +42,13 @@ fallback below, also needs `jq`.
 Get `ana` from the [Anamnesis releases](https://github.com/Anbu-00001/Anamnesis/releases)
 (prebuilt binaries, checksum-verified) or `cargo install --path . --locked` from the repo root.
 
+## Updating
+
+Claude Code decides a plugin has an update by comparing its `version`, and third-party
+marketplaces do not auto-update by default, so an install stays on its cached copy until
+you ask. Run `/plugin marketplace update`, then update the plugin, and replace the `ana`
+binary too: the plugin's hooks run whichever `ana` is newest, and check `ana --version`.
+
 ## Notes / known issues
 
 - Claude Code has had bugs where **SessionStart hooks don't fire for marketplace

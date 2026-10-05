@@ -3,7 +3,30 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.1] — unreleased
+
+This is a fix release. Most of it repairs things 0.4.0 claimed and did not do: the
+plugin's grader never graded anything under Claude Code, and the hooks and the MCP server
+handed stored text to an agent without any care about what it said. See the sections below
+for what each defect was and how it was measured.
+
+### Upgrading from 0.4.0
+
+- **The plugin does not update itself.** Claude Code detects a plugin update by comparing
+  `version`, so an install at 0.4.0 stays on its cached copy until the version changes,
+  and third-party marketplaces do not auto-update by default. Run
+  `/plugin marketplace update` and update the plugin; the new `PostToolUseFailure` hook
+  that makes the grader work is part of the plugin files, not the binary.
+- **Replace the `ana` binary, and check which one runs.** The version stamp now reads
+  `0.4.1`; an older `ana` earlier on `PATH` still answers to `0.4.0`. Worse, an older `ana`
+  drops fields it does not know on every save, so one that touches a ledger containing
+  pinned claims (`check`) will unpin them. `command -v ana` and `ana --version` after
+  upgrading.
+- **If you installed the hooks by hand** (`plugin/install.sh`), run it again: it registers
+  the new `PostToolUseFailure` hook.
+- **`ana void` refuses a resolved claim**, and a verdict can now read `withheld`: see the
+  entries below.
+
 
 ### Security
 
@@ -25,6 +48,19 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 - **The Stop hook lists only this project's overdue claims**, plus claims tagged for
   no project. The count still covers the whole ledger. Before, a claim logged under
   any project was quoted in every session's Stop output.
+
+- **The ledger is now private on Unix.** It holds your claims and your reasoning, and was
+  written with the default mode, 0664 under a typical umask, in a 0775 directory. The
+  ledger, its backup and its lock file are now written 0600, and a directory `ana` creates
+  is 0700. A directory that already exists, your home directory for the default
+  `~/.anamnesis.json`, is left exactly as it was, and a ledger an older version left
+  world-readable is tightened on its next save. Windows files inherit their folder's access
+  list, as before.
+- **Hooks no longer wait forever.** Claude Code gives a command hook 600 seconds by default
+  (30 on `UserPromptSubmit`), and ours set no timeout and blocked on the ledger lock with no
+  limit, so a hook behind a stuck writer could stall a session. `hooks.json` now sets a
+  5-second timeout on every hook, and a hook waits at most 2 seconds for the lock
+  (`ANAMNESIS_HOOK_LOCK_WAIT_MS`), then says it could not grade the run and writes nothing.
 
 ### Fixed
 
@@ -72,11 +108,76 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   before this rule that already holds such voids is read the same way. The one-in-ten
   line is chosen, not derived; see `docs/METHODS.md`.
 
+- **An independent review of this release found eleven more ways to be wrong, all fixed.**
+  Each was reproduced against the build before being fixed, and is pinned by a test.
+  - *The hook graded runs that never happened.* `cd #x && cargo test` is a comment, so bash
+    runs only `cd`; `cd .&exit && cargo test` backgrounds the `cd` and then exits: both
+    exit 0 and were graded TRUE. A call Claude Code returns in the background was graded
+    before its suite had finished. A quoted flag (`cargo test '--no-run'`) and an
+    environment variable (`PYTEST_ADDOPTS=--co`, `GOFLAGS=-run=^$`, a cargo runner
+    override) each turn a runner into a no-op that exits 0. The matcher now refuses any
+    quoting, comment, `$`, braces and `!`; allows `cd` only to a plain path word; allows
+    only a short list of harmless environment variables; refuses background calls; and
+    treats `--setup-plan`, `--fixtures`, `go test -list` and the like as non-runs.
+  - *Only cargo needed evidence for a failure.* Every other runner was graded FALSE on any
+    exit 1, which is also what a missing directory, a missing module (`No module named
+    pytest`), a project with no test script and a missing `go.mod` produce. A failure now
+    needs the runner's own words for one (`1 failed`, `--- FAIL`, `Tests: 1 failed`,
+    `1 failing`) and none of the words for a run that never started.
+  - *A pass needed no evidence at all.* `cargo test > log 2>&1` left a failure ungraded
+    and a pass graded TRUE. A cargo pass now needs a `test result: ok. N passed` with N
+    above 0, summed across every test binary, so a pass and a failure are judged the same
+    way. nextest, which exits 100 and prints no `test result:` line, is not recognised, so
+    neither direction is graded.
+  - *`ana run` could leave a pinned claim stuck for good.* A check was compared as text
+    joined by spaces, so `pytest -k "not slow"` was refused by the very command the refusal
+    message suggested, and `["sh","-c","a b"]` was the same line as `["sh","-c","a","b"]`.
+    A check is now split into words as a shell would (no expansion) and compared word for
+    word; an unbalanced quote is refused when the claim is logged. A loud run
+    (`cargo test -- --nocapture`, over 64 KB) lost `running 1 test` out of a tail and was
+    reported as having tested nothing: what the output showed is now gathered as it
+    streams past, not read back from its end.
+  - *`ana run` waited for grandchildren.* `sh -c 'sleep 8 & echo started'` took 8 seconds
+    after `sh` had exited, and a daemon that never exits would never return. It waits two
+    seconds for the output to end, then judges what it has. A command whose exit code is a
+    multiple of 256 can no longer read as success, and on Windows a bare `npm`, `mvn` or
+    `gradlew` is found as `.cmd` or `.bat`.
+  - *A hostile claim id reached an agent raw through the MCP server* (`calibration`,
+    `void`, `amend`), though the hooks sanitised it. An id is now checked once, at load: a
+    ledger whose ids are not letters, digits, `.`, `_` and `-`, up to 64 characters, is
+    refused like one holding a probability of 1.7. Generated ids are six hex digits.
+  - `untrusted::line` now also drops variation selectors (U+FE00–FE0F, which carry hidden
+    data), the Arabic letter mark, the combining grapheme joiner and the Hangul and
+    interlinear fillers, and maps fullwidth `＜` `＞` to the same quotes as `<` `>`.
+  - `ana run` is recognised however many flags come before `run`
+    (`ana --data x --json run …`), and the hook's "could not grade" line now names the
+    engine like every other hook line.
+- **A corrupt ledger no longer silences the hooks.** A ledger that could not be read made
+  every hook print nothing and exit 0, so a user with a damaged file had hooks that never
+  fired and no way to find out why. `session-start` and the checkpoint now say the ledger
+  could not be read and that nothing was changed.
+- **A newer ledger survives an older save.** Fields `ana` does not recognise, on a claim or at
+  the top level of the file, are kept through a load and a save instead of being erased.
+  Before, an older `ana` dropped them silently on the next write. Fields nested inside a
+  forecast or a resolution are still dropped, and what is kept is not byte-exact: an
+  unknown number beyond `f64` precision comes back rounded, and unknown keys are written
+  in sorted order. The cost on a 100,000-claim ledger is
+  unmeasurable (report 1.21 s before, 1.22 s after).
+- **"Not enough data" now says why a resolved call is missing.** The sequential test reads
+  claims in due-date order, which is what keeps it valid however often you look, so a call
+  joins it once its due date has passed. A person who logged 30 calls and resolved them the
+  same week saw "NOT ENOUGH DATA" with 30 resolved and no explanation.
+- The README's example dates were already in the past, and the install section never said
+  the build needs Rust 1.89.
+
 ### Changed
 
 - MCP `list` returns each statement cut to 300 characters, each tag and id cleaned,
   and a top-level `note` saying the text is data. A client that needs a longer
   statement must read the ledger file.
+- MCP `list` returns the newest 100 claims unless told otherwise (`limit`, up to 1000),
+  and says how many it left out (`total`, `omitted`). It returned every claim before: 3.3 MB
+  of context at 10,000.
 
 
 ### Added
@@ -97,6 +198,14 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   existing ledgers are unchanged. See `docs/AGENTS.md`.
 - `SECURITY.md`: how to report a vulnerability privately, what is in scope, and the
   limits of what the project guarantees.
+
+### Packaging
+
+- `Cargo.toml` now carries `repository`, `homepage`, `keywords` and `categories`, and an
+  allowlist (`include`) of 22 files, so `cargo package` ships the engine and the CLI and
+  not the plugin, the launch notes or the test suite. The crate still builds from the
+  package alone. A `.gitattributes` keeps shell scripts on Unix line endings, so a Windows
+  checkout with `autocrlf` cannot break the hooks.
 
 ### Documentation
 

@@ -59,8 +59,9 @@ pub fn line(s: &str, max: usize) -> String {
             }
         }
         out.push(match c {
-            '<' => '‹',
-            '>' => '›',
+            // The fullwidth forms look like the brackets a tag is made of.
+            '<' | '＜' => '‹',
+            '>' | '＞' => '›',
             HEADER_MARK => '·',
             other => other,
         });
@@ -86,6 +87,14 @@ fn is_invisible(c: char) -> bool {
             | '\u{FEFF}'
             | '\u{E0000}'..='\u{E007F}'
             | '\u{E0100}'..='\u{E01EF}'
+            // Variation selectors carry hidden data; the fillers and joiner draw nothing.
+            | '\u{FE00}'..='\u{FE0F}'
+            | '\u{061C}'
+            | '\u{034F}'
+            | '\u{115F}'
+            | '\u{1160}'
+            | '\u{3164}'
+            | '\u{FFF9}'..='\u{FFFB}'
     )
 }
 
@@ -130,6 +139,17 @@ mod tests {
         let out = line("\u{1b}[31mred\u{7}\tgreen", MAX_LINE);
         assert!(!out.chars().any(|c| c.is_control()), "{out:?}");
         assert_eq!(out, "[31mred green");
+    }
+
+    #[test]
+    fn characters_that_hide_or_imitate_markup_do_not_survive() {
+        // Variation selectors, bidi and filler characters carry hidden data or invisible
+        // text; fullwidth brackets look like the ones a tag is made of.
+        assert_eq!(
+            line("a\u{FE00}b\u{FE0F}c\u{061C}d\u{034F}e\u{3164}f", MAX_LINE),
+            "abcdef"
+        );
+        assert_eq!(line("＜b＞x＜/b＞", MAX_LINE), "‹b›x‹/b›");
     }
 
     #[test]
