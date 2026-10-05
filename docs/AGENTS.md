@@ -54,7 +54,7 @@ flowchart LR
         H2["UserPromptSubmit hook<br/>re-injects every 7th prompt"]
         T["MCP tools<br/>predict · update · resolve<br/>decide · recalibrate · calibration<br/>void · amend · list"]
         H3["PostToolUse and PostToolUseFailure hooks on Bash<br/>auto-resolve tests-pass claims<br/>from the exit status of a plain test run"]
-        H4["Stop hook<br/>names overdue ungraded claims"]
+        H4["Stop hook<br/>tells you once per session how many are overdue"]
     end
     H1 --> ANA["ana"]
     H2 --> ANA

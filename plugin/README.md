@@ -23,7 +23,7 @@ start so you actually plan differently.
   `kind:` so you learn *per type of call* (estimates vs bug-hypotheses vs …).
 - **`/resolve`** — score it the moment reality answers.
 - **`/calibration`** — the full mirror on demand.
-- **`Stop` hook** — a quiet one-liner only when predictions are *overdue*.
+- **`Stop` hook** — one line to *you* (not the model), once per session, only when predictions are overdue. It never returns context: Claude Code reads context from a Stop hook as "keep going".
 
 It is local-first, no-network, no-LLM. The ledger is a plain JSON file you own at
 `~/.anamnesis/agent.json` (override with `ANAMNESIS_AGENT_DATA`).

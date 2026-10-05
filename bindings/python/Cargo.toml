@@ -7,7 +7,7 @@
 # pyo3 machinery lives here.
 [package]
 name = "anamnesis-py"
-version = "0.4.1"
+version = "0.4.2"
 edition = "2021"
 description = "PyO3 bindings exposing the Anamnesis calibration/scoring core to Python."
 license = "MIT"

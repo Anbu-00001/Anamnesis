@@ -236,14 +236,6 @@ fn framed(lines: Vec<String>) -> Vec<String> {
     out
 }
 
-/// A claim belongs to this project if it is tagged for it, or for no project at
-/// all. A claim tagged for another project is not this session's business: the
-/// ledger is global, so without this a claim logged anywhere is shown everywhere.
-fn in_scope(c: &Claim, slug: &str) -> bool {
-    let mine = format!("project:{slug}");
-    c.tags.iter().any(|t| t == &mine) || !c.tags.iter().any(|t| t.starts_with("project:"))
-}
-
 /// The per-session prompt counter, kept next to the ledger. Returns the new count.
 fn bump_counter(session: &str) -> u64 {
     let Some(dir) = dirs_counters() else {
@@ -258,6 +250,21 @@ fn bump_counter(session: &str) -> u64 {
         + 1;
     let _ = std::fs::write(&file, n.to_string());
     n
+}
+
+/// Whether this is the first Stop of the session, remembered in a marker file beside the
+/// prompt counters. The Stop hook speaks once per session, not at the end of every turn.
+/// If the marker cannot be written there is nothing to remember it by, and it speaks.
+fn first_stop_of_session(session: &str) -> bool {
+    let Some(dir) = dirs_counters() else {
+        return true;
+    };
+    let _ = std::fs::create_dir_all(&dir);
+    std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(format!("{}.stop", sanitize(session))))
+        .is_ok()
 }
 
 fn dirs_counters() -> Option<std::path::PathBuf> {
@@ -864,37 +871,38 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
         }
 
         Event::Stop => {
-            let overdue: Vec<&Claim> = ledger
+            // For a Stop hook, Claude Code reads `additionalContext` as "the conversation
+            // continues so Claude can act on it". This arm used to return it whenever any
+            // claim was overdue and never read `stop_hook_active`, so every turn was
+            // followed by another until the turn cap: measured live, with one overdue
+            // claim a one-word prompt ran 13 assistant messages. It shipped in the plugin.
+            // A Stop hook here may speak to the person (`systemMessage`) and may never
+            // return context.
+            if input
+                .get("stop_hook_active")
+                .and_then(Value::as_bool)
+                .unwrap_or(false)
+            {
+                return Ok(());
+            }
+            let overdue = ledger
                 .claims
                 .iter()
                 .filter(|c| !c.is_void() && c.is_due(today))
-                .collect();
-            if overdue.is_empty() {
+                .count();
+            if overdue == 0 {
                 return Ok(());
             }
-            context.push(format!(
-                "⟢ Anamnesis (ana {VERSION}): {} prediction(s) are past their due date and ungraded. Until they are resolved the calibration numbers rest on a self-selected sample, and each one is priced into the evidence test at the worst factor it could have contributed.",
-                overdue.len()
-            ));
-            // The count is the whole ledger's. The wording shown is only this
-            // project's, and only as quoted data.
-            let here: Vec<&Claim> = overdue
-                .iter()
-                .copied()
-                .filter(|c| in_scope(c, &slug))
-                .collect();
-            context.extend(framed(
-                here.iter()
-                    .take(5)
-                    .map(|c| format!("  {}", quoted(c)))
-                    .collect(),
-            ));
-            if here.len() < overdue.len() {
-                context.push(format!(
-                    "  ({} more belong to other projects)",
-                    overdue.len() - here.len()
-                ));
+            let session = input
+                .get("session_id")
+                .and_then(Value::as_str)
+                .unwrap_or("default");
+            if !first_stop_of_session(session) {
+                return Ok(());
             }
+            user_message = Some(format!(
+                "anamnesis (ana {VERSION}): {overdue} prediction(s) are past their due date and ungraded, which leaves the calibration numbers resting on a self-selected sample. Resolve or void them. (Said once per session.)"
+            ));
         }
     }
 

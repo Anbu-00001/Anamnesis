@@ -201,6 +201,12 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    an agent. It goes out as one bounded line, with markup and the `⟢` header mark
    neutralised, labelled as stored data (`untrusted::FRAME`). Do not interpolate
    `c.statement` or `c.tags` into hook or MCP output directly.
+13. **A Stop hook never returns context.** Claude Code reads `additionalContext` from a Stop
+   hook as "the conversation continues so Claude can act on it", so returning it while
+   anything is overdue forced a new model turn after every turn: live, one overdue claim
+   made a one-word prompt run 13 assistant messages and hit the turn cap, and it shipped in
+   the plugin for two releases. The Stop hook speaks to the person (`systemMessage`), once
+   per session, and says nothing when `stop_hook_active` is true.
 
 ## Build / test / lint
 

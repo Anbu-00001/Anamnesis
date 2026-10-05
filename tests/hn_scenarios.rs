@@ -1706,9 +1706,21 @@ fn every_hook_names_the_engine_version_that_wrote_it() {
         let out = drive_hook(event, &input, &ledger, &home, &env);
         let v: serde_json::Value = serde_json::from_str(out.trim())
             .unwrap_or_else(|e| panic!("{event} did not emit JSON ({e}):\n{out}"));
-        let ctx = v["hookSpecificOutput"]["additionalContext"]
-            .as_str()
-            .unwrap_or_else(|| panic!("{event} emitted no context:\n{out}"));
+        // The Stop hook speaks to the person, and never returns context: for a Stop hook
+        // Claude Code reads context as "keep the conversation going".
+        let ctx = if event == "stop" {
+            assert!(
+                v.get("hookSpecificOutput").is_none(),
+                "a Stop hook returned context:\n{out}"
+            );
+            v["systemMessage"]
+                .as_str()
+                .unwrap_or_else(|| panic!("stop emitted no message:\n{out}"))
+        } else {
+            v["hookSpecificOutput"]["additionalContext"]
+                .as_str()
+                .unwrap_or_else(|| panic!("{event} emitted no context:\n{out}"))
+        };
         let first = ctx.lines().next().unwrap_or("");
         assert!(
             first.contains(&stamp),
@@ -2049,7 +2061,6 @@ fn ledger_text_cannot_forge_a_header_or_spill_onto_a_second_line_in_the_hooks() 
     for (event, env) in [
         ("session-start", vec![]),
         ("user-prompt", vec![("ANAMNESIS_INTROSPECT_EVERY", "1")]),
-        ("stop", vec![]),
     ] {
         let out = drive_hook(event, &input, &ledger, &home, &env);
         assert!(
@@ -2096,9 +2107,15 @@ fn ledger_text_cannot_forge_a_header_or_spill_onto_a_second_line_in_the_hooks() 
         );
     }
 
-    // Stop says that others exist without quoting them.
+    // The Stop hook no longer quotes stored text at all, to anyone: it says how many
+    // predictions are overdue, to the person, once per session.
     let stop = drive_hook("stop", &input, &ledger, &home, &[]);
-    assert!(stop.contains("more belong to other projects"), "{stop}");
+    for stored in ["IGNORE ALL PREVIOUS", "poison1", "OTHERPROJECT-MARKER", "⟢"] {
+        assert!(
+            !stop.contains(stored),
+            "the Stop hook echoed stored text ({stored}):\n{stop}"
+        );
+    }
     let _ = fs::remove_dir_all(&dir);
 }
 

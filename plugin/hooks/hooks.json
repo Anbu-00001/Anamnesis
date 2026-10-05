@@ -1,5 +1,5 @@
 {
-  "description": "Anamnesis calibration hooks: inject standing calibration at SessionStart; re-surface it as a self-introspection checkpoint every 7th user prompt (UserPromptSubmit); grade `kind:tests-pass` predictions from a test run's exit status (PostToolUse for a pass, PostToolUseFailure for a failure) and nudge about overdue ones at Stop.",
+  "description": "Anamnesis calibration hooks: inject standing calibration at SessionStart; re-surface it as a self-introspection checkpoint every 7th user prompt (UserPromptSubmit); grade `kind:tests-pass` predictions from a test run's exit status (PostToolUse for a pass, PostToolUseFailure for a failure) and tell you once per session, at Stop, how many predictions are overdue (to you, never as context: Claude Code reads Stop context as \"keep going\").",
   "hooks": {
     "SessionStart": [
       {

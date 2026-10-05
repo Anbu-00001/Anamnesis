@@ -3,7 +3,36 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.1] — unreleased
+## [0.4.2] — 2026-10-05
+
+A hotfix for a defect that shipped in 0.4.0 and 0.4.1.
+
+### Fixed
+
+- **The Stop hook forced the conversation to continue after every turn.** For a Stop hook,
+  Claude Code reads `additionalContext` as "the conversation continues so Claude can act on
+  it", with loop protection that depends on the hook honouring `stop_hook_active`. Ours
+  returned context whenever any claim was overdue and never read that field, so each turn
+  was followed by another until the turn cap. Measured live, against the shipped plugin: with
+  one overdue claim, the prompt "Reply with exactly: hello" ran 13 assistant messages and
+  ended in `error_max_turns`; with this fix it ends after one turn with "hello". Anyone with
+  the plugin installed and any overdue prediction was affected, on every turn. The Stop hook
+  now speaks to the person (`systemMessage`), once per session, says only how many
+  predictions are overdue (no stored text), returns no context, and is silent when
+  `stop_hook_active` is true.
+
+### Upgrading from 0.4.0 or 0.4.1
+
+- Update the plugin (`/plugin marketplace update`, then update the plugin): a plugin only
+  updates when its version changes, and this is the version that carries the fix. If you
+  registered the hooks by hand with `plugin/install.sh`, run it again so `stop.sh` is the
+  fixed one. Until then, you can switch the loop off by removing the `Stop` entry from the
+  hooks.
+
+## [0.4.1] — 2026-10-05
+
+> **Known defect, fixed in 0.4.2:** the plugin's Stop hook forced a new turn after every
+> turn while any prediction was overdue. See 0.4.2.
 
 This is a fix release. Most of it repairs things 0.4.0 claimed and did not do: the
 plugin's grader never graded anything under Claude Code, and the hooks and the MCP server
