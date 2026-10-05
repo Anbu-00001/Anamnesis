@@ -1207,8 +1207,15 @@ fn run(cli: Cli) -> Result<(), String> {
             if c.is_void() {
                 return Err(format!("[{}] is already void", c.id));
             }
+            // A resolved claim has had its answer seen. Voiding it then removes the
+            // outcome from every score, and the ones people void are the misses.
+            if c.is_resolved() {
+                return Err(format!(
+                    "[{}] is already resolved, and a resolved claim cannot be voided: that would remove an outcome after it was seen. A void is for a question that stopped making sense before you knew the answer.",
+                    c.id
+                ));
+            }
             let cid = c.id.clone();
-            let was_resolved = c.is_resolved();
             c.void = Some(anamnesis::model::Void {
                 at: Utc::now(),
                 reason: reason.clone(),
@@ -1219,9 +1226,6 @@ fn run(cli: Cli) -> Result<(), String> {
             } else {
                 println!("[{cid}] voided — excluded from every score, kept in history.");
                 println!("  reason: {reason}");
-                if was_resolved {
-                    println!("  (it was resolved; that resolution stays on the record but no longer counts)");
-                }
             }
         }
 

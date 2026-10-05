@@ -79,6 +79,10 @@ fn standing_line(d: &ReportData) -> Option<String> {
     let n = d.evidence_n;
     Some(match d.verdict {
         Verdict::InsufficientData => return None,
+        Verdict::Withheld => format!(
+            "NO VERDICT: {} of the {} claims that came due were voided after their due date, so no reading of your {n} graded calls can be trusted. Resolve a claim when it answers; void only a question that stopped making sense before you knew.",
+            d.voids.late, d.voids.came_due
+        ),
         Verdict::NoEvidenceOfMiscalibration => format!(
             "no miscalibration found across {n} graded calls — which is not proof you are calibrated, only that nothing shows otherwise"
         ),

@@ -234,8 +234,9 @@ supporting it.
 
 Stopping was a correct answer to the wrong question. Any prefix rule yields about
 `(1−g)/g` usable claims for an ungraded rate `g`, so a ledger that is 35%
-ungraded gets a **two-claim** sequence however much it holds. On a real 426-claim
-agent ledger that meant **23 of 309** graded calls counted.
+ungraded gets a **two-claim** sequence however much it holds. On the maintainer's own
+426-claim agent ledger (private, so this figure cannot be reproduced from the repo)
+that meant **23 of 309** graded calls counted.
 
 Partitioning does not rescue it. `K` partitions multiply the number of sequences
 but each one is just as short, giving `K·(1−g)/g` — and the `K`-fold mixture
@@ -420,20 +421,38 @@ fail" after an hour of debugging — peeking 200 times across 80 seeds:
 
 #### The one operation that can break it: `void`
 
-Voiding punches a hole in exactly this property, because it edits the sequence
-after the fact.
+Voiding edits the sequence after the fact, and the property above holds only if
+what stays in it was chosen without looking at the outcomes.
 
-- **Voided before it resolved** — safe. The claim carries no outcome, so removing
-  it cannot move the e-value in any direction. Excluded from the sequence.
-- **Voided after it resolved** — an outcome deleted from the record *after being
-  seen*. The direction of abuse is self-flattery rather than a false alarm: you
-  would void the ones that went badly, and the e-value would fall. Either way the
-  prefix is no longer fixed.
+- **Voided while the answer was unknown** is fine for the guarantee. The claim
+  carries no outcome, so removing it cannot tell the test anything. It is excluded
+  from the sequence.
+- **Voided after the claim came due, or after it resolved** is different. The person
+  may have known the answer, and choosing what to remove by outcome breaks the fixed
+  prefix, in either direction. Self-flattery is the likely direction (void what went
+  badly and every score improves), but a ledger could as easily be tidied toward an
+  alarm. The tool cannot tell a question that stopped making sense from an answer
+  that was disowned. It can see *when*.
 
-So a claim voided after resolution **stays in the evidence sequence**, and the
-report prints how many there are. The scores forget it — annulling a question is
-what void is for — but the sequential test does not, and the edit is never
-silent. If someone voids six resolved claims, the report says so out loud.
+What it does about that:
+
+1. `void` refuses a claim that has already resolved.
+2. Every void is counted, and every surface (the report, the plain report, the card,
+   the badge, `--json`, the hooks and the MCP `calibration` tool) shows how many came
+   after the due date.
+3. A claim voided after it resolved, which only a ledger from before rule 1 can hold,
+   **stays in the evidence sequence**, and the report says how many there are.
+4. If more than one in ten of the claims that came due were voided after their due
+   date or after resolving, **the verdict is withheld** (`withheld`). The scores
+   still leave voided claims out, since annulling a question is what void is for, and
+   that is exactly why no reading is given: they describe a record that may have been
+   tidied.
+
+Measured: 40 calls at 90%, half of them wrong, with the 20 misses voided afterwards
+read as Brier 0.010 and "honest sample: yes" on the plain report, the badge and the
+hook, while only the full report warned. The one-in-ten line is chosen, not derived.
+It is where late voids stop looking like a few bad questions noticed late and start
+looking like a pattern. It lives in `evidence::VOID_WITHHOLD_RATE`.
 
 ### 3c. Multiplicity
 
@@ -454,8 +473,8 @@ outcomes, so the evidence ordering and its guarantee are untouched.
 Two bars, and the report says which one a collapsed section missed:
 
 - **Coverage ≥ 50%.** A breakdown over a slice that happens to be tagged is a
-  self-selected sample one level down. Measured: 363 of 422 binary claims on a real
-  agent ledger carried no `kind:` tag.
+  self-selected sample one level down. Measured: 363 of 422 binary claims on the
+  maintainer's own agent ledger (private) carried no `kind:` tag.
 - **2 ≤ K ≤ 12.** Every per-group e-value pays a factor of `K` in its alarm
   threshold. `session:` on that same ledger covers 100% of it and splits it into 66
   groups — a 66-fold penalty and an unreadable table; `who:` covers 100% with

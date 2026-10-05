@@ -71,6 +71,13 @@ ANAMNESIS — the shape of your judgement
 ```
 <!-- END:report_head -->
 
+Two lines in that output can look contradictory: the verdict says no miscalibration
+was found, while the Brier skill is negative. Both are true. The skill is negative
+because the miscalibration term (0.065) is larger than the discrimination term
+(0.037). But 0.065 is only 1.16 times what luck alone would produce on these calls,
+so the report declines to call it real. "Not found" is not "absent", and the verdict
+says as much.
+
 The rest of that report covers discrimination, the sequential evidence test, a
 reliability diagram and a per-group breakdown. Bring an existing history with
 `ana import history.csv` (columns: `statement, prob, created, resolve_by,
@@ -159,11 +166,13 @@ answer came in, so the tool spent its development grading the thing that was
 building it.
 
 Before launch it went through a review that ran the binary the way a skeptical
-user would, instead of reading the source. It found three problems the test
-suite never caught. Revising a forecast after the outcome could earn a perfect
-score. A forecaster who was wrong in both directions was reported as calibrated,
-because the two kinds of error cancelled out. And 40 parallel writes could leave
-as few as 7 claims saved. All three are fixed. The CHANGELOG has the numbers
+user would, instead of reading the source. It found five problems the test
+suite never caught. Three of them: revising a forecast after the outcome could
+earn a perfect score; a forecaster who was wrong in both directions was reported
+as calibrated, because the two kinds of error cancelled out; and 40 parallel
+writes could leave as few as 7 claims saved. The other two were an inflated
+calibration term and an evidence order that depended on the outcomes. All five
+are fixed. The CHANGELOG has the numbers
 from before, and `validation/repro.sh` runs each scenario against the current
 build.
 
@@ -179,7 +188,9 @@ build.
 | [CONTRIBUTING.md](CONTRIBUTING.md) | build, test, and what CI checks |
 | [CHANGELOG.md](CHANGELOG.md) | what changed, and what it changed from |
 
-Every measurement in those docs has a script that reproduces it:
+Every measurement in those docs has a script that reproduces it, except the few
+figures taken from the maintainer's own agent ledger, which is private and is
+labelled as such:
 
 ```bash
 cargo test --all             # the suite, including the hostile-review scenarios

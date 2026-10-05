@@ -567,7 +567,12 @@ fn a_fresh_open_claim_does_not_freeze_the_evidence_test() {
 /// guarantee rests on being fixed in advance. Voiding something unresolved is
 /// fine — it carries no outcome. Voiding something already resolved deletes an
 /// outcome after seeing it, and the direction of abuse is self-flattery: you void
-/// what went badly, and the e-value falls.
+/// what went badly, and every score improves.
+///
+/// `void` now refuses a resolved claim. Ledgers written before that can still hold
+/// such voids, so the tool must keep reading them honestly: the evidence sequence
+/// keeps the outcomes, the report says out loud that they were removed, and when
+/// they are more than one in ten of the claims that came due, no verdict is given.
 #[test]
 fn voiding_a_resolved_claim_cannot_quietly_lower_the_evidence() {
     let dir = workdir("voidevidence");
@@ -581,22 +586,30 @@ fn voiding_a_resolved_claim_cannot_quietly_lower_the_evidence() {
     let before = report_json(&ledger);
     let e_before = before["eprocess"].as_f64().unwrap();
     assert!(e_before >= 20.0, "should start as demonstrated: {e_before}");
+    assert_eq!(before["verdict"], "overconfident");
 
-    // Void six of the ones that went badly, after the fact.
+    // The tool refuses to void a claim whose answer has been seen, and writes nothing.
+    let bytes = fs::read(&ledger).unwrap();
+    let (_, err, ok) = run(&ledger, &["void", "c00001", "--reason", "did not like it"]);
+    assert!(!ok, "a resolved claim must not be voidable");
+    assert!(err.contains("already resolved"), "{err}");
+    assert_eq!(fs::read(&ledger).unwrap(), bytes, "nothing may be written");
+
+    // A ledger from before that rule, with six of the misses voided afterwards.
+    let mut v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
     for i in 1..7 {
-        assert!(
-            run(
-                &ledger,
-                &[
-                    "void",
-                    &format!("c{i:05}"),
-                    "--reason",
-                    "on reflection I did not like this one",
-                ],
-            )
-            .2
-        );
+        let c = v["claims"]
+            .as_array_mut()
+            .unwrap()
+            .iter_mut()
+            .find(|c| c["id"] == format!("c{i:05}"))
+            .unwrap();
+        c["void"] = serde_json::json!({
+            "at": "2099-01-01T00:00:00Z",
+            "reason": "on reflection I did not like this one"
+        });
     }
+    fs::write(&ledger, v.to_string()).unwrap();
 
     let after = report_json(&ledger);
     assert_eq!(
@@ -611,14 +624,20 @@ fn voiding_a_resolved_claim_cannot_quietly_lower_the_evidence() {
     );
     assert_eq!(after["voided_after_resolution"].as_u64().unwrap(), 6);
 
-    // The scores DO forget them — that is what void is for — but the report says
-    // out loud that six outcomes were removed after they were seen.
+    // The scores DO forget them, but the report says out loud that six outcomes were
+    // removed after they were seen, and six of 40 is more than one in ten.
     assert_eq!(after["resolved"].as_u64().unwrap(), 34);
+    assert_eq!(after["voids"]["late"].as_u64().unwrap(), 6);
+    assert_eq!(
+        after["verdict"], "withheld",
+        "a tidied record gets no reading"
+    );
     let text = run(&ledger, &["report"]).0;
     assert!(
         text.contains("voided AFTER they had already resolved"),
         "the edit must never be silent:\n{text}"
     );
+    assert!(text.contains("WITHHELD"), "{text}");
     let _ = fs::remove_dir_all(&dir);
 }
 
@@ -2297,6 +2316,127 @@ fn mcp_predict_accepts_resolve_by_and_says_so_when_there_is_no_date() {
         said(2).contains("no `by` date"),
         "a dateless claim must say so: {}",
         said(2)
+    );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+// ──────────────────── a void is counted, and a pattern of them is not read ────────────────────
+
+/// 30 graded `who:claude` calls at 70% that came true 70% of the time, plus
+/// unresolved claims, all due 2024-02-01, voided either before they were due
+/// (`early`, while the answer was unknown) or after (`late`).
+fn write_void_ledger(path: &Path, early: usize, late: usize) {
+    let mut claims = Vec::new();
+    for i in 0..30usize {
+        claims.push(serde_json::json!({
+            "id": format!("g{i:03}"), "statement": format!("graded {i}"),
+            "created_at": "2024-01-01T00:00:00Z", "resolve_by": "2024-02-01",
+            "tags": ["who:claude"], "kind": "binary",
+            "forecasts": [{"at": "2024-01-01T00:00:00Z", "prob": 0.7}],
+            "resolution": {"at": "2024-02-10T00:00:00Z",
+                           "outcome": if i % 10 < 7 { "true" } else { "false" }}
+        }));
+    }
+    let voided = |id: String, at: &str| {
+        serde_json::json!({
+            "id": id, "statement": "a question that went away",
+            "created_at": "2024-01-01T00:00:00Z", "resolve_by": "2024-02-01",
+            "tags": ["who:claude"], "kind": "binary",
+            "forecasts": [{"at": "2024-01-01T00:00:00Z", "prob": 0.7}],
+            "void": {"at": at, "reason": "no longer answerable"}
+        })
+    };
+    for i in 0..early {
+        claims.push(voided(format!("e{i:03}"), "2024-01-15T00:00:00Z"));
+    }
+    for i in 0..late {
+        claims.push(voided(format!("l{i:03}"), "2024-06-01T00:00:00Z"));
+    }
+    fs::write(path, serde_json::json!({ "claims": claims }).to_string()).unwrap();
+}
+
+/// Voiding before resolving was silent everywhere: 20 graded calls plus 20 voided ones
+/// read "100% graded (20 of 20)", with no voided count in the report. A void made
+/// while the answer was unknown is honest and is shown. One made after the claim came
+/// due may have been made with the answer in hand; past one in ten of the claims that
+/// came due, no verdict is read, on any surface.
+#[test]
+fn late_voids_are_counted_and_past_one_in_ten_the_verdict_is_withheld() {
+    let dir = workdir("voidrate");
+    let home = dir.join("home");
+    fs::create_dir_all(&home).unwrap();
+    let ledger = dir.join("agent.json");
+    let cwd = dir.join("proj");
+    fs::create_dir_all(&cwd).unwrap();
+    let input =
+        serde_json::json!({ "session_id": "v", "cwd": cwd.display().to_string() }).to_string();
+
+    // Ten voided before they were due: shown, and not held against anyone.
+    write_void_ledger(&ledger, 10, 0);
+    let j = report_json(&ledger);
+    assert_eq!(j["voids"]["total"], 10);
+    assert_eq!(j["voids"]["late"], 0);
+    assert_ne!(j["verdict"], "withheld", "honest voids must not withhold");
+    let text = run(&ledger, &["report"]).0;
+    assert!(
+        text.contains("Voided: 10 claim(s), 0 of them after"),
+        "{text}"
+    );
+
+    // 3 late of 33 that came due is 9.1%: counted and shown, not yet withheld.
+    write_void_ledger(&ledger, 0, 3);
+    let j = report_json(&ledger);
+    assert_eq!(
+        (j["voids"]["late"].as_u64(), j["voids"]["came_due"].as_u64()),
+        (Some(3), Some(33))
+    );
+    assert_ne!(j["verdict"], "withheld");
+
+    // 4 late of 34 is 11.8%: withheld, and every surface says so.
+    write_void_ledger(&ledger, 0, 4);
+    let j = report_json(&ledger);
+    assert_eq!(j["verdict"], "withheld");
+
+    let rich = run(&ledger, &["report"]).0;
+    assert!(rich.contains("WITHHELD"), "{rich}");
+    assert!(
+        rich.contains("Voided: 4 claim(s), 4 of them after"),
+        "{rich}"
+    );
+
+    // The plain report wraps its lines, so compare on single-spaced text.
+    let plain_raw = run(&ledger, &["report", "--plain"]).0;
+    let plain = plain_raw.split_whitespace().collect::<Vec<_>>().join(" ");
+    assert!(plain.contains("No verdict"), "{plain_raw}");
+    assert!(plain.contains("You voided 4 call(s)"), "{plain_raw}");
+    assert!(
+        !plain.contains("Yes — you've graded every"),
+        "claimed an honest sample:\n{plain_raw}"
+    );
+    assert!(
+        !plain.contains("DIALED IN"),
+        "a withheld verdict wore the happy cat:\n{plain_raw}"
+    );
+    // And it hands no reading back by another route.
+    for reading in [
+        "demonstrably off",
+        "Better than a coin flip",
+        "no miscalibration found",
+        "turned out right about",
+    ] {
+        assert!(
+            !plain.contains(reading),
+            "a withheld verdict still said {reading:?}:\n{plain_raw}"
+        );
+    }
+
+    let badge = run(&ledger, &["report", "--badge"]).0;
+    assert!(badge.to_lowercase().contains("withheld"), "{badge}");
+
+    let hook = drive_hook("session-start", &input, &ledger, &home, &[]);
+    assert!(
+        hook.contains("NO VERDICT"),
+        "the hook must not read a tidied record:\n{hook}"
     );
     let _ = fs::remove_dir_all(&dir);
 }

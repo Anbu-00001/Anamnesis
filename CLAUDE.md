@@ -172,7 +172,11 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    card, `--json`, the MCP `calibration` tool and the hooks all read it. They used
    to each key off the confidence gap, in which over- and under-confidence cancel:
    a ledger with a −0.520 Brier skill had a gap of −1e-15 and was announced as
-   `[DIALED IN] · well calibrated`. Never derive a pass/fail from the gap.
+   `[DIALED IN] · well calibrated`. Never derive a pass/fail from the gap. The
+   verdict is also **withheld** (`Verdict::Withheld`) when more than one in ten of the
+   claims that came due were voided late (`evidence::VoidAccount`): every score
+   drops voided claims, so past that line they describe a tidied record. Every
+   surface reads that too, and none may print a reading under it.
 10. **Every mutating command holds the lock** across load and save
    (`Cmd::mutates()`, `store::lock`). Without it, 40 parallel `ana add` calls left
    7–19 claims of 40, almost silently.
@@ -253,20 +257,31 @@ network); elicitation lives in the workflow/`predict` layer.
 
 A 2023–2026 literature review drives the design:
 - **Models have little self-knowledge** (Generalized Correctness Models, arXiv
-  2509.24988): a model predicting its own correctness does no better than an unrelated
-  one — reliable confidence is learned from *correctness history*, not introspection.
-- **Recorded feedback works without weight updates** (Reflexion, arXiv 2303.11366):
-  episodic track record materially improves agents — the mechanism the hook relies on.
-- **Training rewards confident guessing** (OpenAI 2025; code-calibration lit): models
-  are *structurally* pushed toward overconfidence, so an external instrument is the
-  counter-pressure. In code, token-probability confidence beats *verbalized* — the
-  numbers we log are the weakest signal, which is precisely *why* a mechanical
-  recalibration layer is needed.
-- **Anytime-valid e-processes** (Henzi–Ziegel arXiv 2103.08402; Ramdas): fixed-n tests
-  (Spiegelhalter Z) are **invalid under per-session peeking** (false-positive
-  0.05→0.15); the e-process (running product, valid under optional stopping) is why
-  "Is it real?" stays honest when you check it every session — it **supersedes
-  Spiegelhalter** as the gate.
+  2509.24988): in that paper's setting (static QA and SQL tasks, a trained predictor of
+  correctness) a model predicting its own correctness does no better than an unrelated
+  one, while a predictor trained on correctness *history* from many models does better.
+  That is evidence introspection is weak, not a measurement of coding agents, and the
+  "history" there is training data, not a track-record summary like ours.
+- **Verbal feedback can improve an agent without weight updates** (Reflexion, arXiv
+  2303.11366): an agent that reflects on a failure and keeps the reflection does better
+  on its next attempt at the same task. It is not a calibration result, and the paper
+  itself discusses false-positive self-tests as a failure mode, which is why exit-status
+  grading matters. The every-7th-prompt injection is inspired by this; nothing here
+  measures that it works.
+- **Training rewards confident guessing** (OpenAI 2025): models are pushed toward
+  overconfidence, so an external instrument is the counter-pressure. Whether
+  token-probability or *verbalized* confidence calibrates better is not settled: the
+  ranking changes with the evaluation protocol (arXiv 2605.27752, small models, QA).
+  What we log is verbalized, which is a reason for a mechanical recalibration layer, not
+  a result.
+- **Anytime-valid e-processes** (Arnold–Henzi–Ziegel, *Sequentially valid tests for
+  forecast calibration*, arXiv 2109.11761, for calibration; Henzi–Ziegel arXiv
+  2103.08402 is the companion for comparing two forecasts; Ramdas): a fixed-n test is
+  **invalid when it is read after every outcome**, and the e-process (a running
+  product, valid under optional stopping) is why "Is it real?" stays honest when you
+  check it every session. It replaces a fixed-n Spiegelhalter-style test as the gate.
+  The false-alarm rates under peeking are this repo's own measurements
+  (`docs/METHODS.md`, `validation/peeking.py`), not figures from those papers.
 - **Crowd-within** (Herzog–Hertwig 2009): one deliberate "consider the opposite"
   estimate recovers ~half the gain of a second person (consider **2** counter-reasons,
   not 10) → `dialectical_mean` + the `predict` protocol.
@@ -275,17 +290,22 @@ A 2023–2026 literature review drives the design:
 
 ### The 2026 frontier — why the decision gate is the centerpiece
 
-A fresh pass found the frontier has **moved off scoring math onto decision-coupling**:
-agents *verbalize* uncertainty accurately yet **fail to act on it** — taking
-irreversible actions while saying they're unsure; self-improvement loops *raise*
-overconfidence. The named fix (ReDAct arXiv 2604.07036 — uncertainty-aware deferral
-for LLM agents) is **confidence-gating against a calibrated threshold**, grounded in the
-decision-theoretic evaluation of probabilities (Ferrer & Ramos, arXiv 2408.02841) — exactly
-`scoring::decide`: recalibrate the stated `p` (evidence-gated), then Chow's reject rule
+The literature has moved from *measuring* confidence toward *acting on it*. One strand
+finds that stated confidence and decisions come apart: RiskEval (arXiv 2601.07767,
+question answering, not agents) reports models that are not cost-aware in their
+abstention. Another defers by uncertainty: ReDAct (arXiv 2604.07036) lets a small cheap
+model act by default and hands a step to a larger one when the small model's
+token-level uncertainty is high. That is a different mechanism from ours (token
+uncertainty, between two models, no Chow rule); it shows gating on uncertainty is a
+live idea, not that this tool's version works. `scoring::decide` is our version:
+recalibrate the stated `p` (evidence-gated), then apply Chow's reject threshold
 `τ = 1 − verify_cost/stake` → **Proceed / Verify / Abstain**, the bar climbing with the
-stakes. A Monte-Carlo study (`bindings/python/validation/validate_guarantees.py`)
-confirms it lowers expected decision cost (100% win-rate, ~8% cheaper). This is the
-load-bearing operational payoff — the literature's #1 agent open-problem made concrete.
+stakes. Ferrer & Ramos (arXiv 2408.02841) argue for judging probabilities by proper
+scoring rules and decision-theoretic metrics rather than ECE, in general, and say
+nothing about LLMs. A Monte-Carlo study
+(`bindings/python/validation/validate_guarantees.py`) finds the gate lowers expected
+decision cost in simulation (100% win-rate, ~8% cheaper) **under its own assumed
+distributions**. It is not a measurement on real agents; that effect is unmeasured.
 
 ### Deliberately NOT built (don't re-litigate)
 

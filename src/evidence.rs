@@ -91,6 +91,7 @@
 //! 1.2% for all `p = 0.9`. All inside the 5% the bound allows.
 
 use chrono::NaiveDate;
+use serde::Serialize;
 
 use crate::model::Claim;
 use crate::scoring::{Sample, Step};
@@ -177,6 +178,77 @@ fn due_key(c: &Claim) -> NaiveDate {
         let days = c.horizon_days.unwrap_or_else(horizon_days);
         c.created_at.date_naive() + chrono::Duration::days(days)
     })
+}
+
+/// What a ledger's voids add up to.
+///
+/// A void is how a question that stopped making sense leaves the record, and it is
+/// also how a person who has seen an answer they dislike makes it leave. The tool
+/// cannot tell the two apart, but it can see *when*: a claim voided before it came
+/// due, while the answer was still unknown, is the honest case; one voided after its
+/// due date, or after it had already resolved, may have been voided with the answer
+/// in hand. Measured: 40 calls at 90%, half of them wrong, with the 20 misses voided
+/// afterwards, read as Brier 0.010 and "honest sample: yes" on the plain report, the
+/// badge and the hook, because every score drops voided claims. See
+/// [`VOID_WITHHOLD_RATE`].
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct VoidAccount {
+    /// Every void in scope, whenever it happened.
+    pub total: usize,
+    /// Of those, the ones made after the claim came due or after it resolved.
+    pub late: usize,
+    /// Claims in scope that have come due, or were voided late: the denominator
+    /// `late` is a share of. Voided claims are in it; they came due too.
+    pub came_due: usize,
+}
+
+/// More than this share of the claims that came due voided late, and the verdict is
+/// withheld. One late void in ten is the line: a handful is a bad question noticed
+/// late, and a tenth of the record is a pattern.
+pub const VOID_WITHHOLD_RATE: f64 = 0.10;
+
+impl VoidAccount {
+    /// The share of due claims that were voided late, or `None` when there is none
+    /// to speak of.
+    pub fn late_rate(&self) -> Option<f64> {
+        (self.late > 0 && self.came_due > 0).then(|| self.late as f64 / self.came_due as f64)
+    }
+
+    /// Whether the late voids are numerous enough that no verdict should be read.
+    pub fn withholds_verdict(&self) -> bool {
+        self.late_rate().is_some_and(|r| r > VOID_WITHHOLD_RATE)
+    }
+}
+
+/// Voided after the claim came due, or after it had already resolved.
+fn voided_late(c: &Claim) -> bool {
+    match &c.void {
+        None => false,
+        Some(v) => c.voided_after_resolution() || v.at.date_naive() > due_key(c),
+    }
+}
+
+/// Count the voids in `claims` (optionally only those carrying `tag`) as of `today`.
+pub fn void_account(claims: &[Claim], today: NaiveDate, tag: Option<&str>) -> VoidAccount {
+    let mut acct = VoidAccount::default();
+    for c in claims {
+        if let Some(t) = tag {
+            if !c.tags.iter().any(|x| x == t) {
+                continue;
+            }
+        }
+        let late = voided_late(c);
+        if c.is_void() {
+            acct.total += 1;
+        }
+        if late {
+            acct.late += 1;
+        }
+        if late || due_key(c) <= today {
+            acct.came_due += 1;
+        }
+    }
+    acct
 }
 
 /// Build the evidence sequence from `claims` as of `today`.
@@ -613,5 +685,64 @@ mod tests {
             gapped <= full + 1e-12,
             "gaps must not raise the e-value: {gapped} vs {full}"
         );
+    }
+
+    fn void_at(mut c: Claim, y: i32, m: u32, d: u32) -> Claim {
+        c.void = Some(crate::model::Void {
+            at: Utc.with_ymd_and_hms(y, m, d, 0, 0, 0).unwrap(),
+            reason: "test".into(),
+        });
+        c
+    }
+
+    #[test]
+    fn a_void_is_late_when_it_followed_the_due_date_or_the_resolution() {
+        let today = NaiveDate::from_ymd_opt(2025, 9, 1).unwrap();
+        // a: due 2025-02-01, voided 2025-01-20, while the answer was unknown.
+        let a = void_at(claim("a", 0, 0.7, None, 0), 2025, 1, 20);
+        // b: due 2025-02-02, never resolved, voided a month after it came due.
+        let b = void_at(claim("b", 1, 0.7, None, 0), 2025, 3, 1);
+        // c: resolved 2025-01-11 (before it was due), then voided in April.
+        let c = void_at(claim("c", 2, 0.7, Some(Outcome::False), 10), 2025, 4, 1);
+        // d: not void, due. e: not void, not yet due.
+        let d = claim("d", 3, 0.7, Some(Outcome::True), 20);
+        let e = claim("e", 300, 0.7, None, 0);
+
+        let acct = void_account(&[a, b, c, d, e], today, None);
+        assert_eq!(acct.total, 3);
+        assert_eq!(
+            acct.late, 2,
+            "b came due, c had resolved; a was before both"
+        );
+        assert_eq!(acct.came_due, 4, "a, b, c and d came due; e has not");
+        assert_eq!(acct.late_rate(), Some(0.5));
+        assert!(acct.withholds_verdict());
+    }
+
+    #[test]
+    fn the_withholding_line_is_strictly_more_than_one_in_ten() {
+        let acct = |late, came_due| VoidAccount {
+            total: late,
+            late,
+            came_due,
+        };
+        assert!(!acct(0, 20).withholds_verdict());
+        assert!(!acct(1, 20).withholds_verdict());
+        assert!(
+            !acct(2, 20).withholds_verdict(),
+            "exactly 10% is not more than 10%"
+        );
+        assert!(acct(3, 20).withholds_verdict());
+        assert!(!VoidAccount::default().withholds_verdict());
+    }
+
+    #[test]
+    fn voids_are_counted_only_within_the_tag_in_scope() {
+        let today = NaiveDate::from_ymd_opt(2025, 9, 1).unwrap();
+        let mut mine = void_at(claim("m", 1, 0.7, None, 0), 2025, 3, 1);
+        mine.tags = vec!["who:claude".into()];
+        let theirs = void_at(claim("t", 2, 0.7, None, 0), 2025, 3, 1);
+        let acct = void_account(&[mine, theirs], today, Some("who:claude"));
+        assert_eq!((acct.total, acct.late, acct.came_due), (1, 1, 1));
     }
 }

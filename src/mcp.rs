@@ -640,6 +640,12 @@ fn tool_void(args: &Value, ledger: &Path) -> ToolResult {
     if led.claims[idx].is_void() {
         return Err(format!("[{}] is already void", led.claims[idx].id));
     }
+    if led.claims[idx].is_resolved() {
+        return Err(format!(
+            "[{}] is already resolved, and a resolved claim cannot be voided: that would remove an outcome after it was seen. A void is for a question that stopped making sense before you knew the answer.",
+            led.claims[idx].id
+        ));
+    }
     led.claims[idx].void = Some(crate::model::Void {
         at: Utc::now(),
         reason: reason.to_string(),
@@ -1017,7 +1023,7 @@ fn tool_schemas() -> Value {
         },
         {
             "name": "void",
-            "description": "Annul an ambiguous or unanswerable question. It keeps its place in the history but is excluded from every score, the way a forecasting platform annuls a question rather than grading it. Use this instead of leaving a bad question to rot unresolved — an unresolved overdue claim pauses the evidence test.",
+            "description": "Annul a question that stopped making sense before you knew the answer. It keeps its place in the history but is excluded from every score. A resolved claim cannot be voided. Voids made after a claim's due date are counted, and when they exceed one in ten of the claims that came due the verdict is withheld, so resolve a claim when it answers rather than voiding it.",
             "inputSchema": { "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {
                 "id": { "type": "string", "description": "claim id (any unique prefix)" },
                 "reason": { "type": "string", "description": "why this question cannot fairly be graded" }

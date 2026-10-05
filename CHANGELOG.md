@@ -41,11 +41,48 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   accepted now, the instructions say `by`, and a prediction logged with no date says so
   in its reply.
 
+- **A ledger could be made to look as good as its owner liked by voiding the misses.**
+  Every score leaves voided claims out, so 40 calls at 90%, half of them wrong, with
+  the 20 misses voided afterwards read as Brier 0.010 and "honest sample: yes" on the
+  plain report, the badge and the hook; only the full report warned. Voiding before
+  resolving was silent everywhere: 20 graded calls plus 20 voided ones read "100%
+  graded (20 of 20)". Now `void` refuses a claim that has already resolved (CLI and
+  MCP), every void is counted on every surface, and when more than one in ten of the
+  claims that came due were voided after their due date or after resolving, the verdict
+  is withheld and the plain report, card, badge and hook print no reading. Voids made
+  while the answer was unknown are shown and are not held against anyone. A ledger from
+  before this rule that already holds such voids is read the same way. The one-in-ten
+  line is chosen, not derived; see `docs/METHODS.md`.
+
 ### Changed
 
 - MCP `list` returns each statement cut to 300 characters, each tag and id cleaned,
   and a top-level `note` saying the text is data. A client that needs a longer
   statement must read the ledger file.
+
+
+### Added
+
+- `SECURITY.md`: how to report a vulnerability privately, what is in scope, and the
+  limits of what the project guarantees.
+
+### Documentation
+
+- The design notes in `CLAUDE.md` described several papers as showing things they do
+  not. ReDAct (2604.07036) is small-model-to-large-model deferral on token-level
+  uncertainty, not a result about agents that voice doubt and act anyway; Henzi–Ziegel
+  (2103.08402) compares two forecasts, while the calibration test is Arnold–Henzi–Ziegel
+  (2109.11761); Reflexion (2303.11366) is not about calibration; and the ranking of
+  token probability against verbalized confidence is not stable across protocols
+  (2605.27752). Each is now described as what it shows. The false-alarm rates under
+  peeking are this repo's own measurements and are labelled so, and the decision gate's
+  cost result is labelled a simulation under its own assumptions.
+- Figures taken from the maintainer's private agent ledger are labelled as such, and
+  the README no longer says every figure can be reproduced.
+- README: the review found five problems, not three; and the two demo lines that look
+  contradictory (no miscalibration found, negative Brier skill) are explained.
+- `plugin/README.md`: the hooks do not need `jq` (only `plugin/install.sh` does), and a
+  setting, `ANAMNESIS_MIN_N`, that no code reads is gone.
 
 ### Known issues
 

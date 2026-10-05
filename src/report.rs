@@ -252,6 +252,14 @@ const DSC_UNINFORMATIVE: f64 = 1e-9;
 pub enum Verdict {
     /// Too few graded calls to say anything.
     InsufficientData,
+    /// More than one in ten of the claims that came due were voided after their due
+    /// date, or after they had resolved, so no reading can be trusted.
+    ///
+    /// Every score leaves voided claims out, which means a ledger can be made to
+    /// look as good as its owner likes by voiding the misses. The tool cannot tell
+    /// a bad question noticed late from a bad answer disowned, so past this share it
+    /// declines to read the record at all. See [`crate::evidence::VoidAccount`].
+    Withheld,
     /// No miscalibration has been demonstrated. Not the same as "calibrated":
     /// the test can miss patterns, and small records hide a lot.
     NoEvidenceOfMiscalibration,
@@ -300,6 +308,7 @@ impl Verdict {
     pub fn slug(self) -> &'static str {
         match self {
             Verdict::InsufficientData => "insufficient_data",
+            Verdict::Withheld => "withheld",
             Verdict::NoEvidenceOfMiscalibration => "no_evidence_of_miscalibration",
             Verdict::CalibratedButUninformative => "calibrated_but_uninformative",
             Verdict::Overconfident => "overconfident",
@@ -323,6 +332,7 @@ impl Verdict {
     pub fn label(self) -> &'static str {
         match self {
             Verdict::InsufficientData => "not enough data",
+            Verdict::Withheld => "withheld",
             Verdict::NoEvidenceOfMiscalibration => "no miscalibration found",
             Verdict::CalibratedButUninformative => "uninformative",
             Verdict::Overconfident => "overconfident",
@@ -549,9 +559,15 @@ pub fn verdict_from(
     confidence_gap: Option<f64>,
     directional_bias: Option<f64>,
     distinct_forecasts: usize,
+    voids_withhold: bool,
 ) -> Verdict {
     if n < VERDICT_MIN_N {
         return Verdict::InsufficientData;
+    }
+    // Before any reading: the numbers below are computed from a record the owner
+    // may have edited, and say nothing worth acting on until that is dealt with.
+    if voids_withhold {
+        return Verdict::Withheld;
     }
     let demonstrated = eprocess.is_some_and(|e| e >= EVIDENCE_ALARM);
     let above_floor = match (mcb, mcb_floor) {
@@ -793,6 +809,9 @@ pub struct ReportData {
     /// the record after being seen. They stay in the evidence sequence; this
     /// count exists so the edit is never silent.
     pub voided_after_resolution: usize,
+    /// Every void in scope, and how many came after the claim was due or had
+    /// resolved. Past one late void in ten, the verdict is withheld.
+    pub voids: crate::evidence::VoidAccount,
     /// `ln` of the e-value, for comparing magnitudes past the display cap.
     pub eprocess_log: Option<f64>,
     /// The e-value a single per-kind subgroup must clear, after the union-bound
@@ -862,6 +881,7 @@ impl ReportData {
         let evidence =
             crate::evidence::binary_evidence(&ledger.claims, today, tag_filter.as_deref());
         let chrono_samples: Vec<Sample> = evidence.samples.clone();
+        let voids = crate::evidence::void_account(&ledger.claims, today, tag_filter.as_deref());
 
         // The descriptive "lately" trend is not a test and carries no validity
         // claim, so it may keep using the order outcomes were learned in.
@@ -1254,6 +1274,7 @@ impl ReportData {
             evidence_gap_without_deadline: evidence.oldest_gap_without_deadline,
             evidence_ungraded_due: evidence.ungraded_due,
             voided_after_resolution: evidence.voided_after_resolution,
+            voids,
             eprocess_log,
             kind_alarm_threshold: (!by_kind_len_zero)
                 .then_some(EVIDENCE_ALARM * by_kind_len as f64),
@@ -1267,6 +1288,7 @@ impl ReportData {
                 over.map(|o| o.gap),
                 scoring::directional_bias(&samples),
                 distinct_forecasts,
+                voids.withholds_verdict(),
             ),
         }
     }
@@ -1409,6 +1431,13 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 rd.overdue
             );
         }
+        if d.voids.total > 0 {
+            let _ = writeln!(
+                out,
+                "    Voided: {} claim(s), {} of them after they came due or had resolved — when the answer may already have been known.",
+                d.voids.total, d.voids.late
+            );
+        }
         if d.voided_after_resolution > 0 {
             let _ = writeln!(
                 out,
@@ -1458,6 +1487,13 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
             "\n  VERDICT          {}",
             d.verdict.label().to_uppercase()
         );
+        if d.verdict == Verdict::Withheld {
+            let _ = writeln!(
+                out,
+                "                   {} of the {} claims that came due were voided after their due date. Every score here leaves voided claims out, and the misses are the ones that get voided, so none of them is read.",
+                d.voids.late, d.voids.came_due
+            );
+        }
         if let (Some(brier), Some(logs), Some(base)) = (d.brier, d.log_score, d.base_rate) {
             let _ = writeln!(out, "\n  Brier score      {brier:.3}   (0 = perfect · 0.25 = always 50/50 · lower better)");
             let _ = writeln!(
@@ -2150,8 +2186,13 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
 
     // — Honest sample? (resolution discipline) —
     if let Some(rd) = &d.resolution_discipline {
-        let mut a = if rd.open == 0 {
+        let mut a = if rd.open == 0 && d.voids.late == 0 {
             format!("Yes — you've graded every one of your {} call(s). This isn't a picture cherry-picked from only the predictions that went your way.", rd.resolved)
+        } else if rd.open == 0 {
+            format!(
+                "You've graded every one of the {} call(s) still on the record.",
+                rd.resolved
+            )
         } else {
             format!(
                 "You've graded {} of {} call(s) ({}). The {} still open aren't in the numbers below.",
@@ -2161,6 +2202,20 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
                 rd.open
             )
         };
+        if d.voids.total > 0 {
+            a.push_str(&format!(" You voided {} call(s)", d.voids.total));
+            if d.voids.late > 0 {
+                a.push_str(&format!(
+                    ", {} of them after they came due, when you may already have known how they went.",
+                    d.voids.late
+                ));
+            } else {
+                a.push('.');
+            }
+            if d.verdict == Verdict::Withheld {
+                a.push_str(" That is more than one in ten of the calls that came due, so no verdict is given.");
+            }
+        }
         if rd.overdue > 0 {
             a.push_str(&format!(" Watch out: {} of those are past their due date — resolve them, or these scores quietly flatter you.", rd.overdue));
         }
@@ -2190,6 +2245,7 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
     // Brier skill was −0.520.
     let (verdict_word, verdict_class): (String, &'static str) = match d.verdict {
         Verdict::InsufficientData => ("Not enough data".into(), "unknown"),
+        Verdict::Withheld => ("Withheld".into(), "unknown"),
         Verdict::Overconfident => ("Overconfident".into(), "over"),
         Verdict::Underconfident => ("Underconfident".into(), "under"),
         Verdict::BiasedYes => ("Leans yes".into(), "over"),
@@ -2211,12 +2267,20 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
             Verdict::BiasedNo => "You lean toward NO — you say things won't happen more often than turns out to be true.",
             Verdict::CalibratedButUninformative => "Your confidence does not separate the calls that come true from the ones that don't — after correcting for level, every forecast you make carries the same information. That is the thing to fix first; how high or low you pitch the numbers barely matters until the ranking works.",
             Verdict::InsufficientData => "Too few graded calls to say whether that's luck or judgement.",
+            Verdict::Withheld => "No reading is given. Too many calls were voided after they came due, and the ones that get voided are the ones that went badly, so these numbers describe a record that has been tidied. Resolve a call when it answers; a void is for a question that stopped making sense before you knew.",
             Verdict::MiscalibratedBothWays => "Your errors run BOTH ways — too sure at one end of your range and not sure enough at the other. They cancel in the average, so there is no single direction to shade: look at the reliability diagram to see where each half goes wrong.",
             Verdict::NoEvidenceOfMiscalibration => "Nothing in the record shows your confidence is off. That is not the same as proof it's right — the test can miss patterns, and a small record hides a lot.",
         };
+        // A withheld verdict gives no reading, so it does not quote the accuracy
+        // either: the figure is computed from a record that has been tidied.
+        let answer = if d.verdict == Verdict::Withheld {
+            lesson.to_string()
+        } else {
+            format!("{core} {lesson}")
+        };
         insights.push(Insight {
             label: "When you say you're sure, should you be?",
-            answer: format!("{core} {lesson}"),
+            answer,
             jargon: "calibration verdict (CORP miscalibration + sequential evidence test)",
         });
     }
@@ -2296,8 +2360,22 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         });
     }
 
+    // A withheld verdict leaves only the two paragraphs that say why. Everything else
+    // here (discrimination, the evidence test, the Brier score, interval coverage) is
+    // a reading of the same tidied record, and printing it under "no verdict" would
+    // hand back the verdict by another route.
+    if d.verdict == Verdict::Withheld {
+        insights.retain(|i| {
+            i.jargon.starts_with("resolution discipline")
+                || i.jargon.starts_with("calibration verdict")
+        });
+    }
+
     // — What to do — tailored to the verdict, then the earned correction, then n. —
     let mut actions: Vec<String> = Vec::new();
+    if d.verdict == Verdict::Withheld {
+        actions.push("Resolve the calls that have come due instead of voiding them. A void is for a question that stopped making sense before you knew the answer.".into());
+    }
     match verdict_class {
         "under" => actions
             .push("Lean in a little when you feel sure — you tend to undersell yourself.".into()),
@@ -2342,6 +2420,10 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
     actions.push("Before a costly or irreversible call, run `ana decide` to turn your confidence into a clear proceed / verify / abstain.".into());
 
     let headline = match d.verdict {
+        Verdict::Withheld => format!(
+            "No verdict: {} of the {} calls that came due were voided after their due date.",
+            d.voids.late, d.voids.came_due
+        ),
         Verdict::Underconfident => {
             "You undersell yourself — trust your sure calls more.".to_string()
         }
@@ -2380,6 +2462,7 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         }
     };
     let evidence_tag = match d.eprocess {
+        _ if d.verdict == Verdict::Withheld => "verdict withheld",
         Some(e) if e >= EVIDENCE_ALARM => "evidence: solid",
         Some(e) if e >= RECAL_MIN_E => "evidence: suggestive",
         _ if d.evidence_n < VERDICT_MIN_N => "evidence: too few to tell",
@@ -2440,13 +2523,14 @@ fn mood(d: &ReportData) -> Mood {
         (Some(m), None) => Some(m.max(0.0)),
         _ => None,
     };
-    let score = if d.verdict == Verdict::InsufficientData {
+    let score = if matches!(d.verdict, Verdict::InsufficientData | Verdict::Withheld) {
         None
     } else {
         excess.map(|e| (100.0 * (1.0 - (e / MOOD_WORST_EXCESS).min(1.0))).round() as u32)
     };
     let dir = match d.verdict {
         Verdict::InsufficientData => "not enough graded calls to judge yet",
+        Verdict::Withheld => "verdict withheld — too many calls were voided after they came due",
         Verdict::Overconfident => "overconfident — you oversell",
         Verdict::Underconfident => "underconfident — you undersell",
         Verdict::BiasedYes => "leans yes — you over-predict that things happen",
@@ -2481,6 +2565,7 @@ fn mood(d: &ReportData) -> Mood {
     };
     let (art, name) = match d.verdict {
         Verdict::InsufficientData => (CAT_SLEEPY, "WARMING UP"),
+        Verdict::Withheld => (CAT_SLEEPY, "WITHHELD"),
         Verdict::CalibratedButUninformative => (art, "UNINFORMATIVE"),
         _ => (art, band),
     };

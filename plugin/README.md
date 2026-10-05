@@ -30,7 +30,9 @@ It is local-first, no-network, no-LLM. The ledger is a plain JSON file you own a
 
 ## Install
 
-Requires the `ana` engine on `PATH` (or vendored at `~/.anamnesis/bin/ana`) and `jq`.
+Requires the `ana` engine on `PATH` (or vendored at `~/.anamnesis/bin/ana`). The hooks need
+nothing else. Only `plugin/install.sh`, the manual installer for the `settings.json`
+fallback below, also needs `jq`.
 
 ```
 /plugin marketplace add Anbu-00001/Anamnesis
@@ -48,5 +50,5 @@ Get `ana` from the [Anamnesis releases](https://github.com/Anbu-00001/Anamnesis/
   calibration banner doesn't appear, register the hook directly in your
   `settings.json` (see `hooks/hooks.json`) as a fallback, or just run `/calibration`.
 - The hooks are **fail-open and silent** when the ledger is empty, the engine is
-  missing, or there are too few resolved predictions (`ANAMNESIS_MIN_N`, default 6)
-  to say anything trustworthy — installed-but-unused is invisible.
+  missing, or there are too few graded predictions (the verdict needs 20) to say
+  anything trustworthy — installed-but-unused is invisible.
