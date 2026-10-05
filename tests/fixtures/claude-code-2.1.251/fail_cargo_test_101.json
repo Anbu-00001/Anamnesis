@@ -1,0 +1,16 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/work/transcript.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "prompt-fixture",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /work/project/tiny && cargo test -q -- --ignored"
+  },
+  "tool_use_id": "toolu_FIXTURE",
+  "error": "Exit code 101\n\nrunning 1 test\ntests::fails_when_asked --- FAILED\n\nfailures:\n\n---- tests::fails_when_asked stdout ----\n\nthread 'tests::fails_when_asked' (62364) panicked at src/lib.rs:7:29:\nassertion `left == right` failed\n  left: 4\n right: 5\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::fails_when_asked\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\nerror: test failed, to rerun pass `--lib`",
+  "is_interrupt": false,
+  "duration_ms": 166
+}

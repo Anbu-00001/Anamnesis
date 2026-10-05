@@ -1,0 +1,21 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/work/transcript.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "prompt-fixture",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cargo test -q -- --ignored || true"
+  },
+  "tool_response": {
+    "stdout": "running 1 test\ntests::fails_when_asked --- FAILED\n\nfailures:\n\n---- tests::fails_when_asked stdout ----\n\nthread 'tests::fails_when_asked' (62430) panicked at src/lib.rs:7:29:\nassertion `left == right` failed\n  left: 4\n right: 5\nnote: run with `RUST_BACKTRACE=1` environment variable to display a backtrace\n\n\nfailures:\n    tests::fails_when_asked\n\ntest result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\nerror: test failed, to rerun pass `--lib`",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_FIXTURE",
+  "duration_ms": 56
+}

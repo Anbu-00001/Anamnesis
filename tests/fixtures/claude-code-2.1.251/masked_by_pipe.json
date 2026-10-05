@@ -1,0 +1,21 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/work/transcript.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "prompt-fixture",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd /work/project/tiny && cargo test -q -- --ignored 2>&1 | tail -3"
+  },
+  "tool_response": {
+    "stdout": "test result: FAILED. 0 passed; 1 failed; 0 ignored; 0 measured; 1 filtered out; finished in 0.00s\n\nerror: test failed, to rerun pass `--lib`",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_FIXTURE",
+  "duration_ms": 71
+}

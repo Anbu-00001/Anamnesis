@@ -41,6 +41,24 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   accepted now, the instructions say `by`, and a prediction logged with no date says so
   in its reply.
 
+- **`kind:tests-pass` auto-resolution never worked under Claude Code, and now does.** The
+  hook read an exit-status field, `tool_result_exit_code`, that Claude Code does not send,
+  so in 689 real claims it graded none. Captured against 2.1.251: a command that exits 0
+  arrives as `PostToolUse` with no status at all; one that exits non-zero arrives as
+  `PostToolUseFailure`, which the plugin did not register, with the code only inside the
+  text of `error`. The plugin now registers that event (`post-tool-failure.sh`, and in
+  `plugin/install.sh`), and the hook reads the event the call arrived as. Verified in
+  three live Claude Code sessions: a passing suite graded TRUE, a failing one FALSE, a
+  missing manifest left open. The contract is pinned by payloads captured from a real
+  session (`tests/fixtures/claude-code-2.1.251/`).
+- **The hook no longer grades what it cannot trust.** A pipe (`cargo test | tail`), `||`,
+  `;`, a background job or a subshell make Claude Code report success whatever the test
+  did, and are refused, with a line saying the run could not be graded. `cargo build`,
+  `cargo clippy` and `npm run build` are not tests and no longer settle a tests-pass
+  claim. A failure must carry the runner's own failure code, and for cargo output that
+  shows a failing test or code that does not compile: cargo exits 101 for a missing
+  manifest too, which a live session graded as a failed suite until this was caught. A
+  `cargo test` that ran no tests is not a pass.
 - **A ledger could be made to look as good as its owner liked by voiding the misses.**
   Every score leaves voided claims out, so 40 calls at 90%, half of them wrong, with
   the 20 misses voided afterwards read as Brier 0.010 and "honest sample: yes" on the
@@ -83,16 +101,6 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   contradictory (no miscalibration found, negative Brier skill) are explained.
 - `plugin/README.md`: the hooks do not need `jq` (only `plugin/install.sh` does), and a
   setting, `ANAMNESIS_MIN_N`, that no code reads is gone.
-
-### Known issues
-
-- **`kind:tests-pass` auto-resolution does not fire under Claude Code.** The hook
-  reads an exit-status field, `tool_result_exit_code`, that Claude Code does not send.
-  Captured against 2.1.251: a command that succeeds arrives as `PostToolUse` with no
-  status at all; one that fails arrives as `PostToolUseFailure`, which the plugin does
-  not register, with the code only inside the text of `error`. In 689 real claims,
-  none was ever graded this way. The fix is in progress; until it lands, treat every
-  resolution as self-graded.
 
 ## [0.4.0] — 2026-09-13
 

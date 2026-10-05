@@ -1,0 +1,22 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/work/transcript.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "prompt-fixture",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "echo hello",
+    "description": "Echo hello"
+  },
+  "tool_response": {
+    "stdout": "hello",
+    "stderr": "",
+    "interrupted": false,
+    "isImage": false,
+    "noOutputExpected": false
+  },
+  "tool_use_id": "toolu_FIXTURE",
+  "duration_ms": 100
+}

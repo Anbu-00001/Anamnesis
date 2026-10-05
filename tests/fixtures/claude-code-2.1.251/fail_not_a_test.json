@@ -1,0 +1,17 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/work/transcript.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "prompt-fixture",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "bash -c 'exit 3'",
+    "description": "Exit with status 3"
+  },
+  "tool_use_id": "toolu_FIXTURE",
+  "error": "Exit code 3",
+  "is_interrupt": false,
+  "duration_ms": 22
+}

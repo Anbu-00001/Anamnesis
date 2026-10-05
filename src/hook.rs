@@ -28,6 +28,9 @@ pub enum Event {
     SessionStart,
     UserPrompt,
     PostTool,
+    /// A tool call that failed. Claude Code sends a command that exits non-zero here
+    /// and never as `PostToolUse`, so without this event a failing test is invisible.
+    PostToolFailure,
     Stop,
 }
 
@@ -38,6 +41,7 @@ impl Event {
             Event::SessionStart => "SessionStart",
             Event::UserPrompt => "UserPromptSubmit",
             Event::PostTool => "PostToolUse",
+            Event::PostToolFailure => "PostToolUseFailure",
             Event::Stop => "Stop",
         }
     }
@@ -261,28 +265,236 @@ fn sanitize(s: &str) -> String {
         .collect()
 }
 
-/// Commands whose result is the moment of truth for a `kind:tests-pass` claim.
-fn is_test_command(cmd: &str) -> bool {
-    const NEEDLES: [&str; 16] = [
+/// The kinds of test runner whose exit status answers "did the tests pass".
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Runner {
+    Cargo,
+    /// Everything else we recognise: pytest, go, npm and friends, flutter, gradle, maven.
+    Other,
+}
+
+impl Runner {
+    /// The exit codes that mean "the tests ran and at least one failed".
+    ///
+    /// Any other non-zero status means the run itself went wrong: a missing
+    /// directory, a usage error, a crash before a test started. It says nothing about
+    /// the claim, and grading it FALSE would record a failure that did not happen.
+    /// Measured: `cd tiny && cargo test` with no `tiny` exits 1 without cargo ever
+    /// running; cargo's code for a failing test is 101.
+    fn failure_codes(self) -> &'static [i64] {
+        match self {
+            Runner::Cargo => &[101],
+            Runner::Other => &[1],
+        }
+    }
+
+    /// Whether the output of a failed run shows the claim's suite failing, not merely
+    /// the runner stopping.
+    ///
+    /// Cargo exits 101 for a failing test, but also for a manifest it cannot find, an
+    /// unknown subcommand and most other errors. Caught live: a session whose project
+    /// directory was missing ran `cargo test --manifest-path tiny/Cargo.toml`, exited
+    /// 101 having tested nothing, and was graded FALSE. So for cargo the output must
+    /// say the tests failed, or that the code under test does not compile.
+    fn confirms_failure(self, output: &str) -> bool {
+        match self {
+            Runner::Cargo => {
+                output.contains("test result: FAILED") || output.contains("could not compile")
+            }
+            Runner::Other => true,
+        }
+    }
+}
+
+/// Flags that make a test command not run any test.
+const NON_RUNNING: [&str; 10] = [
+    "--no-run",
+    "--collect-only",
+    "--co",
+    "--help",
+    "-h",
+    "--version",
+    "-V",
+    "--list",
+    "--listTests",
+    "--dry-run",
+];
+
+/// A test run whose exit status is a trustworthy answer, or `None`.
+///
+/// Claude Code sends no exit status. It sends a command that exited 0 as
+/// `PostToolUse`, and one that exited non-zero as `PostToolUseFailure`, so the
+/// event stands in for the status, and it stands in for the *shell's* status.
+/// Anything that can make that differ from the runner's own is refused: a pipe
+/// (the status is the last stage's), `||` (swallowed), `;` or `&` (a later command
+/// wins, or it ran in the background), a subshell, a substitution, a negation.
+/// Measured: `cargo test 2>&1 | tail -3` over a failing test and `cargo test || true`
+/// both arrive as ordinary successes.
+///
+/// A leading `cd DIR &&` and `NAME=value` assignments are allowed, since they are how
+/// agents actually run tests; the runner must then be the command itself, not a word
+/// in an `echo`. Builds and lints are not tests: `cargo build` is not an answer to
+/// "the tests pass".
+fn test_run(cmd: &str) -> Option<Runner> {
+    let cmd = cmd.trim();
+    if cmd.is_empty() || cmd.contains(['|', ';', '`', '(', ')', '\n']) {
+        return None;
+    }
+    // `2>&1` and friends are redirections, not background jobs.
+    let flat = cmd
+        .replace("2>&1", " ")
+        .replace("1>&2", " ")
+        .replace(">&2", " ")
+        .replace("&>", " ");
+    let mut segments: Vec<&str> = flat.split("&&").map(str::trim).collect();
+    let last = segments.pop()?;
+    let is_cd = |s: &str| {
+        let t: Vec<&str> = s.split_whitespace().collect();
+        t.len() == 2 && t[0] == "cd"
+    };
+    if segments.iter().any(|s| !is_cd(s)) || last.starts_with('!') || last.contains('&') {
+        return None;
+    }
+    let mut toks: Vec<&str> = last.split_whitespace().collect();
+    while toks.first().is_some_and(|t| is_assignment(t)) {
+        toks.remove(0);
+    }
+    if toks.iter().any(|t| NON_RUNNING.contains(t)) {
+        return None;
+    }
+    let t = toks.as_slice();
+    let runner = match t {
+        ["cargo", rest @ ..] => {
+            // Skip a toolchain selector: `cargo +nightly test`.
+            let rest: &[&str] = match rest {
+                [first, tail @ ..] if first.starts_with('+') => tail,
+                _ => rest,
+            };
+            match rest {
+                ["test", ..] => Runner::Cargo,
+                ["nextest", "run", ..] => Runner::Cargo,
+                _ => return None,
+            }
+        }
+        ["npm" | "pnpm" | "yarn" | "bun", "test" | "t" | "tst", ..]
+        | ["npm" | "pnpm" | "yarn" | "bun", "run" | "run-script", "test", ..] => Runner::Other,
+        ["pytest" | "py.test" | "jest" | "vitest", ..]
+        | ["python" | "python3", "-m", "pytest", ..]
+        | ["npx" | "pnpx" | "bunx", "jest" | "vitest" | "pytest", ..]
+        | ["go" | "flutter" | "dart", "test", ..] => Runner::Other,
+        ["gradle" | "./gradlew" | "gradlew" | "mvn" | "./mvnw", rest @ ..]
+            if rest.contains(&"test") =>
+        {
+            Runner::Other
+        }
+        _ => return None,
+    };
+    Some(runner)
+}
+
+fn is_assignment(tok: &str) -> bool {
+    match tok.split_once('=') {
+        Some((name, _)) => {
+            !name.is_empty()
+                && !name.starts_with(|c: char| c.is_ascii_digit())
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+        }
+        None => false,
+    }
+}
+
+/// Whether `cmd` mentions a test runner at all, even one whose status we will not
+/// trust. Used only to say that a run was seen and could not be graded.
+fn mentions_test_runner(cmd: &str) -> bool {
+    let lower = cmd.to_lowercase();
+    [
         "cargo test",
-        "cargo build",
-        "cargo clippy",
+        "cargo nextest",
         "npm test",
-        "npm run build",
+        "npm run test",
         "pnpm test",
-        "pnpm build",
         "yarn test",
-        "yarn build",
         "pytest",
         "go test",
-        "gradle",
-        "mvn ",
         "flutter test",
         "jest",
         "vitest",
-    ];
-    let lower = cmd.to_lowercase();
-    NEEDLES.iter().any(|n| lower.contains(n))
+        "gradle",
+        "mvn",
+    ]
+    .iter()
+    .any(|n| lower.contains(n))
+}
+
+/// Cargo exits 0 for a filter that matches nothing, printing `running 0 tests` for
+/// every test binary. Nothing was tested, so a zero status is not a pass.
+fn cargo_ran_no_tests(stdout: &str) -> bool {
+    let counts: Vec<u64> = stdout
+        .lines()
+        .filter_map(|l| l.trim().strip_prefix("running "))
+        .filter_map(|r| r.split_whitespace().next()?.parse().ok())
+        .collect();
+    !counts.is_empty() && counts.iter().all(|&n| n == 0)
+}
+
+/// The exit code Claude Code puts inside a failed call's `error` text, which reads
+/// `"Exit code 101\n<output>"`.
+fn exit_code_in(error: &str) -> Option<i64> {
+    let digits: String = error
+        .strip_prefix("Exit code ")?
+        .chars()
+        .take_while(char::is_ascii_digit)
+        .collect();
+    digits.parse().ok()
+}
+
+/// What a post-tool event says about the claim it might settle.
+enum Grade {
+    /// The runner's own exit status, taken from the event it arrived as.
+    Exit(i64),
+    /// A test command was seen, but its status cannot be trusted.
+    Untrusted,
+    /// Nothing to say.
+    NotATest,
+}
+
+fn grade_of(event: Event, input: &Value, cmd: &str) -> Grade {
+    let Some(runner) = test_run(cmd) else {
+        return if event == Event::PostTool && mentions_test_runner(cmd) {
+            Grade::Untrusted
+        } else {
+            Grade::NotATest
+        };
+    };
+    match event {
+        // Claude Code sends this event only for a call that succeeded.
+        Event::PostTool => {
+            let stdout = input
+                .pointer("/tool_response/stdout")
+                .and_then(Value::as_str)
+                .unwrap_or("");
+            if runner == Runner::Cargo && cargo_ran_no_tests(stdout) {
+                Grade::Untrusted
+            } else {
+                Grade::Exit(0)
+            }
+        }
+        Event::PostToolFailure => {
+            if input.get("is_interrupt").and_then(Value::as_bool) == Some(true) {
+                return Grade::NotATest;
+            }
+            let error = input.get("error").and_then(Value::as_str).unwrap_or("");
+            match exit_code_in(error) {
+                Some(code)
+                    if runner.failure_codes().contains(&code) && runner.confirms_failure(error) =>
+                {
+                    Grade::Exit(code)
+                }
+                _ => Grade::NotATest,
+            }
+        }
+        _ => Grade::NotATest,
+    }
 }
 
 /// Run one hook. `stdin` is the hook's JSON payload; the result is what to print.
@@ -348,20 +560,17 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
             );
         }
 
-        Event::PostTool => {
+        Event::PostTool | Event::PostToolFailure => {
             let cmd = input
                 .pointer("/tool_input/command")
                 .and_then(Value::as_str)
                 .unwrap_or("");
-            if !is_test_command(cmd) {
-                return Ok(());
-            }
             // The exit status is the fact. Grading a "the tests will pass"
             // prediction from the agent's own account of what happened is the
             // weakest link in a self-graded ledger; this removes it.
-            let exit = input.get("tool_result_exit_code").and_then(Value::as_i64);
-            match exit {
-                Some(code) => {
+            match grade_of(event, &input, cmd) {
+                Grade::NotATest => return Ok(()),
+                Grade::Exit(code) => {
                     let resolved = auto_resolve(ledger_path, &slug, cmd, code)?;
                     if resolved.is_empty() {
                         return Ok(());
@@ -382,9 +591,10 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                         resolved.len()
                     ));
                 }
-                None => {
-                    // No exit status available: fall back to a nudge, and say
-                    // plainly that this one is on the agent's honour.
+                Grade::Untrusted => {
+                    // A test command ran, but its exit status cannot be trusted
+                    // (piped, chained, or no test ran). Say so, and say plainly
+                    // that resolving it now is on the agent's word.
                     let open: Vec<String> = ledger
                         .claims
                         .iter()
@@ -400,7 +610,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                         return Ok(());
                     }
                     context.push(format!(
-                        "⟢ Anamnesis (moment of truth): a test/build just ran — resolve your open prediction(s) about it NOW ({}), before hindsight rewrites how sure you were.",
+                        "⟢ Anamnesis (moment of truth): a test command just ran, but its exit status cannot be trusted here (it was piped, chained, or ran no tests), so nothing was graded automatically. Resolve your open prediction(s) about it NOW ({}), before hindsight rewrites how sure you were; this one is on your word.",
                         open.join(", ")
                     ));
                 }
@@ -513,12 +723,102 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_test_commands_count_as_the_moment_of_truth() {
-        assert!(is_test_command("cargo test --all"));
-        assert!(is_test_command("  PYTHONPATH=. pytest -q "));
-        assert!(is_test_command("npm test"));
-        assert!(!is_test_command("ls -la"));
-        assert!(!is_test_command("git commit -m 'tests'"));
+    fn plain_test_runs_are_graded() {
+        for cmd in [
+            "cargo test",
+            "cargo test --all -- --nocapture",
+            "cargo +nightly test -p foo",
+            "cargo nextest run",
+            "  PYTHONPATH=. pytest -q ",
+            "python3 -m pytest tests/",
+            "npm test",
+            "npm run test -- --watch=false",
+            "pnpm test",
+            "yarn test",
+            "go test ./...",
+            "flutter test",
+            "npx vitest run",
+            "./gradlew test",
+            "mvn test",
+            "cd /work/project && cargo test",
+            "cd sub && RUST_LOG=debug cargo test 2>&1",
+        ] {
+            assert!(test_run(cmd).is_some(), "should be graded: {cmd}");
+        }
+    }
+
+    #[test]
+    fn anything_that_can_change_the_shells_status_is_not() {
+        for cmd in [
+            "cargo test | tail -3",
+            "cargo test 2>&1 | tail -3",
+            "cargo test || true",
+            "cargo test; echo done",
+            "cargo test &",
+            "cargo test && echo ok",
+            "echo cargo test",
+            "! cargo test",
+            "(cargo test)",
+            "x=$(cargo test)",
+            "cargo test\nexit 0",
+            "cd a && cd b && cargo test | cat",
+            "make && cargo test",
+        ] {
+            assert!(test_run(cmd).is_none(), "must not be graded: {cmd}");
+        }
+    }
+
+    #[test]
+    fn builds_lints_and_runs_that_test_nothing_are_not_tests() {
+        for cmd in [
+            "cargo build",
+            "cargo clippy --all-targets",
+            "cargo test --no-run",
+            "cargo test -- --list",
+            "pytest --collect-only",
+            "pytest --help",
+            "npm run build",
+            "go build ./...",
+            "ls -la",
+            "git commit -m 'tests'",
+            "ana run -- cargo test",
+            "",
+        ] {
+            assert!(test_run(cmd).is_none(), "must not be graded: {cmd:?}");
+        }
+    }
+
+    #[test]
+    fn a_test_failure_is_only_the_runners_own_failure_code() {
+        assert_eq!(test_run("cargo test").unwrap().failure_codes(), [101]);
+        assert_eq!(test_run("pytest").unwrap().failure_codes(), [1]);
+    }
+
+    #[test]
+    fn cargo_must_say_the_suite_failed_not_merely_that_it_stopped() {
+        let cargo = Runner::Cargo;
+        assert!(cargo.confirms_failure("Exit code 101\n\ntest result: FAILED. 0 passed; 1 failed"));
+        assert!(cargo.confirms_failure("Exit code 101\nerror: could not compile `x` (lib test)"));
+        assert!(!cargo.confirms_failure(
+            "Exit code 101\nerror: manifest path `tiny/Cargo.toml` does not exist"
+        ));
+        assert!(!cargo.confirms_failure("Exit code 101\nerror: no such command: `tset`"));
+        assert!(Runner::Other.confirms_failure("Exit code 1"));
+    }
+
+    #[test]
+    fn the_exit_code_is_read_from_the_error_text() {
+        assert_eq!(exit_code_in("Exit code 101\n\nrunning 1 test"), Some(101));
+        assert_eq!(exit_code_in("Exit code 3"), Some(3));
+        assert_eq!(exit_code_in("Command timed out"), None);
+        assert_eq!(exit_code_in("exit code 3"), None);
+    }
+
+    #[test]
+    fn cargo_with_nothing_to_run_is_not_a_pass() {
+        assert!(cargo_ran_no_tests("running 0 tests\n\nrunning 0 tests\n"));
+        assert!(!cargo_ran_no_tests("running 2 tests\n\nrunning 0 tests\n"));
+        assert!(!cargo_ran_no_tests("no cargo output at all"));
     }
 
     #[test]

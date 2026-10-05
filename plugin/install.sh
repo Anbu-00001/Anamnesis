@@ -39,12 +39,13 @@ hook_json() {
     SessionStart:     [{hooks:[{type:"command",command:("bash "+$h+"/session-start.sh"),timeout:5}]}],
     UserPromptSubmit: [{hooks:[{type:"command",command:("bash "+$h+"/user-prompt.sh"),timeout:5}]}],
     Stop:             [{hooks:[{type:"command",command:("bash "+$h+"/stop.sh"),timeout:5}]}],
-    PostToolUse:      [{matcher:"Bash",hooks:[{type:"command",command:("bash "+$h+"/post-tool.sh"),timeout:5}]}]
+    PostToolUse:      [{matcher:"Bash",hooks:[{type:"command",command:("bash "+$h+"/post-tool.sh"),timeout:5}]}],
+    PostToolUseFailure: [{matcher:"Bash",hooks:[{type:"command",command:("bash "+$h+"/post-tool-failure.sh"),timeout:5}]}]
   }'
 }
 
 # If the marketplace plugin is ALSO installed, its own hooks/hooks.json registers
-# the same four events and everything would fire twice — two session-start blocks,
+# the same events and everything would fire twice — two session-start blocks,
 # two checkpoints, two auto-resolves.
 plugin_also_installed() {
   local d
@@ -83,7 +84,7 @@ fi
 if plugin_also_installed; then
   echo
   echo "  ⚠ The Anamnesis PLUGIN also appears to be installed, and it registers the"
-  echo "    same four events. Installing both means every hook fires TWICE."
+  echo "    same events. Installing both means every hook fires TWICE."
   echo "    Pick one: either this script, or the plugin — not both."
 fi
 echo
@@ -137,6 +138,7 @@ jq --arg h "$HOOKDIR" '
   | addhook("UserPromptSubmit"; {hooks:[{type:"command",command:("bash "+$h+"/user-prompt.sh"),timeout:5}]})
   | addhook("Stop";             {hooks:[{type:"command",command:("bash "+$h+"/stop.sh"),timeout:5}]})
   | addhook("PostToolUse";      {matcher:"Bash",hooks:[{type:"command",command:("bash "+$h+"/post-tool.sh"),timeout:5}]})
+  | addhook("PostToolUseFailure"; {matcher:"Bash",hooks:[{type:"command",command:("bash "+$h+"/post-tool-failure.sh"),timeout:5}]})
 ' "$S" > "$tmp"
 jq -e . "$tmp" >/dev/null || { echo "refusing to write invalid JSON" >&2; exit 1; }
 mv "$tmp" "$S"
@@ -144,7 +146,7 @@ mv "$tmp" "$S"
 echo "✓ Anamnesis installed."
 echo "  engine : $("$ANA_HOME/bin/ana" --version)"
 echo "  ledger : ${ANAMNESIS_AGENT_DATA:-$ANA_HOME/agent.json}"
-echo "  hooks  : SessionStart, UserPromptSubmit (every 7th), Stop, PostToolUse(Bash) → $S"
+echo "  hooks  : SessionStart, UserPromptSubmit (every 7th), Stop, PostToolUse(Bash), PostToolUseFailure(Bash) → $S"
 echo "  backup : $S.bak.anamnesis"
 echo "  → run /hooks (or restart Claude Code) to activate in the current session."
 echo "  → undo with: bash $HERE/install.sh --uninstall"

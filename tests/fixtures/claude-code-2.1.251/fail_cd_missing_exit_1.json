@@ -1,0 +1,17 @@
+{
+  "session_id": "00000000-0000-0000-0000-000000000000",
+  "transcript_path": "/work/transcript.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "prompt-fixture",
+  "permission_mode": "default",
+  "hook_event_name": "PostToolUseFailure",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cd tiny && cargo test -q -- --ignored",
+    "description": "Run ignored cargo tests in tiny directory"
+  },
+  "tool_use_id": "toolu_FIXTURE",
+  "error": "Exit code 1\n/bin/bash: line 1: cd: tiny: No such file or directory",
+  "is_interrupt": false,
+  "duration_ms": 15
+}

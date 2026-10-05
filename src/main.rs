@@ -251,6 +251,7 @@ enum HookEvent {
     SessionStart,
     UserPrompt,
     PostTool,
+    PostToolFailure,
     Stop,
 }
 
@@ -260,6 +261,7 @@ impl From<HookEvent> for anamnesis::hook::Event {
             HookEvent::SessionStart => anamnesis::hook::Event::SessionStart,
             HookEvent::UserPrompt => anamnesis::hook::Event::UserPrompt,
             HookEvent::PostTool => anamnesis::hook::Event::PostTool,
+            HookEvent::PostToolFailure => anamnesis::hook::Event::PostToolFailure,
             HookEvent::Stop => anamnesis::hook::Event::Stop,
         }
     }

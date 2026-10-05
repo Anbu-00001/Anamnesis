@@ -1693,8 +1693,7 @@ fn every_hook_names_the_engine_version_that_wrote_it() {
             payload(
                 "v4",
                 serde_json::json!({
-                    "tool_input": { "command": "cargo test" },
-                    "tool_result_exit_code": 0
+                    "tool_input": { "command": "cargo test" }
                 }),
             ),
             vec![],

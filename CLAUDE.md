@@ -69,9 +69,14 @@ not the same as knowing how sure to be (calibration).** The report shows both.
 - [src/hook.rs](src/hook.rs) — `ana hook <session-start|user-prompt|post-tool|stop>`.
   The Claude Code hooks, in the binary: one code path, no `jq`, and the wording
   comes from `report::verdict` so the hooks cannot disagree with the report. The
-  PostToolUse hook auto-resolves `kind:tests-pass` claims **from the command's exit
+  post-tool hooks auto-resolve `kind:tests-pass` claims **from a plain test run's exit
   status**, recording `resolved_by: "auto"` — the part of a self-graded ledger that
-  does not rest on the agent's word. Every hook's first line names the engine that
+  does not rest on the agent's word. Claude Code sends no status: success is
+  `PostToolUse`, failure is `PostToolUseFailure` with the code inside `error`, so both
+  events are registered, and `test_run` refuses anything a pipe, `||`, `;` or `&` could
+  make lie. Tested against real captured payloads (`tests/fixtures/`), never against
+  payloads this repo wrote for itself: the old hook read a field Claude Code never
+  sent, and graded nothing for a release cycle. Every hook's first line names the engine that
   wrote it (`(ana X.Y.Z)`), and both launchers (`plugin/hooks/_run.sh`,
   `plugin/mcp-server.sh`) run the newest engine available rather than the first on
   `PATH` — an older `ana` earlier on `PATH` once made every hook on a machine run

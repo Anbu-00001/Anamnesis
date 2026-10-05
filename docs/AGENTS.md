@@ -53,7 +53,7 @@ flowchart LR
         H1["SessionStart hook<br/>injects standing calibration"]
         H2["UserPromptSubmit hook<br/>re-injects every 7th prompt"]
         T["MCP tools<br/>predict · update · resolve<br/>decide · recalibrate · calibration<br/>void · amend · list"]
-        H3["PostToolUse hook on Bash<br/>auto-resolves tests-pass claims<br/>from the command exit status"]
+        H3["PostToolUse and PostToolUseFailure hooks on Bash<br/>auto-resolve tests-pass claims<br/>from the exit status of a plain test run"]
         H4["Stop hook<br/>names overdue ungraded claims"]
     end
     H1 --> ANA["ana"]
@@ -94,14 +94,37 @@ of the queue blocking everything behind it.
 
 ## Auto-resolution: the part that does not rest on your word
 
-The `PostToolUse` hook watches for test and build commands and resolves any open
-`kind:tests-pass` claim for the current project **from the command's exit status**,
-recording `resolved_by: "auto"` and the command that produced it.
+When a plain test command settles an open `kind:tests-pass` claim for the current
+project, the hooks grade it **from the command's exit status**, recording
+`resolved_by: "auto"` and the command that produced it.
 
-> **Known issue (0.4.0):** this does not currently fire under Claude Code. The hook
-> reads a field Claude Code does not send, and the plugin does not register
-> `PostToolUseFailure`. Until it is fixed, every resolution is self-graded. See the
-> CHANGELOG.
+Claude Code does not send an exit status. It sends a command that exited 0 as
+`PostToolUse`, and one that exited non-zero as `PostToolUseFailure`, with the code only
+inside the text of `error`. The plugin registers both, and reads the event the call
+arrived as. (The hook once read a field called `tool_result_exit_code`, which Claude
+Code never sends: in 689 real claims it graded none. It is tested now against payloads
+captured from a real session, in `tests/fixtures/`.)
+
+What is graded, and what is deliberately not:
+
+- **Plain test runs only:** `cargo test`, `pytest`, `npm test`, `go test` and their
+  kin, optionally after a `cd DIR &&` and with `NAME=value` prefixes. Builds and lints
+  are not tests, and a `--no-run` or `--collect-only` is not a run.
+- **Nothing that can change the shell's status.** A pipe (`cargo test | tail`), `||`,
+  `;`, a background `&`, a subshell or a negation are refused, because Claude Code
+  reports those as successes whatever the test did. When one is seen, the hook says it
+  could not grade it and that resolving it is then on your word.
+- **A failure needs the runner's own failure code**, and for cargo, output that says a
+  test failed or the code did not compile. Cargo exits 101 for a missing manifest as
+  well, and a run that tested nothing is not a failed suite.
+- **A pass needs a test to have run.** `cargo test` with a filter that matches nothing
+  exits 0 having run nothing, and is not graded.
+
+What it cannot do. The exit status says the command passed, not that the claim was
+about the right command: an agent that logs "the tests pass" and then runs one narrow
+test can settle it with that. It also cannot tell a runner that exits 0 without running
+anything, outside cargo. Treat `resolved_by: "auto"` as "a test command exited the way
+it says", not as proof of the whole claim.
 
 "Why would I trust a self-graded ledger?" is the first fair objection to this whole
 idea. This is the part of the answer that is a number: the report shows what
