@@ -35,6 +35,7 @@ That is guarded by `a_v0_3_0_ledger_still_loads_and_reports` in
 
 | field | meaning |
 |---|---|
+| `check` | The exact command that settles the claim, pinned when it was logged: `cargo test`. Only compared, never executed; `ana run <id> -- <command>` runs the command it is given, and grades the claim only if it matches. Absent unless set. |
 | `void` | `{at, reason}` — the question was annulled. Kept in history, excluded from every score. A resolved claim cannot be voided, and voids made after the due date are counted: past one in ten of the claims that came due, the verdict is withheld. |
 | `amendments` | `[{at, old_statement, new_statement, old_tags, new_tags}]` — corrections to wording or tags, pre-resolution only. |
 | `resolution.resolved_by` | `self` (default, not written), `auto` (graded from an observed fact, e.g. a test run's exit status) or `human`. |

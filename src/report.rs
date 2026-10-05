@@ -3177,6 +3177,7 @@ mod tests {
                 resolved_by: None,
             }),
             void: None,
+            check: None,
             amendments: Vec::new(),
         }
     }
@@ -3205,6 +3206,7 @@ mod tests {
                 resolved_by: None,
             }),
             void: None,
+            check: None,
             amendments: Vec::new(),
         }
     }

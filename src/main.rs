@@ -79,6 +79,19 @@ enum Cmd {
         /// rate, recorded with the forecast
         #[arg(long)]
         reference_class: Option<String>,
+        /// The exact command that settles this claim, e.g. "cargo test", fixed NOW,
+        /// before the outcome. It is then settled only by `ana run <id> -- <command>`,
+        /// which grades it from the command's own exit status; `ana resolve` refuses it.
+        #[arg(long, value_name = "COMMAND")]
+        check: Option<String>,
+    },
+    /// Run the command a claim was pinned to, and grade the claim from its exit status
+    Run {
+        id: String,
+        /// The command, after `--`. It must be exactly the one the claim was logged
+        /// with (`ana add --check`); anything else is refused and not run.
+        #[arg(last = true, required = true, num_args = 1.., allow_hyphen_values = true)]
+        command: Vec<String>,
     },
     /// Revise a belief (history is preserved). Match the claim's kind.
     Update {
@@ -286,6 +299,17 @@ impl From<OutcomeArg> for Outcome {
 
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    // `ana run` hands back the command's own exit code, so it cannot go through
+    // `run`, whose every error becomes exit status 1.
+    if let Cmd::Run { id, command } = &cli.cmd {
+        return match cmd_run(&cli, id, command) {
+            Ok(code) => code,
+            Err(msg) => {
+                eprintln!("error: {msg}");
+                ExitCode::FAILURE
+            }
+        };
+    }
     match run(cli) {
         Ok(()) => ExitCode::SUCCESS,
         Err(msg) => {
@@ -293,6 +317,121 @@ fn main() -> ExitCode {
             ExitCode::FAILURE
         }
     }
+}
+
+/// `ana run <id> -- <command>`: run the command a claim was pinned to, and settle the
+/// claim from the process's own exit status.
+///
+/// Three things are deliberate. The ledger is looked at *without* the lock and the lock
+/// is taken only to write the answer, because a test run can take minutes and holding
+/// the lock across it blocked every other writer (and the hooks, which also lock). A
+/// command that is not the pinned one is refused *before* it is run. And the pinned text
+/// is only compared, never executed: the command that runs is the one the caller typed.
+fn cmd_run(cli: &Cli, id: &str, command: &[String]) -> Result<ExitCode, String> {
+    use anamnesis::hook::{judge_run, RunJudgement};
+    use anamnesis::model::{collapse_spaces, ResolvedBy};
+    use anamnesis::untrusted::{line, MAX_LINE};
+
+    let path = data_path(cli)?;
+    let ledger = store::load(&path).map_err(|e| load_error(&path, e))?;
+    let idx = ledger.index_of(id)?;
+    let c = &ledger.claims[idx];
+    let cid = c.id.clone();
+    if c.is_void() {
+        return Err(format!("[{cid}] is void, so there is nothing to settle"));
+    }
+    if c.is_resolved() {
+        return Err(format!("[{cid}] is already resolved"));
+    }
+    if !matches!(c.kind, ClaimKind::Binary) {
+        return Err(format!(
+            "[{cid}] is a numeric claim; an exit status settles a yes/no claim"
+        ));
+    }
+    let Some(check) = c.check.clone() else {
+        return Err(format!(
+            "[{cid}] has no check pinned, so there is nothing to hold the command to. Log a claim with --check \"<command>\", or settle this one with `ana resolve`."
+        ));
+    };
+    if !c.check_matches(command) {
+        return Err(format!(
+            "[{cid}] is pinned to `{}`, and you gave `{}`. Nothing was run. The command is fixed when the claim is logged so that it cannot be chosen once the outcome is known.",
+            line(&check, MAX_LINE),
+            line(&command.join(" "), MAX_LINE)
+        ));
+    }
+    drop(ledger);
+
+    let ran = anamnesis::check::run_command(command)
+        .map_err(|e| format!("could not start `{}`: {e}", line(&command[0], 80)))?;
+    let Some(code) = ran.code else {
+        eprintln!(
+            "ana: the command was ended by a signal, so there is no exit status and [{cid}] was not graded. It is still open."
+        );
+        return Ok(ExitCode::FAILURE);
+    };
+    // The command's own code is ana's, so `ana run -- cargo test` can stand in for it.
+    let exit = ExitCode::from((code & 0xff) as u8);
+    let cmdline = collapse_spaces(&command.join(" "));
+    let happened = match judge_run(&cmdline, i64::from(code), &ran.tail) {
+        RunJudgement::Passed => true,
+        RunJudgement::Failed => false,
+        RunJudgement::NotGraded(why) => {
+            eprintln!(
+                "ana: `{}` exited {code}, but {why}, so [{cid}] was not graded. It is still open.",
+                line(&cmdline, MAX_LINE)
+            );
+            return Ok(exit);
+        }
+    };
+
+    // Only now take the lock, and look again: the claim may have changed while the
+    // command ran.
+    let _guard = store::lock(&path).map_err(|e| format!("locking {}: {e}", path.display()))?;
+    let mut ledger = store::load(&path).map_err(|e| load_error(&path, e))?;
+    let idx = ledger.index_of(&cid)?;
+    {
+        let c = &ledger.claims[idx];
+        if c.is_resolved() || c.is_void() || !c.check_matches(command) {
+            eprintln!(
+                "ana: [{cid}] changed while the command ran, so it was not graded. Nothing was written."
+            );
+            return Ok(exit);
+        }
+    }
+    let prob = ledger.claims[idx].first_prob().unwrap_or(0.5);
+    ledger.claims[idx].resolution = Some(Resolution {
+        at: Utc::now(),
+        outcome: Some(if happened {
+            Outcome::True
+        } else {
+            Outcome::False
+        }),
+        value: None,
+        note: Some(format!("auto: `{cmdline}` exited {code} (ana run)")),
+        resolved_by: Some(ResolvedBy::Auto),
+    });
+    store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;
+
+    let brier = (prob - if happened { 1.0 } else { 0.0 }).powi(2);
+    if cli.json {
+        out_json(json!({
+            "id": cid, "outcome": happened, "exit_code": code,
+            "resolved_by": "auto", "brier": brier, "score_basis": "first",
+        }));
+    } else {
+        let truth = if happened { "TRUE" } else { "FALSE" };
+        println!(
+            "[{cid}] resolved {truth}.  you said {}  →  Brier {:.3} on this one",
+            pct(prob),
+            brier
+        );
+        println!(
+            "  graded from `{}` exiting {code}, not by you.",
+            line(&cmdline, MAX_LINE)
+        );
+    }
+    Ok(exit)
 }
 
 /// The user's home directory.
@@ -731,6 +870,7 @@ fn cmd_import(
                 resolved_by: None,
             }),
             void: None,
+            check: None,
             amendments: Vec::new(),
         });
         added += 1;
@@ -884,6 +1024,7 @@ fn run(cli: Cli) -> Result<(), String> {
     let mut ledger = store::load(&path).map_err(|e| load_error(&path, e))?;
 
     match &cli.cmd {
+        Cmd::Run { .. } => unreachable!("`ana run` is dispatched in main"),
         Cmd::Add {
             statement,
             prob,
@@ -895,8 +1036,10 @@ fn run(cli: Cli) -> Result<(), String> {
             stake,
             second_prob,
             reference_class,
+            check,
         } => {
             let statement = statement.trim().to_string();
+            let check = check.as_deref().map(anamnesis::check::pin).transpose()?;
             if statement.is_empty() {
                 return Err("statement must not be empty".into());
             }
@@ -987,10 +1130,14 @@ fn run(cli: Cli) -> Result<(), String> {
                 forecasts: vec![forecast],
                 resolution: None,
                 void: None,
+                check: check.clone(),
                 amendments: Vec::new(),
             });
             store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;
 
+            if let (Some(check), false) = (&check, cli.json) {
+                println!("  pinned to `{check}`: settle it with `ana run {id} -- {check}`");
+            }
             if cli.json {
                 out_json(
                     json!({"id": id, "kind": kind, "prob": disp_prob, "interval": disp_iv, "statement": statement}),
@@ -1097,6 +1244,12 @@ fn run(cli: Cli) -> Result<(), String> {
             let idx = ledger.index_of(id)?;
             if ledger.claims[idx].is_resolved() {
                 return Err(format!("[{}] is already resolved", ledger.claims[idx].id));
+            }
+            if let Some(check) = &ledger.claims[idx].check {
+                return Err(anamnesis::check::pinned_message(
+                    &ledger.claims[idx].id,
+                    check,
+                ));
             }
             let kind = ledger.claims[idx].kind;
             let now = Utc::now();
@@ -1410,6 +1563,13 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             if !c.tags.is_empty() {
                 println!("  tags: {}", c.tags.join(", "));
+            }
+            if let Some(check) = &c.check {
+                let shown = anamnesis::untrusted::line(check, anamnesis::untrusted::MAX_LINE);
+                println!(
+                    "  check: `{shown}` — settle it with: ana run {} -- {shown}",
+                    c.id
+                );
             }
             if let Some(v) = &c.void {
                 println!(

@@ -403,6 +403,21 @@ fn is_assignment(tok: &str) -> bool {
     }
 }
 
+/// Whether `cmd` is `ana run ...`, which settles its own claim and needs no nudge.
+fn is_ana_run(cmd: &str) -> bool {
+    let toks: Vec<&str> = cmd
+        .rsplit("&&")
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .collect();
+    let is_ana = |t: &str| {
+        let name = t.rsplit(['/', '\\']).next().unwrap_or(t);
+        name == "ana" || name == "ana.exe"
+    };
+    toks.first().is_some_and(|t| is_ana(t)) && toks.iter().take(4).skip(1).any(|t| *t == "run")
+}
+
 /// Whether `cmd` mentions a test runner at all, even one whose status we will not
 /// trust. Used only to say that a run was seen and could not be graded.
 fn mentions_test_runner(cmd: &str) -> bool {
@@ -448,6 +463,45 @@ fn exit_code_in(error: &str) -> Option<i64> {
     digits.parse().ok()
 }
 
+/// What a finished command says about the claim it was pinned to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RunJudgement {
+    Passed,
+    Failed,
+    /// The command ended, but not in a way that answers the claim; the reason says why.
+    NotGraded(&'static str),
+}
+
+/// Judge a pinned command from its exit `code` and the tail of its `output`.
+///
+/// `ana run` started the process itself, so there is no shell to swallow the status
+/// and the shape checks a hook needs do not apply. The runner knowledge does: a test
+/// runner's failure code is not every non-zero code (cargo exits 101 for a missing
+/// manifest), and a run that ran no tests is not a pass. A command that is not a test
+/// runner, `make ci` or a script, is simply judged by its own exit status, since
+/// pinning it was the claim-maker's choice.
+pub fn judge_run(cmd: &str, code: i64, output: &str) -> RunJudgement {
+    match test_run(cmd) {
+        Some(runner) => {
+            if code == 0 {
+                if runner == Runner::Cargo && cargo_ran_no_tests(output) {
+                    RunJudgement::NotGraded("it ran no tests")
+                } else {
+                    RunJudgement::Passed
+                }
+            } else if runner.failure_codes().contains(&code) && runner.confirms_failure(output) {
+                RunJudgement::Failed
+            } else {
+                RunJudgement::NotGraded(
+                    "that exit status is not a failed suite for this runner; the run itself went wrong",
+                )
+            }
+        }
+        None if code == 0 => RunJudgement::Passed,
+        None => RunJudgement::Failed,
+    }
+}
+
 /// What a post-tool event says about the claim it might settle.
 enum Grade {
     /// The runner's own exit status, taken from the event it arrived as.
@@ -460,7 +514,7 @@ enum Grade {
 
 fn grade_of(event: Event, input: &Value, cmd: &str) -> Grade {
     let Some(runner) = test_run(cmd) else {
-        return if event == Event::PostTool && mentions_test_runner(cmd) {
+        return if event == Event::PostTool && !is_ana_run(cmd) && mentions_test_runner(cmd) {
             Grade::Untrusted
         } else {
             Grade::NotATest
@@ -693,6 +747,11 @@ fn auto_resolve(
         if !c.tags.iter().any(|t| t == "kind:tests-pass") {
             continue;
         }
+        // A pinned claim is settled by `ana run` and by nothing else: a hook grading
+        // it from whichever test happened to run would be the escape pinning closes.
+        if c.check.is_some() {
+            continue;
+        }
         if !c.tags.iter().any(|t| t == &project) {
             continue;
         }
@@ -789,6 +848,19 @@ mod tests {
     }
 
     #[test]
+    fn ana_run_is_recognised_and_left_alone() {
+        assert!(is_ana_run("ana run abc123 -- cargo test"));
+        assert!(is_ana_run(
+            "/home/u/.anamnesis/bin/ana run abc123 -- cargo test"
+        ));
+        assert!(is_ana_run("ana --data x.json run abc123 -- pytest"));
+        assert!(is_ana_run("cd /work && ana run abc123 -- cargo test"));
+        assert!(!is_ana_run("cargo test"));
+        assert!(!is_ana_run("echo ana run"));
+        assert!(!is_ana_run("ana report"));
+    }
+
+    #[test]
     fn a_test_failure_is_only_the_runners_own_failure_code() {
         assert_eq!(test_run("cargo test").unwrap().failure_codes(), [101]);
         assert_eq!(test_run("pytest").unwrap().failure_codes(), [1]);
@@ -804,6 +876,39 @@ mod tests {
         ));
         assert!(!cargo.confirms_failure("Exit code 101\nerror: no such command: `tset`"));
         assert!(Runner::Other.confirms_failure("Exit code 1"));
+    }
+
+    #[test]
+    fn a_pinned_command_is_judged_by_its_own_status_and_the_runners_rules() {
+        use RunJudgement::*;
+        // A plain script or make target: its exit status is the answer.
+        assert_eq!(judge_run("make ci", 0, ""), Passed);
+        assert_eq!(judge_run("make ci", 2, ""), Failed);
+        assert_eq!(judge_run("./scripts/check.sh", 1, "anything"), Failed);
+        // A test runner: only its own failure code, and for cargo only with output that
+        // shows a failing suite.
+        assert_eq!(judge_run("cargo test", 0, "running 2 tests\n"), Passed);
+        assert!(matches!(
+            judge_run("cargo test", 0, "running 0 tests\n"),
+            NotGraded(_)
+        ));
+        assert_eq!(
+            judge_run("cargo test", 101, "test result: FAILED. 0 passed; 1 failed"),
+            Failed
+        );
+        assert!(matches!(
+            judge_run("cargo test", 101, "error: manifest path does not exist"),
+            NotGraded(_)
+        ));
+        assert!(matches!(
+            judge_run("cargo test", 2, "usage error"),
+            NotGraded(_)
+        ));
+        assert_eq!(judge_run("pytest -q", 1, ""), Failed);
+        assert!(matches!(
+            judge_run("pytest -q", 5, "no tests ran"),
+            NotGraded(_)
+        ));
     }
 
     #[test]

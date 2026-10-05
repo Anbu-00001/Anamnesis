@@ -83,6 +83,9 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   0.3.0 for a whole release cycle, silently. The standing line counts `who:claude`
   (CLI protocol) and `who:claude-code` (what Claude Code calls itself over MCP) as one
   agent; the ledger keeps the true client on every claim.
+- [src/check.rs](src/check.rs) — `ana add --check` / `ana run`: a claim pinned to the
+  command that settles it, graded from that process's own exit status (`hook::judge_run`
+  shares the hook's runner rules). The hook leaves a pinned claim to `ana run`.
 - [src/demo.rs](src/demo.rs) — the fictional demo ledger, shared by `ana demo` and
   `examples/seed.rs` so they cannot drift.
 - [src/model.rs](src/model.rs) — domain types + serde. `Claim` is a palimpsest
@@ -184,7 +187,10 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    surface reads that too, and none may print a reading under it.
 10. **Every mutating command holds the lock** across load and save
    (`Cmd::mutates()`, `store::lock`). Without it, 40 parallel `ana add` calls left
-   7–19 claims of 40, almost silently.
+   7–19 claims of 40, almost silently. The one exception is `ana run`: a test run can
+   take minutes, so it reads without the lock, runs the command, and takes the lock only
+   to write the answer (re-checking the claim first). **Never execute `Claim::check`**:
+   it is stored text, compared against the command the caller typed and nothing more.
 11. **Tests as oracles**: the fast `auc` is validated against a self-evidently
    correct `O(n²)` `auc_pairwise` in tests. When optimising a metric, keep the slow
    version as a test oracle rather than deleting it.

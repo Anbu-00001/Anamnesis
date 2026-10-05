@@ -51,6 +51,10 @@ Only the latest release gets fixes.
 - **The ledger is not private by default.** It is a plain JSON file written with your
   default file permissions, and it holds your claims and your reasoning. Do not keep
   it inside a repository you publish.
+- **`ana run` runs only what you give it.** The command pinned to a claim is stored text
+  that is compared and never executed, so importing a ledger cannot run anything. The
+  command that runs is the one typed after `--`, directly with no shell, and only if it
+  matches the pin. Do not give it a command you would not run yourself.
 - **No network, no `unsafe`.** The binary has no networking dependency (its
   dependencies are `clap`, `serde`, `serde_json` and `chrono`) and the source contains
   no `unsafe` code. There is no telemetry and no account.

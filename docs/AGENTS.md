@@ -126,6 +126,35 @@ test can settle it with that. It also cannot tell a runner that exits 0 without 
 anything, outside cargo. Treat `resolved_by: "auto"` as "a test command exited the way
 it says", not as proof of the whole claim.
 
+### Pinning a claim to a command
+
+The hook grades whichever plain test run happens to settle a claim, and the agent
+chooses that run. Log a "the tests pass" call and then run one narrow test, and the
+claim is settled by it. Pinning closes that:
+
+```bash
+ana add "the suite passes" --prob 0.8 --by 2026-10-20 --tags kind:tests-pass --check "cargo test"
+ana run <id> -- cargo test
+```
+
+`--check` fixes the command *before the outcome is known*. `ana run` runs the command
+it is given (no shell), passes its output through, and takes the status from that
+process, so there is no hook payload to misread and nothing to swallow it. It refuses
+any command that is not the pinned one, without running it; `ana resolve` and the MCP
+`resolve` refuse a pinned claim too, so there is no way round; and the hooks leave a
+pinned claim alone. The command's own exit code is `ana`'s, so `ana run <id> --
+cargo test` can stand in for `cargo test`. Over MCP, `predict` takes the same `check`.
+
+The pinned text is only compared, never executed: a ledger holds words anyone can have
+written, and a command read from one would be remote code execution by import. A
+command ended by a signal, or one that cannot start, is not graded. The ledger is not
+locked while the command runs, because a test run can take minutes.
+
+What it does not do: it cannot make an agent pin a command, or run it. An unrun check
+is an ungraded claim, priced into the evidence test and counted as a backlog like any
+other. And the pinned command is still whatever the claim-maker chose: pinning `true`
+settles a claim with `true`.
+
 "Why would I trust a self-graded ledger?" is the first fair objection to this whole
 idea. This is the part of the answer that is a number: the report shows what
 fraction of your resolutions were graded by a machine rather than by you.

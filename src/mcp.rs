@@ -372,6 +372,10 @@ fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
     if !(stake.is_finite() && stake >= 0.0) {
         return Err(format!("stake must be a finite number ≥ 0, got {stake}"));
     }
+    let check = match args.get("check").and_then(Value::as_str) {
+        Some(c) => Some(crate::check::pin(c)?),
+        None => None,
+    };
 
     // Hold the exclusive lock across load and save: an MCP server and a human
     // running `ana add` in a terminal are two writers on the same file.
@@ -399,6 +403,7 @@ fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
         forecasts: vec![forecast],
         resolution: None,
         void: None,
+        check,
         amendments: Vec::new(),
     });
     store::save(ledger, &led).map_err(|e| e.to_string())?;
@@ -424,6 +429,9 @@ fn tool_resolve(args: &Value, ledger: &Path) -> ToolResult {
     let idx = led.index_of(id)?;
     if led.claims[idx].is_resolved() {
         return Err(format!("[{}] is already resolved", led.claims[idx].id));
+    }
+    if let Some(check) = &led.claims[idx].check {
+        return Err(crate::check::pinned_message(&led.claims[idx].id, check));
     }
     let kind = led.claims[idx].kind;
     let now = Utc::now();
@@ -966,6 +974,7 @@ fn tool_schemas() -> Value {
                 "level": { "type": "number", "description": "interval confidence level, default 0.8" },
                 "kind": { "type": "string", "description": "estimate | tests-pass | bug-hypothesis | approach | compat" },
                 "stake": { "type": "number", "description": "how much this call matters (≥ 0, default 1) — weights the Brier toward consequential calls" },
+                "check": { "type": "string", "description": "the exact command that settles this claim, e.g. \"cargo test\", fixed now, before the outcome. It is then settled only by running that command through `ana run <id> -- <command>`; `resolve` refuses it." },
                 "project": { "type": "string", "description": "project/repo slug" },
                 "by": { "type": "string", "description": "the date you expect to know the answer, YYYY-MM-DD. Pass this on every prediction: without it the claim cannot enter the anytime-valid evidence test." },
                 "who": { "type": "string", "description": "who is predicting; defaults to the MCP client's own name, so leave it unset unless you are logging on someone else's behalf" },

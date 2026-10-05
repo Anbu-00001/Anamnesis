@@ -126,6 +126,16 @@ pub struct Claim {
     /// default stake is not serialised, so existing ledgers stay byte-identical.
     #[serde(default = "default_stake", skip_serializing_if = "is_default_stake")]
     pub stake: f64,
+    /// The exact command that settles this claim, pinned when it was logged, before the
+    /// outcome could be known: `cargo test`, `make ci`.
+    ///
+    /// `ana run` runs the command it is *given* and grades the claim only if that
+    /// matches this text. It never executes this text: a ledger holds words anyone can
+    /// have written. Pinning is what stops an agent that logged "the tests pass" from
+    /// settling it with one narrow test it chose afterwards. Absent unless set, and not
+    /// serialised when absent, so existing ledgers stay byte-identical.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub check: Option<String>,
     /// Every forecast you ever made, oldest first. The last is your current
     /// belief; the first is where you started.
     pub forecasts: Vec<Forecast>,
@@ -260,6 +270,17 @@ impl Claim {
 
     pub fn is_open(&self) -> bool {
         self.resolution.is_none()
+    }
+
+    /// Whether `argv` is the command this claim is pinned to. Compared as the command
+    /// line it spells, with runs of whitespace collapsed, so `cargo   test` is
+    /// `cargo test`. This is a guard on honesty, not a security boundary: nothing is
+    /// executed on the strength of it.
+    pub fn check_matches(&self, argv: &[String]) -> bool {
+        match &self.check {
+            Some(check) => collapse_spaces(check) == collapse_spaces(&argv.join(" ")),
+            None => false,
+        }
     }
 
     pub fn is_due(&self, today: NaiveDate) -> bool {
@@ -414,6 +435,11 @@ impl Claim {
     }
 }
 
+/// `s` with every run of whitespace collapsed to one space and the ends trimmed.
+pub fn collapse_spaces(s: &str) -> String {
+    s.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 /// The whole ledger.
 #[derive(Serialize, Deserialize, Clone, Debug, Default)]
 pub struct Ledger {
@@ -507,6 +533,7 @@ mod tests {
                 resolved_by: None,
             }),
             void: None,
+            check: None,
             amendments: Vec::new(),
         }
     }
@@ -547,6 +574,7 @@ mod tests {
                 resolved_by: None,
             }),
             void: None,
+            check: None,
             amendments: Vec::new(),
         };
         assert!(c.sample().is_none()); // not a binary sample

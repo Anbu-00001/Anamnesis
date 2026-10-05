@@ -81,6 +81,20 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **`ana add --check "<command>"` and `ana run <id> -- <command>`.** The hook grades
+  whichever plain test run happens to settle a claim, and the agent chooses that run:
+  log "the tests pass", run one narrow test, and the claim is settled by it. A claim can
+  now be pinned to a command before the outcome is known. `ana run` runs the command it
+  is given (no shell), passes its output through, takes the status from the process it
+  started, and grades the claim only if the command matches the pin. A different command
+  is refused and not run. `ana resolve` and the MCP `resolve` refuse a pinned claim, the
+  hooks leave one alone, and the MCP `predict` tool takes a `check`. The command's own
+  exit code is `ana`'s. The pinned text is only compared, never executed, so importing a
+  ledger cannot run anything, and the ledger is not locked while the command runs. A
+  command ended by a signal, or one that cannot start, is not graded; for a recognised
+  test runner the same rules as the hook apply (cargo's 101 needs output showing a failed
+  suite, a run that ran no tests is not a pass). New `check` field, absent unless set, so
+  existing ledgers are unchanged. See `docs/AGENTS.md`.
 - `SECURITY.md`: how to report a vulnerability privately, what is in scope, and the
   limits of what the project guarantees.
 

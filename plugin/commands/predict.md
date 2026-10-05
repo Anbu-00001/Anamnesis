@@ -12,6 +12,7 @@ Engine: `ana` (on PATH, else `~/.anamnesis/bin/ana`).
 - **Outside view first.** Name a *reference class* of similar past cases and its base rate ("refactors like this pass first try ~60%") and anchor on that, not on how this one *feels*. Pass it as `--reference-class "..."`.
 - **Consider the opposite.** Make a first probability, then *assume it is wrong* and give yourself **two** concrete reasons why — that yields a second estimate. Pass it as `--second-prob P2` and the engine logs the **average** of the two (dialectical bootstrapping — the wisdom of your own crowd, ~half the gain of a second person). Two reasons, not ten.
 - **Stake.** If the call is consequential, mark `--stake N` (default 1) so it weighs more in your scored calibration.
+- **Pin the check.** For a "the tests pass" call, pass `--check "<the exact command>"` (e.g. `--check "cargo test"`) *now*, before you know. The claim is then settled only by `ana run <id> -- <that command>`, which takes the answer from the process's own exit status, so you cannot pick an easier run afterwards.
 
 Steps:
 1. Parse `$ARGUMENTS` into the statement and either `--prob P` (binary, optionally `--second-prob P2`) or `--interval LO..HIGH` (numeric, optionally `--level`).

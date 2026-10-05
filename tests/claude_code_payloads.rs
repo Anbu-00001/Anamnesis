@@ -282,3 +282,21 @@ fn a_cargo_error_that_is_not_a_failing_suite_is_not_graded() {
     let _ = fs::remove_dir_all(&s.dir);
     let _ = fs::remove_dir_all(&s2.dir);
 }
+
+/// A pinned claim is settled by `ana run` and nothing else. If a hook graded it from
+/// whichever test happened to run, an agent could still choose the run after the fact:
+/// the very thing pinning exists to stop.
+#[test]
+fn the_hook_leaves_a_pinned_claim_alone() {
+    let s = setup("pinned");
+    let mut v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&s.ledger).unwrap()).unwrap();
+    v["claims"][0]["check"] = "cargo test".into();
+    fs::write(&s.ledger, v.to_string()).unwrap();
+    hook(&s, "post-tool", &fixture("pass_cargo_test"));
+    assert!(
+        resolution(&s).is_none(),
+        "a hook graded a claim that is pinned to `ana run`"
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+}

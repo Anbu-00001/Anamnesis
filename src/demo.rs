@@ -72,6 +72,7 @@ fn claim(
             resolved_by: None,
         }),
         void: None,
+        check: None,
         amendments: Vec::new(),
     }
 }
@@ -118,6 +119,7 @@ fn numeric_claim(
             resolved_by: None,
         }),
         void: None,
+        check: None,
         amendments: Vec::new(),
     }
 }

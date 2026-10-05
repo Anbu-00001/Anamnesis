@@ -133,7 +133,10 @@ are correlated and can mislead it. Both are quantified in
 `resolve`, `calibration`, `recalibrate`, `decide`, `void`, `amend` and `list`.
 [`plugin/`](plugin/) is a Claude Code plugin that injects your standing
 calibration into each session and grades `kind:tests-pass` predictions from the
-command's actual exit status. See [docs/AGENTS.md](docs/AGENTS.md).
+command's actual exit status. Log a prediction with `--check "cargo test"` and it
+can only be settled by `ana run`, which takes the answer from a process it started
+itself, so the command cannot be chosen after the outcome is known. See
+[docs/AGENTS.md](docs/AGENTS.md).
 
 ## How this compares
 
