@@ -44,6 +44,15 @@ fn private_file() -> OpenOptions {
     o
 }
 
+/// Append one line to a private log file, creating it (and its directory) owner-only.
+/// Not locked: a short line appended in one write does not interleave on Unix, and these
+/// logs are evidence about behaviour, not records anything depends on.
+pub fn append_private(path: &Path, line: &str) -> io::Result<()> {
+    create_private_dir(parent_dir(path))?;
+    let mut f = private_file().append(true).create(true).open(path)?;
+    f.write_all(format!("{line}\n").as_bytes())
+}
+
 /// Make an existing file owner-only. The backup is a copy of the previous ledger, and
 /// the first save after an upgrade copies one that was written with the old mode.
 #[cfg(unix)]

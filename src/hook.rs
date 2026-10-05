@@ -28,6 +28,8 @@ pub enum Event {
     SessionStart,
     UserPrompt,
     PostTool,
+    /// Before a Bash call runs: the opt-in "pin first" reminder (see [`crate::pin`]).
+    PreTool,
     /// A tool call that failed. Claude Code sends a command that exits non-zero here
     /// and never as `PostToolUse`, so without this event a failing test is invisible.
     PostToolFailure,
@@ -41,6 +43,7 @@ impl Event {
             Event::SessionStart => "SessionStart",
             Event::UserPrompt => "UserPromptSubmit",
             Event::PostTool => "PostToolUse",
+            Event::PreTool => "PreToolUse",
             Event::PostToolFailure => "PostToolUseFailure",
             Event::Stop => "Stop",
         }
@@ -195,7 +198,7 @@ fn agent_claims(ledger: &Ledger) -> Ledger {
 }
 
 /// The project slug, used to scope "what is due here".
-fn project_slug(cwd: Option<&str>) -> String {
+pub(crate) fn project_slug(cwd: Option<&str>) -> String {
     let dir = cwd
         .map(std::path::PathBuf::from)
         .or_else(|| std::env::current_dir().ok())
@@ -267,12 +270,12 @@ fn first_stop_of_session(session: &str) -> bool {
         .is_ok()
 }
 
-fn dirs_counters() -> Option<std::path::PathBuf> {
+pub(crate) fn dirs_counters() -> Option<std::path::PathBuf> {
     #[allow(deprecated)]
     std::env::home_dir().map(|h| h.join(".anamnesis").join("counters"))
 }
 
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     s.chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '-' })
         .take(64)
@@ -281,7 +284,7 @@ fn sanitize(s: &str) -> String {
 
 /// The kinds of test runner whose exit status answers "did the tests pass".
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Runner {
+pub(crate) enum Runner {
     Cargo,
     /// Everything else we recognise: pytest, go, npm and friends, flutter, gradle, maven.
     Other,
@@ -527,10 +530,15 @@ fn is_plain_cd(segment: &str) -> bool {
 
 /// The runner a command line starts, from its words. Shared by the hook, which reads
 /// them out of a shell command, and `ana run`, which is handed them directly.
-fn runner_of(t: &[&str]) -> Option<Runner> {
-    if t.iter().any(|w| {
+/// Whether any word is a flag that makes the command not run a test (`--no-run`, `--help`).
+pub(crate) fn has_non_running_flag(t: &[&str]) -> bool {
+    t.iter().any(|w| {
         NON_RUNNING_EXACT.contains(w) || NON_RUNNING_PREFIX.iter().any(|p| w.starts_with(p))
-    }) {
+    })
+}
+
+pub(crate) fn runner_of(t: &[&str]) -> Option<Runner> {
+    if has_non_running_flag(t) {
         return None;
     }
     match t {
@@ -563,7 +571,7 @@ fn runner_of(t: &[&str]) -> Option<Runner> {
 }
 
 /// `NAME=value`, with a valid shell identifier for a name.
-fn assignment(tok: &str) -> Option<(&str, &str)> {
+pub(crate) fn assignment(tok: &str) -> Option<(&str, &str)> {
     let (name, value) = tok.split_once('=')?;
     let ok = !name.is_empty()
         && !name.starts_with(|c: char| c.is_ascii_digit())
@@ -572,7 +580,7 @@ fn assignment(tok: &str) -> Option<(&str, &str)> {
 }
 
 /// Whether `cmd` is `ana run ...`, which settles its own claim and needs no nudge.
-fn is_ana_run(cmd: &str) -> bool {
+pub(crate) fn is_ana_run(cmd: &str) -> bool {
     let toks: Vec<&str> = cmd
         .rsplit("&&")
         .next()
@@ -589,29 +597,6 @@ fn is_ana_run(cmd: &str) -> bool {
             .skip(1)
             .take_while(|t| **t != "--")
             .any(|t| *t == "run")
-}
-
-/// Whether `cmd` mentions a test runner at all, even one whose status we will not
-/// trust. Used only to say that a run was seen and could not be graded.
-fn mentions_test_runner(cmd: &str) -> bool {
-    let lower = cmd.to_lowercase();
-    [
-        "cargo test",
-        "cargo nextest",
-        "npm test",
-        "npm run test",
-        "pnpm test",
-        "yarn test",
-        "pytest",
-        "go test",
-        "flutter test",
-        "jest",
-        "vitest",
-        "gradle",
-        "mvn",
-    ]
-    .iter()
-    .any(|n| lower.contains(n))
 }
 
 /// The exit code Claude Code puts inside a failed call's `error` text, which reads
@@ -687,7 +672,10 @@ fn grade_of(event: Event, input: &Value, cmd: &str) -> Grade {
         return Grade::NotATest;
     }
     let Some(runner) = test_run(cmd) else {
-        return if event == Event::PostTool && !is_ana_run(cmd) && mentions_test_runner(cmd) {
+        return if event == Event::PostTool
+            && !is_ana_run(cmd)
+            && crate::pin::test_run_in(cmd).is_some()
+        {
             Grade::Untrusted
         } else {
             Grade::NotATest
@@ -745,10 +733,24 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
     let cwd = input.get("cwd").and_then(Value::as_str);
     let slug = project_slug(cwd);
 
+    // The opt-in "pin first" reminder runs before the call, and is its own reply.
+    if event == Event::PreTool {
+        if crate::pin::enabled() {
+            if let Some(out) = crate::pin::pre_tool(&input, &ledger, ledger_path) {
+                println!("{out}");
+            }
+        }
+        return Ok(());
+    }
+    if event == Event::SessionStart && crate::pin::enabled() {
+        crate::pin::prune_state();
+    }
+
     let mut context: Vec<String> = Vec::new();
     let mut user_message: Option<String> = None;
 
     match event {
+        Event::PreTool => {} // handled above
         Event::SessionStart | Event::UserPrompt => {
             if event == Event::UserPrompt {
                 let session = input
@@ -796,6 +798,12 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 }
             }
             context.extend(due_lines(&ledger, today, &slug));
+            // The rule goes in at the start of every session, and again after /clear and
+            // compaction (SessionStart fires for both). The most reliable place for an
+            // instruction a model would otherwise skip is the start of its context.
+            if event == Event::SessionStart && crate::pin::enabled() {
+                context.push(crate::pin::standing_rule());
+            }
             if context.len() == 1 {
                 return Ok(()); // header only: nothing worth saying
             }

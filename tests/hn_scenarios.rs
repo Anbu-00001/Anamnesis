@@ -1630,6 +1630,9 @@ fn drive_hook(
     let mut cmd = Command::new(ANA);
     cmd.args(["hook", event])
         .env("ANAMNESIS_AGENT_DATA", ledger)
+        // The person running these tests may have the opt-in reminder switched on for
+        // their own sessions; it must not change what these tests see.
+        .env_remove("ANAMNESIS_PIN_NUDGE")
         .env("HOME", home)
         .env("USERPROFILE", home)
         .stdin(Stdio::piped())

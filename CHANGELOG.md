@@ -3,6 +3,40 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **An opt-in "pin first" reminder, `ana hook pre-tool`** (`ANAMNESIS_PIN_NUDGE=1`, not
+  registered by the plugin). The grader only has something to grade if a pinned prediction was
+  logged before the tests ran, and a standing instruction in a global file was followed by one
+  model and ignored by another in the same task (Opus followed it exactly; Sonnet ran the bare
+  command twice and logged nothing). A reminder after the run is too late, so a `PreToolUse` hook
+  refuses the first bare test run of a session once, before it runs, with the exact `ana add
+  --check` and `ana run` commands. The same rule is injected at session start, and again after
+  `/clear` and compaction. It recognises many stacks, finds a runner inside `cd x && … | tail`, and
+  never inside a quoted string. It keeps `protocol.jsonl` beside the ledger (time, session, project
+  folder, model, runner kind, outcome; never a command, path or output) so a week of data can
+  tell "ignored the instruction" from "no one ran any tests". The model is read from the session
+  transcript (SessionStart is not told it). Per-session marker files are pruned
+  after 14 days.
+- `docs/MEASUREMENT.md` and `validation/protocol_report.py`: the questions, the frozen baseline
+  (39 hand-graded `tests-pass` claims: said 61%, came true 74%), the rules for what may be
+  concluded (no comparison under 20 claims per side; one confirmatory look), and the analysis,
+  all fixed before any data exists.
+
+### Fixed
+
+- **The post-tool nudge matched the words `cargo test` anywhere in a command.** The `ana add
+  --check "cargo test"` that logs a pinned prediction therefore told the agent to resolve that
+  same pinned claim by hand, which `ana resolve` refuses and which is the opposite of the
+  protocol. Found in the first real session after the reminder was switched on. "Is this a test
+  run?" now has one definition, quote-aware and shared with the reminder, so `git commit -m
+  "fix the cargo test setup"` and `echo cargo test` are left alone too.
+- The hook tests now ignore `ANAMNESIS_PIN_NUDGE` from the environment of whoever runs them.
+  Enabling it in a developer's own settings made the session-start tests see a second `⟢` and
+  fail locally while CI stayed green.
+
 ## [0.4.2] — 2026-10-05
 
 A hotfix for a defect that shipped in 0.4.0 and 0.4.1.

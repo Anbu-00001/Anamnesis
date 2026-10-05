@@ -61,6 +61,7 @@ fn hook(s: &Setup, event: &str, payload: &str) -> String {
     let mut child = Command::new(ANA)
         .args(["hook", event])
         .env("ANAMNESIS_AGENT_DATA", &s.ledger)
+        .env_remove("ANAMNESIS_PIN_NUDGE")
         .env("HOME", &s.dir)
         .env("USERPROFILE", &s.dir)
         .stdin(Stdio::piped())
@@ -312,6 +313,7 @@ fn a_hook_that_cannot_get_the_ledger_gives_up_and_says_so() {
         .args(["hook", "post-tool"])
         .env("ANAMNESIS_AGENT_DATA", &s.ledger)
         .env("ANAMNESIS_HOOK_LOCK_WAIT_MS", "300")
+        .env_remove("ANAMNESIS_PIN_NUDGE")
         .env("HOME", &s.dir)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
@@ -638,5 +640,35 @@ fn the_stop_hook_is_silent_when_nothing_is_overdue() {
         &serde_json::json!({"session_id": "q", "cwd": "/work/project"}).to_string(),
     );
     assert!(out.trim().is_empty(), "{out}");
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// The post-tool nudge ("a test command just ran, resolve your prediction by hand") matched
+/// the words `cargo test` anywhere in a command. The `ana add --check "cargo test"` that LOGS a
+/// pinned prediction therefore told the agent to resolve that same pinned claim by hand, which
+/// `ana resolve` refuses and which is the opposite of the protocol. Found in the first real
+/// session after the reminder was switched on.
+#[test]
+fn commands_that_only_mention_a_runner_are_not_test_runs_after_the_fact_either() {
+    let s = setup("mention_post");
+    for cmd in [
+        "ana add \"cargo test passes first try\" --prob 0.9 --tags kind:tests-pass --check \"cargo test --all\"",
+        "ana run abc123 -- cargo test",
+        "git commit -m \"fix the cargo test setup\"",
+        "echo cargo test",
+        "grep -rn 'pytest' docs/",
+        "cat tests/test_pytest_plugin.py",
+    ] {
+        let mut v: serde_json::Value = serde_json::from_str(&fixture("pass_echo")).unwrap();
+        v["tool_input"]["command"] = cmd.into();
+        let out = hook(&s, "post-tool", &v.to_string());
+        assert!(out.trim().is_empty(), "nudged about a command that is not a test run: {cmd}\n{out}");
+    }
+    // A real, masked test run still is one.
+    let mut v: serde_json::Value = serde_json::from_str(&fixture("masked_by_pipe")).unwrap();
+    let out = hook(&s, "post-tool", &v.to_string());
+    assert!(out.contains("this one is on your word"), "{out}");
+    v["tool_input"]["command"] = "cd tiny && cargo test 2>&1 | tail -5".into();
+    assert!(hook(&s, "post-tool", &v.to_string()).contains("this one is on your word"));
     let _ = fs::remove_dir_all(&s.dir);
 }

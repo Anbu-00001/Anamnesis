@@ -42,6 +42,13 @@ fallback below, also needs `jq`.
 Get `ana` from the [Anamnesis releases](https://github.com/Anbu-00001/Anamnesis/releases)
 (prebuilt binaries, checksum-verified) or `cargo install --path . --locked` from the repo root.
 
+## Optional: the pin-first reminder
+
+`hooks/pre-tool.sh` is a `PreToolUse` hook that is **not** registered by this plugin. With
+`ANAMNESIS_PIN_NUDGE=1` it refuses the first bare test run of a session once, with the commands
+to log a pinned prediction first and run through `ana run`. See `docs/AGENTS.md` and
+`docs/MEASUREMENT.md`.
+
 ## Updating
 
 Claude Code decides a plugin has an update by comparing its `version`, and third-party

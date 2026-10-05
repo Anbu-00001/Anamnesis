@@ -174,6 +174,35 @@ settles a claim with `true`.
 idea. This is the part of the answer that is a number: the report shows what
 fraction of your resolutions were graded by a machine rather than by you.
 
+## Making sure there is something to grade: the pin-first reminder
+
+The grader only has something to grade if a pinned prediction was logged *before* the tests ran,
+and a standing instruction in a global file is followed by some models and ignored by others (one
+Opus run followed it exactly; two Sonnet runs ignored it). A reminder that arrives after the run is
+too late: a prediction written after the outcome is not a prediction. So there is an opt-in
+`PreToolUse` hook, `ana hook pre-tool` (`plugin/hooks/pre-tool.sh`), switched on by
+`ANAMNESIS_PIN_NUDGE=1`:
+
+- the **first bare test run of a session is refused once**, before it runs, with the exact
+  `ana add --check` and `ana run` commands; a run through `ana run` is never refused, and a second
+  bare run in the same session goes ahead;
+- the **same rule is injected at session start** (and again after `/clear` and compaction, since
+  `SessionStart` fires for both), because the start of context is where an instruction a model
+  would skip is most likely to be read;
+- it recognises `cargo`, `pytest`, `npm`/`yarn`/`pnpm`, `go`, `flutter`, `gradle`/`mvn`, `dotnet`,
+  `rspec`, `phpunit`, `tox`, `make test` and similar, and finds them inside `cd x && … | tail`, but
+  never in a quoted string, so `git commit -m "fix jest config"` is left alone;
+- it keeps a small log, `protocol.jsonl`, beside the ledger: time, session, project folder, model,
+  runner kind and what happened, **never a command, path or output**. See
+  [MEASUREMENT.md](MEASUREMENT.md) for what it is for.
+
+It is not registered by the plugin's `hooks.json`: refusing a tool call is a lot to do to
+someone who did not ask for it. Register it yourself in `settings.json` (`PreToolUse`, matcher
+`Bash`) on a machine where you want it. The design borrows from what the popular plugins do:
+Superpowers injects its rules at `SessionStart` (`startup|clear|compact`), TDD Guard blocks a
+call and explains why, and Anthropic's `security-guidance` says things once per session and prunes
+its state files, which this prunes too after 14 days.
+
 ## Record the model
 
 Pooling calibration across model versions makes the numbers uninterpretable. The

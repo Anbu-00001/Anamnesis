@@ -18,6 +18,7 @@ pub mod evidence;
 pub mod hook;
 pub mod mcp;
 pub mod model;
+pub mod pin;
 pub mod report;
 pub mod scoring;
 pub mod store;
