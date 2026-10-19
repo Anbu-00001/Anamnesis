@@ -71,13 +71,16 @@ fn segments(cmd: &str) -> Vec<String> {
 
 /// A short, stable name for the kind of runner, for the log. Never the command.
 fn runner_label(toks: &[&str]) -> &'static str {
-    match toks.first().copied().unwrap_or("") {
+    match toks
+        .first()
+        .map_or("", |t| t.rsplit('/').next().unwrap_or(t))
+    {
         "cargo" => "cargo",
         "pytest" | "py.test" | "python" | "python3" => "pytest",
         "go" => "go",
         "npm" | "pnpm" | "yarn" | "bun" | "npx" | "pnpx" | "bunx" | "jest" | "vitest" => "node",
         "flutter" | "dart" => "flutter",
-        "gradle" | "./gradlew" | "gradlew" | "mvn" | "./mvnw" => "jvm",
+        "gradle" | "gradlew" | "mvn" | "mvnw" => "jvm",
         _ => "other",
     }
 }
@@ -102,35 +105,142 @@ fn other_runner(t: &[&str]) -> Option<&'static str> {
     }
 }
 
+/// `cmd` with redirections that contain `&` blanked, so `segments` does not cut at them, and
+/// without the bodies of its here-documents: a `cargo test` line inside `cat <<EOF` is text.
+fn flat(cmd: &str) -> String {
+    let mut out = String::new();
+    let mut until: Option<String> = None;
+    for line in cmd.lines() {
+        if let Some(end) = &until {
+            if line.trim() == end {
+                until = None;
+            }
+            continue;
+        }
+        until = heredoc_word(line);
+        out.push_str(line);
+        out.push('\n');
+    }
+    out.replace("2>&1", " ")
+        .replace("1>&2", " ")
+        .replace(">&2", " ")
+        .replace("&>", " ")
+}
+
+/// The word that ends a here-document opened on `line` (`<<EOF`, `<<-'PY'`), if one is.
+fn heredoc_word(line: &str) -> Option<String> {
+    let (_, rest) = line.split_once("<<")?;
+    if rest.starts_with('<') {
+        return None; // `<<<` is a here-string, on one line
+    }
+    let rest = rest.strip_prefix('-').unwrap_or(rest).trim_start();
+    let word: String = rest
+        .chars()
+        .filter(|c| !matches!(c, '\'' | '"'))
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_')
+        .collect();
+    (!word.is_empty()).then_some(word)
+}
+
+/// What a segment runs, past `NAME=value` and the wrappers that run a command unchanged:
+/// `nice -n 19`, `timeout 600`, `env -u X`, `time`, `nohup`, `command`, `exec`. Agents keep
+/// heavy suites polite with `nice -n 19`, and that is still the suite.
+fn command_in<'a, 'b>(mut toks: &'b [&'a str]) -> &'b [&'a str] {
+    while let Some((first, rest)) = toks.split_first() {
+        if assignment(first).is_some() {
+            toks = rest;
+            continue;
+        }
+        let takes_value: &[&str] = match *first {
+            "nice" => &["-n"],
+            "timeout" => &["-s", "-k"],
+            "env" => &["-u"],
+            "time" | "nohup" | "command" | "exec" => &[],
+            _ => break,
+        };
+        let mut rest = rest;
+        while let Some((flag, after)) = rest.split_first() {
+            if !flag.starts_with('-') {
+                break;
+            }
+            rest = if takes_value.contains(flag) {
+                after.get(1..).unwrap_or(&[])
+            } else {
+                after
+            };
+        }
+        if *first == "timeout" {
+            rest = rest.get(1..).unwrap_or(&[]); // the duration
+        }
+        toks = rest;
+    }
+    toks
+}
+
+/// The words of a segment, with the brackets of a subshell or group taken off:
+/// `(ana run x -- cargo test)` runs `ana run`, and `{ cargo test; }` runs `cargo test`.
+fn words(seg: &str) -> Vec<&str> {
+    seg.split_whitespace()
+        .map(|t| t.trim_start_matches('(').trim_end_matches(')'))
+        .filter(|t| !t.is_empty() && !matches!(*t, "{" | "}" | "!"))
+        .collect()
+}
+
+/// A program's name without its directory, and `python3.12` as `python3`.
+fn program(t: &str) -> &str {
+    let name = t.rsplit('/').next().unwrap_or(t);
+    match name {
+        n if n.starts_with("python3") => "python3",
+        n if n.starts_with("python") => "python",
+        n => n,
+    }
+}
+
+/// The runner `cmd` sends through `ana run`, if it does so in any segment: `cd x; ana run ...`,
+/// `ID=$(ana add ...) && ana run "$ID" -- ...` and `nice -n 19 ana run ...` all count. Looking
+/// only at the start of the last `&&` part, as the first version did, left 382 of 471 real
+/// `ana run` calls out of the log, and the log is what the compliance figures are read from.
+fn ana_run_in(cmd: &str) -> Option<&'static str> {
+    segments(&flat(cmd)).iter().find_map(|seg| {
+        let all = words(seg);
+        let toks = command_in(&all);
+        is_ana_run(&toks.join(" ")).then(|| {
+            toks.iter()
+                .position(|t| *t == "--")
+                .and_then(|i| test_run_in(&toks[i + 1..].join(" ")))
+                .map_or("other", |(r, _)| r)
+        })
+    })
+}
+
 /// The test run in `cmd`, if there is one: its runner label and the plain command to pin.
 ///
 /// Redirections and everything after them are not part of what gets pinned: an agent that
 /// ran `cargo test 2>&1 | tail -60` is told to pin `cargo test`.
 pub(crate) fn test_run_in(cmd: &str) -> Option<(&'static str, String)> {
-    let flat = cmd
-        .replace("2>&1", " ")
-        .replace("1>&2", " ")
-        .replace(">&2", " ")
-        .replace("&>", " ");
-    for seg in segments(&flat) {
-        let mut toks: Vec<&str> = seg.split_whitespace().collect();
-        while toks
-            .first()
-            .is_some_and(|t| assignment(t).is_some() || matches!(*t, "time" | "nohup"))
-        {
-            toks.remove(0);
-        }
+    for seg in segments(&flat(cmd)) {
+        let all = words(&seg);
+        let toks = command_in(&all);
         if toks.first().is_some_and(|t| *t == "cd") {
             continue;
         }
-        let label = if runner_of(&toks).is_some() {
-            Some(runner_label(&toks))
-        } else if has_non_running_flag(&toks) {
-            None
-        } else {
-            other_runner(&toks)
+        let label = |t: &[&str]| {
+            if runner_of(t).is_some() {
+                Some(runner_label(t))
+            } else if has_non_running_flag(t) {
+                None
+            } else {
+                other_runner(t)
+            }
         };
-        if let Some(label) = label {
+        // `.venv/bin/python -m pytest` is how most real pytest runs here were written, and
+        // the grader's matcher knows only a bare `python`: match it by the program's name.
+        let named: Vec<&str> = toks
+            .iter()
+            .enumerate()
+            .map(|(i, t)| if i == 0 { program(t) } else { t })
+            .collect();
+        if let Some(label) = label(toks).or_else(|| label(&named)) {
             let plain: Vec<&str> = toks
                 .iter()
                 .copied()
@@ -164,6 +274,7 @@ fn log(
     session: &str,
     project: &str,
     model: Option<&str>,
+    subagent: bool,
     runner: &str,
     action: &str,
 ) {
@@ -172,6 +283,7 @@ fn log(
         "session": untrusted::tag(session),
         "project": untrusted::tag(project),
         "model": model,
+        "subagent": subagent,
         "runner": runner,
         "action": action,
     });
@@ -190,10 +302,29 @@ fn marker(session: &str, ext: &str) -> Option<std::path::PathBuf> {
 /// it. What separates "this model ignored the instruction" from "nobody ran any tests" is
 /// knowing which model it was, and this is the harness's own record, not the agent's account.
 /// Only the last 256 KB is read, so a long session costs the same as a short one.
+///
+/// A subagent's call carries `agent_id` but its parent's `transcript_path` (checked against
+/// a real 2.1.251 payload); reading that credited 18 of 33 subagent runs to the parent's
+/// model. Its own transcript is `<session>/subagents/agent-<agent_id>.jsonl`, beside the
+/// parent's, and if that is not there the model is not reported rather than guessed.
 fn model_of(input: &Value) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     const TAIL: u64 = 256 * 1024;
-    let path = input.get("transcript_path")?.as_str()?;
+    let parent = Path::new(input.get("transcript_path")?.as_str()?);
+    let path = match input.get("agent_id").and_then(Value::as_str) {
+        None => parent.to_path_buf(),
+        Some(id)
+            if !id.is_empty()
+                && id.len() <= 64
+                && id.chars().all(|c| c.is_ascii_alphanumeric()) =>
+        {
+            parent
+                .with_extension("")
+                .join("subagents")
+                .join(format!("agent-{id}.jsonl"))
+        }
+        Some(_) => return None,
+    };
     let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
     f.seek(SeekFrom::Start(len.saturating_sub(TAIL))).ok()?;
@@ -284,15 +415,19 @@ pub fn pre_tool(input: &Value, ledger: &Ledger, ledger_path: &Path) -> Option<Va
     let project = project_slug(input.get("cwd").and_then(Value::as_str));
     let model = model_of(input);
     let model = model.as_deref();
+    let sub = input.get("agent_id").is_some();
 
     // Already going through `ana run`: that is the behaviour wanted. Count it.
-    if is_ana_run(cmd) {
-        let runner = cmd
-            .split("--")
-            .nth(1)
-            .and_then(|rest| test_run_in(rest.trim()))
-            .map_or("other", |(r, _)| r);
-        log(ledger_path, session, &project, model, runner, "ana_run");
+    if let Some(runner) = ana_run_in(cmd) {
+        log(
+            ledger_path,
+            session,
+            &project,
+            model,
+            sub,
+            runner,
+            "ana_run",
+        );
         return None;
     }
     let (runner, plain) = test_run_in(cmd)?;
@@ -303,6 +438,7 @@ pub fn pre_tool(input: &Value, ledger: &Ledger, ledger_path: &Path) -> Option<Va
             session,
             &project,
             model,
+            sub,
             runner,
             "allowed_after_nudge",
         );
@@ -315,6 +451,7 @@ pub fn pre_tool(input: &Value, ledger: &Ledger, ledger_path: &Path) -> Option<Va
         session,
         &project,
         model,
+        sub,
         runner,
         if pin.is_some() {
             "denied_unrun_pin"

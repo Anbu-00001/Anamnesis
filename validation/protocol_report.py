@@ -23,6 +23,10 @@ import random
 import sys
 
 MIN_N = 20  # below this, no comparison is printed (docs/MEASUREMENT.md, rule 2)
+# Before this date the logger saw `ana run` only at the start of the last `&&` part, which left
+# 382 of 471 real calls out, and it credited subagent runs to the parent's model. Compliance
+# from those events is not comparable with what came after (docs/MEASUREMENT.md, addendum 1).
+LOGGER_FIXED = dt.datetime(2026, 10, 20, tzinfo=dt.timezone.utc)
 
 
 def load_json(path):
@@ -108,6 +112,11 @@ def main():
         print("  no events. Either the reminder was never switched on (ANAMNESIS_PIN_NUDGE), the hook is not")
         print("  registered, or no test command ran. Check that before reading anything else here.")
     else:
+        early = sum(e["_t"] < LOGGER_FIXED for e in events)
+        if early:
+            print(f"  ! {early} of these events predate the logger fix of {LOGGER_FIXED:%Y-%m-%d}: that logger missed most")
+            print("    `ana run` calls and misnamed subagents' models, so its share is not a compliance figure.")
+            print(f"    Read Q2 with --since {LOGGER_FIXED:%Y-%m-%d} (docs/MEASUREMENT.md, addendum 1).")
         first, last = min(e["_t"] for e in events), max(e["_t"] for e in events)
         print(f"  {len(events)} test-run events, {first:%Y-%m-%d} to {last:%Y-%m-%d}, "
               f"{len({e['session'] for e in events})} sessions, {len({e['project'] for e in events})} projects")
@@ -123,6 +132,13 @@ def main():
             pinned = c["ana_run"]
             print(f"    {m:<26} {tot:>4} runs, {pinned:>4} through ana run ({pinned / tot:.0%}), "
                   f"{c['denied_no_pin'] + c['denied_unrun_pin']:>3} refused once, {c['allowed_after_nudge']:>3} ignored it")
+        if any("subagent" in e for e in events):
+            for who, flag in (("main agent", False), ("subagents", True)):
+                c = collections.Counter(e["action"] for e in events if e.get("subagent", False) == flag)
+                tot = sum(c.values())
+                if tot:
+                    print(f"    {who:<26} {tot:>4} runs, {c['ana_run']:>4} through ana run"
+                          + (f" ({c['ana_run'] / tot:.0%})" if tot >= 10 else " (under 10 runs: no percentage)"))
         # did a refusal change behaviour? an `ana_run` later in the same session
         by_session = collections.defaultdict(list)
         for e in events:
@@ -151,6 +167,13 @@ def main():
     auto_tp = [c for c in auto if "kind:tests-pass" in c.get("tags", [])]
     print(f"  claims in the window: {len(window)}   pinned: {len(pinned)}   graded by exit status: {len(auto)}"
           f"   (of which kind:tests-pass: {len(auto_tp)})")
+    projects = collections.Counter(
+        next((t.split(':', 1)[1] for t in c.get("tags", []) if t.startswith("project:")), "(no project: tag)")
+        for c in window)
+    if projects:
+        top, n_top = projects.most_common(1)[0]
+        print(f"  {len(projects)} projects; the largest, {top}, holds {n_top} of {len(window)} claims ({n_top / len(window):.0%}): "
+              + ", ".join(f"{p} {n}" for p, n in projects.most_common(6)))
     voided = [c for c in pinned if c.get("void")]
     unrun = [c for c in pinned if not c.get("resolution") and not c.get("void")]
     print(f"  pinned and never run: {len(unrun)}   pinned and voided: {len(voided)}   "
@@ -189,6 +212,17 @@ def main():
             print("  -> the interval excludes zero the other way: machine-graded claims came true MORE often.")
         else:
             print("  -> the interval includes zero: no difference can be claimed.")
+        top = collections.Counter(
+            next((t.split(':', 1)[1] for t in c.get("tags", []) if t.startswith("project:")), None)
+            for c in tests_pass if c.get("resolution") and c["resolution"].get("resolved_by") == "auto"
+            and (since is None or when(c) >= since)).most_common(1)
+        if top and top[0][0]:
+            rest = [s for c in tests_pass if c.get("resolution") and c["resolution"].get("resolved_by") == "auto"
+                    and (since is None or when(c) >= since) and f"project:{top[0][0]}" not in c.get("tags", [])
+                    for s in [settled(c)] if s]
+            sr = stats(rest)
+            print(f"  exploratory, not the pre-registered test: exit-graded without {top[0][0]} ({top[0][1]} claims): "
+                  + (fmt(sr) if sr and sr["n"] >= MIN_N else f"n={sr['n'] if sr else 0}, under {MIN_N}: nothing to read"))
         lo2, hi2 = boot_ci(lambda ps: sum(p for p, _ in ps) / len(ps) - sum(y for _, y in ps) / len(ps), machine)
         print(f"  machine-graded gap (said - true): {sm['mean_p'] - sm['hit']:+.0%}   95% interval [{lo2:+.0%}, {hi2:+.0%}]")
     else:

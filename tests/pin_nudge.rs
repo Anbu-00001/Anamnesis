@@ -465,3 +465,141 @@ fn other_stacks_test_commands_are_recognised_too() {
     }
     let _ = fs::remove_dir_all(&s.dir);
 }
+
+/// Shapes taken from real sessions. The first version looked only at the start of the last
+/// `&&` part, and 382 of 471 real `ana run` calls never reached the log.
+#[test]
+fn ana_run_is_counted_in_any_segment_and_behind_wrappers() {
+    let s = setup("anarunshapes");
+    for cmd in [
+        "cd /w/showcase; ana run 5d40cf -- .venv/bin/python -m pytest -q 2>&1 | tail -30",
+        "cd /w/showcase && nice -n 19 ana run 39f906 -- .venv/bin/python -m pytest -q 2>&1 | tail -45",
+        "ID=$(ana add \"suite passes\" --prob 0.8 --check \"cargo test\" | grep -o '[0-9a-f]\\{6\\}') && ana run \"$ID\" -- cargo test",
+        "ana run 393876 -- cargo test 2>&1 | tail -3 && git add README.md",
+        "S=/tmp/x\nana run abc123 -- cargo test\necho done",
+        "timeout 900 ana run abc123 -- cargo test",
+        "pgrep -c cargo; (ana run 7c758b -- env CARGO_BUILD_JOBS=3 nice -n 19 cargo test)",
+    ] {
+        let out = hook(&s, "pre-tool", &payload("s", cmd), true);
+        assert!(out.trim().is_empty(), "{cmd}: {out}");
+    }
+    let l = log(&s);
+    assert_eq!(l.len(), 7, "{l:?}");
+    assert!(l.iter().all(|r| r["action"] == "ana_run"), "{l:?}");
+    assert_eq!(l[1]["runner"], "pytest");
+    assert_eq!(l[2]["runner"], "cargo");
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+#[test]
+fn a_wrapped_bare_test_run_is_still_a_test_run() {
+    for cmd in [
+        "nice -n 19 cargo test",
+        "timeout -k 5 600 pytest -q",
+        "env -u CI cargo test",
+        "(cd tiny && cargo test)",
+        "{ cargo test; } 2>&1 | tail",
+    ] {
+        let s = setup("wrapped");
+        let reason = denied(&hook(&s, "pre-tool", &payload("w", cmd), true))
+            .unwrap_or_else(|| panic!("not seen as a test run: {cmd}"));
+        assert!(
+            !reason.contains("nice") && !reason.contains("timeout"),
+            "{reason}"
+        );
+        let _ = fs::remove_dir_all(&s.dir);
+    }
+}
+
+#[test]
+fn a_heredoc_body_is_text_not_a_command() {
+    let s = setup("heredoc");
+    for cmd in [
+        "cat > notes.md <<'EOF'\nRun the suite with:\ncargo test\nor ana run abc123 -- cargo test\nEOF",
+        "python3 - <<PY\nimport subprocess\nPY\necho ok",
+    ] {
+        let out = hook(&s, "pre-tool", &payload("h", cmd), true);
+        assert!(out.trim().is_empty(), "{cmd}: {out}");
+    }
+    assert!(log(&s).is_empty(), "{:?}", log(&s));
+    // ... and the command after the body still counts.
+    let out = hook(
+        &s,
+        "pre-tool",
+        &payload("h", "cat <<EOF\nx\nEOF\ncargo test"),
+        true,
+    );
+    assert!(denied(&out).is_some(), "{out}");
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// A subagent's call names its parent's transcript; reading that credited 18 of 33 real
+/// subagent runs to the wrong model. The payload is the one Claude Code 2.1.251 sent.
+#[test]
+fn a_subagent_run_is_credited_to_the_subagent_model() {
+    let s = setup("subagent");
+    let fixture = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/claude-code-2.1.251/pre_tool_subagent.json");
+    let mut p: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(fixture).unwrap()).unwrap();
+    let parent = s.dir.join("sess.jsonl");
+    let line = |m: &str| {
+        format!("{{\"type\":\"assistant\",\"message\":{{\"model\":\"{m}\",\"content\":[]}}}}\n")
+    };
+    fs::write(&parent, line("claude-opus-5-5")).unwrap();
+    p["transcript_path"] = parent.display().to_string().into();
+
+    // Its own transcript is not there (yet): say nothing rather than name the parent's model.
+    hook(&s, "pre-tool", &p.to_string(), true);
+    let sub_dir = s.dir.join("sess").join("subagents");
+    fs::create_dir_all(&sub_dir).unwrap();
+    fs::write(
+        sub_dir.join("agent-a3d9bf2dfac5286db.jsonl"),
+        line("claude-haiku-5-5"),
+    )
+    .unwrap();
+    hook(&s, "pre-tool", &p.to_string(), true);
+    // A hostile id never becomes a path.
+    p["agent_id"] = "../../sess".into();
+    hook(&s, "pre-tool", &p.to_string(), true);
+    // The main agent still reads its own transcript.
+    p.as_object_mut().unwrap().remove("agent_id");
+    hook(&s, "pre-tool", &p.to_string(), true);
+
+    let l = log(&s);
+    let got: Vec<_> = l
+        .iter()
+        .map(|r| (r["model"].clone(), r["subagent"].clone()))
+        .collect();
+    assert_eq!(
+        got,
+        [
+            (serde_json::Value::Null, true.into()),
+            ("claude-haiku-5-5".into(), true.into()),
+            (serde_json::Value::Null, true.into()),
+            ("claude-opus-5-5".into(), false.into()),
+        ]
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+#[test]
+fn a_virtualenv_pytest_is_a_test_run_and_the_pin_keeps_its_path() {
+    let s = setup("venv");
+    let reason = denied(&hook(
+        &s,
+        "pre-tool",
+        &payload(
+            "v",
+            "cd /w/showcase && .venv/bin/python -m pytest -q 2>&1 | tail -5",
+        ),
+        true,
+    ))
+    .expect("a virtualenv pytest is a test run");
+    assert!(
+        reason.contains("--check \".venv/bin/python -m pytest -q\""),
+        "{reason}"
+    );
+    assert_eq!(log(&s)[0]["runner"], "pytest");
+    let _ = fs::remove_dir_all(&s.dir);
+}

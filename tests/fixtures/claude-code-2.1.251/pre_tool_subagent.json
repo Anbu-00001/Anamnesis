@@ -1,0 +1,16 @@
+{
+  "session_id": "00000000-0000-4000-8000-000000000001",
+  "transcript_path": "/work/transcripts/00000000-0000-4000-8000-000000000001.jsonl",
+  "cwd": "/work/project",
+  "prompt_id": "00000000-0000-4000-8000-000000000002",
+  "permission_mode": "default",
+  "agent_id": "a3d9bf2dfac5286db",
+  "agent_type": "general-purpose",
+  "hook_event_name": "PreToolUse",
+  "tool_name": "Bash",
+  "tool_input": {
+    "command": "cargo test",
+    "description": "Run the tests (command replaced; the rest is as captured)"
+  },
+  "tool_use_id": "toolu_fixture"
+}
