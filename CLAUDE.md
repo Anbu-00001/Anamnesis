@@ -83,6 +83,14 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   0.3.0 for a whole release cycle, silently. The standing line counts `who:claude`
   (CLI protocol) and `who:claude-code` (what Claude Code calls itself over MCP) as one
   agent; the ledger keeps the true client on every claim.
+- [src/pin.rs](src/pin.rs) — `ana hook pre-tool`: refuses the first bare test run of a
+  session once, and writes `protocol.jsonl`. What counts as a run is decided here
+  (`test_run_in`, `ana_run_in`), deliberately wider than the grader's `hook::test_run`: a
+  reminder can be generous, a grade cannot. **Never widen the grader to match.** Every shape it
+  recognises came from replaying real transcripts, and any new one must be replayed the same
+  way, reading what is gained and what is lost, because a false `ana_run` flatters the
+  compliance figure and a false refusal costs a turn. `origin_here` stamps claims with their
+  session. See `docs/MEASUREMENT.md`, addenda 1 and 2.
 - [src/check.rs](src/check.rs) — `ana add --check` / `ana run`: a claim pinned to the
   command that settles it, graded from that process's own exit status (`hook::judge_run`
   shares the hook's runner rules). The hook leaves a pinned claim to `ana run`.

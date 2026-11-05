@@ -1134,7 +1134,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 resolution: None,
                 void: None,
                 check: check.clone(),
-                extra: Default::default(),
+                extra: anamnesis::pin::origin_here(),
                 amendments: Vec::new(),
             });
             store::save(&path, &ledger).map_err(|e| format!("saving: {e}"))?;

@@ -591,12 +591,23 @@ pub(crate) fn is_ana_run(cmd: &str) -> bool {
         let name = t.rsplit(['/', '\\']).next().unwrap_or(t);
         name == "ana" || name == "ana.exe"
     };
-    toks.first().is_some_and(|t| is_ana(t))
-        && toks
-            .iter()
-            .skip(1)
-            .take_while(|t| **t != "--")
-            .any(|t| *t == "run")
+    if !toks.first().is_some_and(|t| is_ana(t)) {
+        return false;
+    }
+    // The subcommand is the first word past the global flags. Taking any later `run` counted
+    // `ana add "the suite will run" --prob 0.7` as a pinned run.
+    let mut rest = toks[1..].iter();
+    while let Some(t) = rest.next() {
+        match *t {
+            "--data" => {
+                rest.next();
+            }
+            "--json" => {}
+            t if t.starts_with("--data=") => {}
+            t => return t == "run",
+        }
+    }
+    false
 }
 
 /// The exit code Claude Code puts inside a failed call's `error` text, which reads
@@ -1091,6 +1102,9 @@ mod tests {
             "ana --data x.json --json run abc123 -- cargo test"
         ));
         assert!(!is_ana_run("ana report -- run"));
+        assert!(!is_ana_run("ana add \"the suite will run\" --prob 0.7"));
+        assert!(!is_ana_run("ana --json list run"));
+        assert!(is_ana_run("ana --json --data=x.json run abc -- cargo test"));
         assert!(!is_ana_run("cargo test"));
         assert!(!is_ana_run("echo ana run"));
         assert!(!is_ana_run("ana report"));

@@ -411,7 +411,7 @@ fn tool_predict(args: &Value, ledger: &Path, who: Option<&str>) -> ToolResult {
         resolution: None,
         void: None,
         check,
-        extra: Default::default(),
+        extra: crate::pin::origin_here(),
         amendments: Vec::new(),
     });
     store::save(ledger, &led).map_err(|e| e.to_string())?;

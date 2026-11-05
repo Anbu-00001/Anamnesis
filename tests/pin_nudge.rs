@@ -603,3 +603,310 @@ fn a_virtualenv_pytest_is_a_test_run_and_the_pin_keeps_its_path() {
     assert_eq!(log(&s)[0]["runner"], "pytest");
     let _ = fs::remove_dir_all(&s.dir);
 }
+
+/// Each of these was a real test run that the log still did not see. The commands are from
+/// sessions between 2026-10-20 and 2026-11-04.
+#[test]
+fn real_test_commands_the_second_logger_still_missed_are_seen() {
+    for (cmd, runner) in [
+        (
+            "python3 -m unittest discover -s tests 2>&1 | tail -5",
+            "python",
+        ),
+        (
+            "timeout 60 nice -n 19 python3 -m unittest discover -s tests",
+            "python",
+        ),
+        (
+            "PYTHONDONTWRITEBYTECODE=1 .venv/bin/python -B -m pytest -q -p no:cacheprovider",
+            "pytest",
+        ),
+        ("python -W ignore -X dev -m pytest -q", "pytest"),
+        ("$P -m pytest -q", "python"),
+        (
+            "for i in 1 2; do npx vitest run 2>&1 | grep x; done",
+            "node",
+        ),
+        ("if ! pytest -q; then echo no; fi", "pytest"),
+        ("run(){ .venv/bin/python -m pytest -q; }; run", "pytest"),
+        (
+            "r=$(.venv/bin/python -m pytest -q -x tests/test_a.py)",
+            "pytest",
+        ),
+        ("timeout 200 node --test test/core.test.js", "node"),
+        ("uv run pytest -q", "pytest"),
+        ("npm run test:unit", "node"),
+        ("ctest --output-on-failure", "c"),
+        (
+            "nohup bash -c \"ulimit -v 6000000; .venv/bin/python -m pytest -q\"",
+            "pytest",
+        ),
+    ] {
+        let s = setup("seen");
+        assert!(
+            denied(&hook(&s, "pre-tool", &payload("x", cmd), true)).is_some(),
+            "not seen as a test run: {cmd}"
+        );
+        assert_eq!(log(&s)[0]["runner"], runner, "{cmd}");
+        let _ = fs::remove_dir_all(&s.dir);
+    }
+}
+
+#[test]
+fn ana_run_inside_eval_or_a_shell_is_counted() {
+    let s = setup("evalrun");
+    for cmd in [
+        "id=$(ana add x --prob 0.5 | head -1); eval ana run $id -- $CMD 2>&1 | tail",
+        "nohup bash -c \"ana run 69440c -- nice -n 19 cargo test\" > /tmp/x.log 2>&1 &",
+        "sh -c 'ana run abc123 -- cargo test'",
+    ] {
+        let out = hook(&s, "pre-tool", &payload("e", cmd), true);
+        assert!(out.trim().is_empty(), "{cmd}: {out}");
+    }
+    let l = log(&s);
+    assert_eq!(l.len(), 3, "{l:?}");
+    assert!(l.iter().all(|r| r["action"] == "ana_run"), "{l:?}");
+    assert_eq!(l[1]["runner"], "cargo");
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// Widening what counts must not widen what is refused: a refusal on a command that runs no
+/// tests costs a turn, and a false `ana_run` flatters the compliance figure.
+#[test]
+fn commands_that_only_look_like_runs_stay_out_of_the_log() {
+    let s = setup("lookalike");
+    for cmd in [
+        "ana add \"the suite will run\" --prob 0.7 --tags who:claude",
+        "ana add \"pytest passes\" --prob 0.7 --check \"cargo test\"",
+        "bash -c \"echo hi\"",
+        "bash tools/release.sh",
+        "git commit -m \"bash -c cargo test\"",
+        "python -c \"import pytest\"",
+        "python3 -B script.py",
+        "python3 -m pip install pytest",
+        "uv run ruff check .",
+        "npm run build",
+        "npm run lint:test-names --silent --version",
+        "for t in \"ana add\" \"ana run\"; do echo $t; done",
+        "x=$(git rev-parse HEAD)",
+        "if [ -f pytest.ini ]; then echo yes; fi",
+        "node --version",
+    ] {
+        let out = hook(&s, "pre-tool", &payload("l", cmd), true);
+        assert!(out.trim().is_empty(), "{cmd}: {out}");
+    }
+    assert!(log(&s).is_empty(), "{:?}", log(&s));
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// One codebase looked like 23 projects because `project` is the folder a command ran in.
+#[test]
+fn the_log_names_the_repository_through_subfolders_cd_and_worktrees() {
+    let s = setup("repo");
+    let main = s.dir.join("MainRepo");
+    fs::create_dir_all(main.join(".git")).unwrap();
+    fs::create_dir_all(main.join("backend/app")).unwrap();
+    let tree = s.dir.join("feature-branch");
+    fs::create_dir_all(&tree).unwrap();
+    fs::write(
+        tree.join(".git"),
+        format!("gitdir: {}/.git/worktrees/feature-branch\n", main.display()),
+    )
+    .unwrap();
+    let elsewhere = s.dir.join("not-a-repo");
+    fs::create_dir_all(&elsewhere).unwrap();
+
+    let with_cwd = |sess: &str, cwd: &std::path::Path, cmd: &str| {
+        let mut p: serde_json::Value = serde_json::from_str(&payload(sess, cmd)).unwrap();
+        p["cwd"] = cwd.display().to_string().into();
+        hook(&s, "pre-tool", &p.to_string(), true);
+    };
+    with_cwd("1", &main.join("backend/app"), "cargo test");
+    with_cwd("2", &tree, "cargo test");
+    with_cwd(
+        "3",
+        &elsewhere,
+        &format!("cd {} && cargo test", main.join("backend").display()),
+    );
+    with_cwd("4", &main, "X=1; cd backend/app; cargo test");
+    with_cwd("5", &elsewhere, "cargo test");
+
+    let got: Vec<_> = log(&s).iter().map(|r| r["repo"].clone()).collect();
+    assert_eq!(
+        got,
+        [
+            "mainrepo".into(),
+            "mainrepo".into(),
+            "mainrepo".into(),
+            "mainrepo".into(),
+            serde_json::Value::Null
+        ]
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+fn tool_use(id: &str, name: &str, command: &str) -> String {
+    serde_json::json!({"type": "assistant", "message": {"model": "claude-opus-5-5", "role": "assistant",
+        "content": [{"type": "tool_use", "id": id, "name": name, "input": {"command": command}}]}})
+    .to_string()
+}
+
+fn tool_result(id: &str, text: &str) -> String {
+    serde_json::json!({"type": "user", "message": {"role": "user",
+        "content": [{"type": "tool_result", "tool_use_id": id, "content": text, "is_error": false}]}})
+    .to_string()
+}
+
+/// The rule covers runs that check a change, and every bare run used to count against it.
+#[test]
+fn the_log_says_whether_anything_was_edited_since_the_last_run() {
+    let cases: Vec<(Vec<String>, &str, serde_json::Value)> = vec![
+        (vec![tool_use("a", "Edit", "")], "cargo test", true.into()),
+        (vec![tool_use("a", "Agent", "")], "cargo test", true.into()),
+        (
+            vec![tool_use("a", "Bash", "sed -i s/a/b/ f.rs")],
+            "cargo test",
+            true.into(),
+        ),
+        (
+            vec![tool_use("a", "Bash", "ls")],
+            "sed -i s/a/b/ f.rs && cargo test",
+            true.into(),
+        ),
+        (
+            vec![
+                tool_use("a", "Edit", ""),
+                tool_use("b", "Bash", "cargo test"),
+            ],
+            "cargo test",
+            false.into(),
+        ),
+        (
+            vec![
+                tool_use("a", "Bash", "cargo test"),
+                tool_use("b", "Write", ""),
+            ],
+            "cargo test",
+            true.into(),
+        ),
+        (
+            vec![tool_use("a", "Bash", "ana run x -- cargo test")],
+            "cargo test",
+            false.into(),
+        ),
+        (
+            vec![tool_use("a", "Bash", "ls")],
+            "cargo test",
+            false.into(),
+        ),
+        // A run a hook refused never ran, so the edit before it still stands.
+        (
+            vec![
+                tool_use("a", "Edit", ""),
+                tool_use("b", "Bash", "cargo test"),
+                tool_result(
+                    "b",
+                    "PreToolUse:Bash hook error: anamnesis: log a pinned prediction first",
+                ),
+            ],
+            "ana run x -- cargo test",
+            true.into(),
+        ),
+        // The call being judged is already in the transcript when the hook runs.
+        (
+            vec![
+                tool_use("a", "Edit", ""),
+                tool_use("now", "Bash", "cargo test"),
+            ],
+            "cargo test",
+            true.into(),
+        ),
+    ];
+    for (i, (lines, cmd, want)) in cases.iter().enumerate() {
+        let s = setup(&format!("edit{i}"));
+        let transcript = s.dir.join("t.jsonl");
+        fs::write(&transcript, lines.join("\n") + "\n").unwrap();
+        let mut p: serde_json::Value = serde_json::from_str(&payload("e", cmd)).unwrap();
+        p["transcript_path"] = transcript.display().to_string().into();
+        p["tool_use_id"] = "now".into();
+        hook(&s, "pre-tool", &p.to_string(), true);
+        assert_eq!(
+            &log(&s)[0]["after_edit"],
+            want,
+            "case {i}: {cmd} after {lines:?}"
+        );
+        let _ = fs::remove_dir_all(&s.dir);
+    }
+}
+
+#[test]
+fn the_edit_question_goes_unanswered_when_the_transcript_is_cut_or_missing() {
+    let s = setup("editcut");
+    let transcript = s.dir.join("t.jsonl");
+    // Longer than the tail that is read, with nothing to answer it inside that tail.
+    let filler = tool_use("f", "Read", "") + "\n";
+    fs::write(&transcript, filler.repeat(300 * 1024 / filler.len() + 1)).unwrap();
+    let mut p: serde_json::Value = serde_json::from_str(&payload("c", "cargo test")).unwrap();
+    p["transcript_path"] = transcript.display().to_string().into();
+    hook(&s, "pre-tool", &p.to_string(), true);
+    hook(&s, "pre-tool", &payload("d", "cargo test"), true);
+    let l = log(&s);
+    assert!(l[0]["after_edit"].is_null(), "{l:?}");
+    assert_eq!(l[0]["model"], "claude-opus-5-5");
+    assert!(l[1]["after_edit"].is_null(), "{l:?}");
+    assert_eq!(l[0]["v"], 3);
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+fn add(s: &Setup, cwd: &std::path::Path, env: &[(&str, &str)]) -> serde_json::Value {
+    let mut cmd = Command::new(ANA);
+    cmd.current_dir(cwd)
+        .args(["--data", s.ledger.to_str().unwrap()])
+        .args(["add", "the suite passes", "--prob", "0.8"])
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT");
+    for (k, v) in env {
+        cmd.env(k, v);
+    }
+    assert!(cmd.output().unwrap().status.success());
+    let led: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&s.ledger).unwrap()).unwrap();
+    led["claims"].as_array().unwrap().last().unwrap().clone()
+}
+
+/// A claim had only an agent-written date tag, so nothing could say how many of them came
+/// from one long session.
+#[test]
+fn a_claim_logged_inside_claude_code_is_stamped_and_others_are_left_alone() {
+    let s = setup("origin");
+    let repo = s.dir.join("MyRepo");
+    fs::create_dir_all(repo.join(".git")).unwrap();
+    fs::create_dir_all(repo.join("sub")).unwrap();
+
+    let plain = add(&s, &repo.join("sub"), &[]);
+    assert!(plain.get("origin").is_none(), "{plain}");
+
+    let c = add(
+        &s,
+        &repo.join("sub"),
+        &[
+            ("CLAUDE_CODE_SESSION_ID", "sess-1"),
+            ("AI_AGENT", "claude-code_2-1-318_agent"),
+        ],
+    );
+    assert_eq!(c["origin"]["session"], "sess-1");
+    assert_eq!(c["origin"]["repo"], "myrepo");
+    assert_eq!(c["origin"]["client"], "claude-code_2-1-318_agent");
+
+    // It survives every later save, and the report still reads the ledger.
+    let id = c["id"].as_str().unwrap();
+    let ok = Command::new(ANA)
+        .args(["--data", s.ledger.to_str().unwrap(), "resolve", id, "true"])
+        .output()
+        .unwrap();
+    assert!(ok.status.success());
+    let led: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&s.ledger).unwrap()).unwrap();
+    assert_eq!(led["claims"][1]["origin"]["session"], "sess-1");
+    let _ = fs::remove_dir_all(&s.dir);
+}

@@ -148,6 +148,49 @@ measuring, not as a compliance figure.
    evidence test (`src/evidence.rs`), and resolving them honestly is the only fix. Voiding them
    in bulk would push the late-void share past the line that withholds the verdict.
 
+## Addendum 2, 2026-11-05: what a week should be able to say
+
+Written before the data it describes, but **after seeing** the figures from 2026-10-20 to
+2026-11-04: 896 runs from 6 sessions, one holding 70%; Opus 594 of 846 through `ana run`, Sonnet
+16 of 48. Those figures are why these rules exist, and they are not evidence for them.
+
+**What changed in what is recorded** (`"v": 3` on each log line):
+
+- `repo`: the repository's folder name, through subfolders, a leading `cd` and linked worktrees.
+  `project`, the folder a command ran in, stays, but it made a few codebases look like 23
+  projects.
+- `after_edit`: whether an edit was seen since the last test run, from the transcript. `null`
+  when the last 256 KB does not settle it. The standing rule covers runs that check a change, and
+  every bare run was counted against it. A script can edit without being seen, so `false` means
+  none was seen.
+- A claim logged inside Claude Code carries `origin` (`session`, `repo`, `client`), read from the
+  environment Claude Code gives its child processes. Before this, a claim had no session id, so
+  nothing could say how many came from one session. Older claims stay unstamped.
+- More runs are recognised: `python -m unittest`, `python -B -m pytest`, `$P -m pytest`,
+  `node --test`, `uv run`, `npm run test:*`, `ctest`, `eval`, shell keywords, `r=$(...)` and
+  `bash -c "..."`.
+- `ana add "the suite will run" ...` no longer counts as a pinned run.
+
+Replaying the 11,923 real Bash commands from 2026-10-20 to 2026-11-04 through the old and new
+hook: 18 false `ana_run` lines go, and 46 runs are gained (38 bare, 8 `ana_run`). The share through
+`ana run` moves from 68% (614 of 898) to 65% (604 of 926), so the earlier window stays roughly
+comparable. A sample of 160 replayed against the transcript as it stood at that moment: 91 of 139
+runs after an edit went through `ana run` (65%). That is close to the overall rate, so no-edit runs
+are not what holds the figure down.
+
+**Rules for the reading on or after 2026-11-12** (`protocol_report.py --since 2026-11-05`):
+
+1. Q2 is unchanged and stays the headline. `after_edit` is exploratory, and is labelled so.
+2. **Sessions are the unit that limits what can be said.** Claims and runs from one session are
+   not independent, and conventional intervals over-reject with 5 to 30 clusters, worse when their
+   sizes are uneven (Cameron, Gelbach & Miller 2008; MacKinnon & Webb 2017). So the report prints
+   no interval across sessions. It prints the effective number of sessions, the largest one's
+   share, and the range when any one session is left out.
+3. **No difference between models is claimed** unless each model has runs from at least 5 sessions
+   and the two leave-one-out ranges do not overlap. Below that, the report's per-model figures
+   describe these sessions and nothing else.
+4. A week may simply not reach rule 3. That is a result, and the next release does not wait for it.
+
 ## Running it
 
 ```bash

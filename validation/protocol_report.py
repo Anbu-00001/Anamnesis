@@ -81,6 +81,27 @@ def fmt(s):
             f"came true {s['hit']:.0%}   gap (said - true) {s['mean_p'] - s['hit']:+.0%}")
 
 
+def spread(per):
+    """How far a figure rests on a few sessions. per = {session: (hits, n)}.
+
+    Claims from one session are not independent, so an interval over claims is too narrow, and
+    with few, uneven sessions an interval over sessions is not reliable either (Cameron, Gelbach
+    & Miller 2008, over-rejection at 5-30 clusters; MacKinnon & Webb 2017 on unequal sizes). So
+    this reports no interval: the effective number of sessions (Kish), the largest one's share,
+    and how far the figure moves when any one session is left out.
+    """
+    hits, total = sum(h for h, _ in per.values()), sum(n for _, n in per.values())
+    effective = total ** 2 / sum(n ** 2 for _, n in per.values())
+    without = [(hits - h) / (total - n) for h, n in per.values() if total > n]
+    largest = max(n for _, n in per.values())
+    return effective, largest / total, (min(without), max(without)) if without else None
+
+
+def share(k, n):
+    """A count with its denominator; no percentage under 10 (docs/MEASUREMENT.md, Q2)."""
+    return f"{k} of {n}" + (f" ({k / n:.0%})" if n >= 10 else "")
+
+
 def main():
     ap = argparse.ArgumentParser()
     home = os.path.expanduser("~/.anamnesis")
@@ -139,6 +160,34 @@ def main():
                 if tot:
                     print(f"    {who:<26} {tot:>4} runs, {c['ana_run']:>4} through ana run"
                           + (f" ({c['ana_run'] / tot:.0%})" if tot >= 10 else " (under 10 runs: no percentage)"))
+        # how many independent sessions this really is
+        runs = collections.defaultdict(lambda: [0, 0])
+        for e in events:
+            runs[e["session"]][0] += e["action"] == "ana_run"
+            runs[e["session"]][1] += 1
+        effective, top, without = spread({k: tuple(v) for k, v in runs.items()})
+        print(f"  {len(runs)} sessions, effectively {effective:.1f}: the largest holds {top:.0%} of the runs.")
+        if without:
+            print(f"    leaving out any one session, the share through ana run is {without[0]:.0%} to {without[1]:.0%}")
+        for k, (h, n) in sorted(runs.items(), key=lambda kv: -kv[1][1])[:8]:
+            print(f"    {k[:8]}  {share(h, n)} through ana run")
+        repos = collections.Counter(e["repo"] for e in events if e.get("repo"))
+        if repos:
+            print(f"  {len(repos)} repositories (a worktree or subfolder is its repository): "
+                  + ", ".join(f"{r} {n}" for r, n in repos.most_common(8)))
+        # the rule covers runs that check a change, and bare runs include those that do not
+        graded = [e for e in events if "after_edit" in e]
+        if graded:
+            unknown = sum(e["after_edit"] is None for e in graded)
+            print(f"  runs following an edit (exploratory; an edit made by a script can go unseen, "
+                  f"{unknown} of {len(graded)} undetermined):")
+            for m in sorted({e.get("model") or "(model not reported)" for e in graded}):
+                mine = [e for e in graded if (e.get("model") or "(model not reported)") == m]
+                after = [e for e in mine if e["after_edit"] is True]
+                other = [e for e in mine if e["after_edit"] is False]
+                print(f"    {m:<26} after an edit: {share(sum(e['action'] == 'ana_run' for e in after), len(after))}"
+                      f" through ana run;  no edit since the last run: "
+                      f"{share(sum(e['action'] == 'ana_run' for e in other), len(other))}")
         # did a refusal change behaviour? an `ana_run` later in the same session
         by_session = collections.defaultdict(list)
         for e in events:
@@ -223,6 +272,22 @@ def main():
             sr = stats(rest)
             print(f"  exploratory, not the pre-registered test: exit-graded without {top[0][0]} ({top[0][1]} claims): "
                   + (fmt(sr) if sr and sr["n"] >= MIN_N else f"n={sr['n'] if sr else 0}, under {MIN_N}: nothing to read"))
+        stamped = collections.defaultdict(list)
+        for c in tests_pass:
+            if c.get("resolution") and c["resolution"].get("resolved_by") == "auto" \
+                    and (since is None or when(c) >= since) and settled(c):
+                session = (c.get("origin") or {}).get("session")
+                if session:
+                    stamped[session].append(settled(c))
+        if stamped:
+            n_st = sum(len(v) for v in stamped.values())
+            # spread() takes hits; a gap is a mean of (p - y), so scale it to a count of n
+            per = {k: (sum(p - y for p, y in v), len(v)) for k, v in stamped.items()}
+            effective, top_share, without = spread(per)
+            print(f"  {n_st} of {sm['n']} exit-graded claims carry their session: {len(stamped)} sessions, "
+                  f"effectively {effective:.1f}, the largest holds {top_share:.0%}.")
+            if without:
+                print(f"    leaving out any one session, their gap (said - true) is {without[0]:+.0%} to {without[1]:+.0%}")
         lo2, hi2 = boot_ci(lambda ps: sum(p for p, _ in ps) / len(ps) - sum(y for _, y in ps) / len(ps), machine)
         print(f"  machine-graded gap (said - true): {sm['mean_p'] - sm['hit']:+.0%}   95% interval [{lo2:+.0%}, {hi2:+.0%}]")
     else:

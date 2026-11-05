@@ -7,6 +7,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ### Added
 
+- **Claims logged inside Claude Code now say which session and repository they came from**
+  (`origin`), so the agent's record can be read per session. Nothing renders it, and nothing
+  is written outside Claude Code.
+- **`protocol.jsonl` lines now carry `v`, `repo` and `after_edit`**, and `protocol_report.py`
+  prints the effective number of sessions, the largest session's share, and the range when any
+  one session is left out, in place of an interval that few uneven sessions could not support.
+- **The log recognises more real test runs**: `python -m unittest`, `python -B -m pytest`,
+  `$P -m pytest`, `node --test`, `uv run`, `npm run test:*`, `ctest`, `eval`, shell keywords,
+  `r=$(...)` and `bash -c "..."`. The first such bare run in a session is now refused once, like
+  any other.
 - **An opt-in "pin first" reminder, `ana hook pre-tool`** (`ANAMNESIS_PIN_NUDGE=1`, not
   registered by the plugin). The grader only has something to grade if a pinned prediction was
   logged before the tests ran, and a standing instruction in a global file was followed by one

@@ -58,6 +58,11 @@ tool prints names a claim by it.
 
 ## Fields this version does not know
 
+A claim logged from inside Claude Code also carries `origin`: `session` (the session id), `repo`
+(the repository's folder name) and `client` (the Claude Code version string). It is there so the
+agent's record can be read per session. Nothing renders it, and outside Claude Code it is not
+written. If you share a ledger file, this travels with it.
+
 A claim, or the file itself, may carry fields a newer version wrote. They are kept
 through a load and a save and written back as they were, so an older `ana` no longer
 erases them (it used to, silently). A field nested inside a forecast, a resolution or a
