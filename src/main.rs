@@ -238,6 +238,18 @@ enum Cmd {
         #[arg(long)]
         tags: Option<String>,
     },
+    /// The weekly ON/OFF trial of the whole tool (docs/MEASUREMENT.md, addendum 4):
+    /// `start` enrols once, `status` says which week it is without naming the arm.
+    Trial {
+        #[arg(value_enum)]
+        action: TrialAction,
+        /// The first Monday (YYYY-MM-DD); default: the first one the protocol allows
+        #[arg(long, value_parser = parse_date)]
+        from: Option<NaiveDate>,
+        /// Pairs of weeks
+        #[arg(long, default_value_t = anamnesis::trial::DEFAULT_PAIRS)]
+        pairs: u32,
+    },
     /// Print where everything lives: both ledger paths, which environment
     /// variables are overriding them, the lock and backup files, and the version.
     Where,
@@ -257,6 +269,12 @@ impl Cmd {
                 | Cmd::Import { .. }
         )
     }
+}
+
+#[derive(Clone, Copy, ValueEnum)]
+enum TrialAction {
+    Start,
+    Status,
 }
 
 /// The hook events `ana hook` understands.
@@ -539,6 +557,9 @@ fn cmd_where(cli: &Cli) -> Result<(), String> {
                 "ANAMNESIS_AGENT_DATA": env("ANAMNESIS_AGENT_DATA"),
             },
             "data_flag": cli.data.as_ref().map(|p| p.display().to_string()),
+            "hooks": anamnesis::hook::hook_stats().iter().map(|h| json!({
+                "event": h.event, "last": h.last, "fires": h.fires, "model_bytes": h.model_bytes,
+            })).collect::<Vec<_>>(),
         }));
         return Ok(());
     }
@@ -576,6 +597,27 @@ fn cmd_where(cli: &Cli) -> Result<(), String> {
     if let Some(p) = &cli.data {
         println!("\n--data {} overrides both of the above.", p.display());
     }
+    // Liveness and cost: whether each hook has run here, and how much of what it printed
+    // reached the model. A hook that never fired is the failure that is otherwise silent.
+    println!("\nhooks on this machine     last ran (UTC)          runs   to the model");
+    for h in anamnesis::hook::hook_stats() {
+        let per = if h.fires > 0 {
+            format!(
+                "{} bytes in all, about {} tokens a run",
+                h.model_bytes,
+                (h.model_bytes as f64 / h.fires as f64 / 4.0).round()
+            )
+        } else {
+            "-".into()
+        };
+        println!(
+            "  {:<22}  {:<22}  {:>5}   {per}",
+            h.event,
+            h.last.as_deref().unwrap_or("never"),
+            h.fires
+        );
+    }
+    println!("  (counted since this engine was installed; tokens are bytes / 4, a rough guide)");
     Ok(())
 }
 
@@ -1016,6 +1058,69 @@ fn parse_interval(s: &str) -> Result<(f64, f64), String> {
     Ok((lo, hi))
 }
 
+/// `ana trial start|status`. Neither prints the schedule or today's arm: an agent may be
+/// the one running it, and the model is never told which week is which.
+fn cmd_trial(
+    cli: &Cli,
+    ledger_path: &std::path::Path,
+    action: TrialAction,
+    from: Option<NaiveDate>,
+    pairs: u32,
+) -> Result<(), String> {
+    use anamnesis::trial;
+    let today = Utc::now().date_naive();
+    let t = match action {
+        TrialAction::Start => trial::start(ledger_path, from, pairs, today)?,
+        TrialAction::Status => match trial::load(ledger_path) {
+            Some(t) => t,
+            None => {
+                if cli.json {
+                    println!("{}", json!({ "enrolled": false }));
+                } else {
+                    println!(
+                        "no trial enrolled ({} does not exist or cannot be read). `ana trial start` enrols one.",
+                        trial::path(ledger_path).display()
+                    );
+                }
+                return Ok(());
+            }
+        },
+    };
+    let week = t.week_of(today);
+    if cli.json {
+        println!(
+            "{}",
+            json!({
+                "enrolled": true, "id": t.id, "start": t.start, "end": t.end(),
+                "pairs": t.on_first.len(), "week": week, "file": trial::path(ledger_path),
+            })
+        );
+        return Ok(());
+    }
+    let verb = if matches!(action, TrialAction::Start) {
+        "enrolled"
+    } else {
+        "trial"
+    };
+    println!(
+        "{verb} [{}]: {} pairs of weeks, Monday {} to Sunday {} (UTC dates)",
+        t.id,
+        t.on_first.len(),
+        t.start,
+        t.end() - chrono::Duration::days(1)
+    );
+    match week {
+        Some(w) => println!("  today is in week {w} of {}", 2 * t.on_first.len()),
+        None if today < t.start => println!("  it has not started"),
+        None => println!("  it has ended: python3 validation/crossover_report.py reads it"),
+    }
+    println!(
+        "  the schedule is in {} and is not printed, so a model running this never reads it",
+        trial::path(ledger_path).display()
+    );
+    Ok(())
+}
+
 fn parse_date(s: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d")
         .map_err(|_| format!("could not parse date '{s}' (expected YYYY-MM-DD)"))
@@ -1051,6 +1156,19 @@ fn run(cli: Cli) -> Result<(), String> {
             None => agent_ledger_path()?,
         };
         return anamnesis::hook::run((*event).into(), &ledger_path);
+    }
+    // The trial lives beside the AGENT ledger, which the hooks read.
+    if let Cmd::Trial {
+        action,
+        from,
+        pairs,
+    } = &cli.cmd
+    {
+        let ledger_path = match cli.data.clone() {
+            Some(p) => p,
+            None => agent_ledger_path()?,
+        };
+        return cmd_trial(&cli, &ledger_path, *action, *from, *pairs);
     }
     // `demo` must never be able to touch a real ledger, so it is dispatched
     // before one is even resolved.
@@ -1838,7 +1956,7 @@ fn run(cli: Cli) -> Result<(), String> {
         } => cmd_export(&ledger, *anonymize, out.as_deref(), keep_tags.as_deref())?,
 
         // All handled at the top of run(), before any ledger load.
-        Cmd::Mcp | Cmd::Where | Cmd::Demo { .. } | Cmd::Hook { .. } => {
+        Cmd::Mcp | Cmd::Where | Cmd::Demo { .. } | Cmd::Hook { .. } | Cmd::Trial { .. } => {
             unreachable!("dispatched before the ledger load")
         }
     }

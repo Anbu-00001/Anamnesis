@@ -2456,6 +2456,13 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
         Verdict::BiasedNo => ("Leans no".into(), "under"),
         Verdict::CalibratedButUninformative => ("Uninformative".into(), "uninformative"),
         Verdict::MiscalibratedBothWays => ("Miscalibrated".into(), "both"),
+        // A quiet test that would miss most 30% errors is not a green light: the badge
+        // and card showed "No miscalibration found" in green at a sensitivity of 4%.
+        Verdict::NoEvidenceOfMiscalibration
+            if d.sensitivity.is_some_and(|r| r < DIALED_MIN_SENSITIVITY) =>
+        {
+            ("Nothing found yet".into(), "unknown")
+        }
         Verdict::NoEvidenceOfMiscalibration => ("No miscalibration found".into(), "good"),
     };
     if let (Some(conf), Some(acc)) = (d.mean_confidence, d.accuracy) {
@@ -3593,6 +3600,38 @@ mod tests {
         assert!(svg.contains("#c62828")); // → red accent
         assert!(!svg.contains("{{")); // every placeholder filled
         assert!(render_badge_svg(&Ledger::default(), None, 10, td()).contains("Not enough data"));
+    }
+
+    /// A quiet test that would miss most 30% errors does not get the green badge.
+    #[test]
+    fn a_weak_quiet_test_is_not_shown_in_green() {
+        // Two confidence levels, each hit at its stated rate: nothing to find, and too
+        // few calls for the test to find much if there were.
+        let claims = (0..40)
+            .map(|i| {
+                let (p, hit) = if i < 20 {
+                    (0.6, i % 10 < 6)
+                } else {
+                    (0.8, i % 10 < 8)
+                };
+                binary(&format!("w{i}"), p, hit, &[])
+            })
+            .collect();
+        let ledger = Ledger {
+            claims,
+            ..Default::default()
+        };
+        let d = ReportData::compute(&ledger, None, 10, td());
+        assert_eq!(d.verdict, Verdict::NoEvidenceOfMiscalibration);
+        assert!(
+            d.sensitivity.unwrap() < DIALED_MIN_SENSITIVITY,
+            "{:?}",
+            d.sensitivity
+        );
+        let svg = render_badge_svg(&ledger, None, 10, td());
+        assert!(svg.contains("Nothing found yet"), "{svg}");
+        assert!(!svg.contains("#2e7d32"), "green on a weak test:\n{svg}");
+        assert!(!svg.contains("No miscalibration found"));
     }
 
     /// The old version of this test was called `mood_bands_track_the_confidence_gap`,

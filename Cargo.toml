@@ -25,6 +25,13 @@ include = [
     "/SECURITY.md",
 ]
 
+# cargo-binstall: the release assets are bare executables named ana-<target>[.exe] under
+# tag v<version> (.github/workflows/release.yml). Keys and placeholders per binstall's
+# SUPPORT.md; `bin` is PkgFmt::Bin ("Download format is raw / binary").
+[package.metadata.binstall]
+pkg-url = "{ repo }/releases/download/v{ version }/ana-{ target }{ binary-ext }"
+pkg-fmt = "bin"
+
 [[bin]]
 name = "ana"
 path = "src/main.rs"

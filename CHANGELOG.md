@@ -27,6 +27,39 @@ The rest of the 0.5.0 audit, and the first piece of a weekly trial of the whole 
   the prompt. It prints nothing. It is the outcome a trial of the whole tool needs
   (`docs/MEASUREMENT.md`, addendum 4, which sets that trial's rules before any data and says
   what is still to build before it can start, not before 2027-01-04).
+- **Bet on your agent.** Type `?70` as a whole prompt: a 70% bet that the agent's first graded
+  test run after an edit, from its next turn on, passes. The UserPromptSubmit hook blocks the
+  prompt, so it never reaches the model, and leaves its text out of the block message. The
+  post-tool hook grades it from the exit status and tells you only. Bets live in `bets.json`
+  beside the agent ledger, which the agent's tools never read; `ana --data
+  ~/.anamnesis/bets.json report` scores how far you trust your agent.
+- **Is each hook alive, and what does it cost?** `ana where` lists every hook event with when
+  it last ran here, how often, and how many bytes of its output reached the model (about a
+  quarter as many tokens). A hook that never fires is otherwise silent.
+- **Audit sampling, opt-in** (`ANAMNESIS_AUDIT_RATE=0.2`). A turn is drawn with that chance,
+  by the hook rather than the agent. Every bare test run after an edit in a drawn turn is
+  refused until it goes through `ana run` with a pinned forecast. The claims calibration is
+  read on are then a random sample of the agent's checks, not ones it picked. The protocol log
+  is now `v: 4`, with `audit_p` and `audit_drawn`. Not meant to be on before addendum 3's
+  reading: it changes what that trial measures.
+- **Pooling across volunteers.** `crossover_report.py --export` prints one line with no ids,
+  times or repos: the protocol's hash, the within-pair differences and the e-value.
+  `validation/pool_evalues.py` combines such lines into a mean e-value (valid under any
+  dependence), a product (valid if independent) and a pooled sign-flip test.
+- `Cargo.toml` carries cargo-binstall metadata for the release assets.
+- **The weekly trial can be enrolled and read.** `ana trial start` writes `trial.json` beside
+  the agent ledger once: a start Monday, no earlier than 2027-01-04, and a seeded draw of which
+  week of each pair is ON. `ana trial status` names the week, never the arm. In an OFF week
+  nothing reaches the model: no session-start line, no checkpoint, no pin refusal, no
+  post-tool context, empty MCP instructions. Grading, the ledger and the logs go on, and the
+  person still gets their messages. Without a trial nothing changes.
+  `validation/crossover_report.py` reads it by addendum 4's rules (exact sign-flip test,
+  anytime-valid e-value, adherence) and has a `--selftest`.
+- **File edits are logged** to `outcomes.jsonl`, one line each, with no file name or content.
+  The plugin registers a `PostToolUse` matcher on `Edit|Write|MultiEdit|NotebookEdit`. Hooks
+  installed by hand need that matcher added, pointing at `post-tool.sh`.
+- **A weak quiet test is not shown in green.** When the test would miss most errors of 30%,
+  the badge and card read "Nothing found yet" in grey, not "No miscalibration found" in green.
 - **Easy calls are named.** When 30% or more of the graded calls were said at 95% or more
   either way, the report adds a line saying so, with the Brier score on the rest (at five or
   more of them). Such a record does not get the top label. Sure things lower a Brier score
@@ -40,6 +73,13 @@ The rest of the 0.5.0 audit, and the first piece of a weekly trial of the whole 
   the installer and a session-start hook under Git Bash on Windows.
 - The `decide` VERIFY line now says how to check: run it here if you can, and read the primary
   source if it lives off this machine.
+
+### Checked, and kept
+
+- **The decision gate does something.** The proposal was to remove `ana decide` if it gave the
+  same verdict for at least 90% of claims at every stake. On the 2,265 first forecasts in
+  the author's agent ledger, the most common verdict covered 49% at stake 1, 69% at 2, 87% at
+  5 and 88% at 10 and 20, and less again with the map scoped to one model. It stays.
 
 ### Fixed
 

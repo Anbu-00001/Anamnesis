@@ -31,8 +31,12 @@ this repo:
   it changes anything. The rules are fixed in
   [MEASUREMENT.md](MEASUREMENT.md), addendum 3. The post-tool hooks also append one
   line per test run to `outcomes.jsonl` (runner, exit status, how it was graded; never
-  the command or its output), the outcome a later weekly trial of the whole tool reads
-  (addendum 4).
+  the command or its output), and one per file edit (no file name or content): the
+  outcome the weekly trial of the whole tool reads (addendum 4). `ana trial start` enrols
+  that trial; in its OFF weeks the hooks say nothing to the model. A person can bet on
+  their agent by typing `?70` as a whole prompt: the model never sees it, and it is graded
+  by the next test run after an edit (`bets.json`). `ana where` shows whether each hook
+  has run and how much of it reached the model.
 
   > **Tuning the cadence —** the checkpoint interval is controlled by the
   > `ANAMNESIS_INTROSPECT_EVERY` environment variable (**default `7`**, a chance of

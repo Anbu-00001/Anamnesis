@@ -1,5 +1,5 @@
 {
-  "description": "Anamnesis calibration hooks: inject standing calibration at SessionStart; re-surface it as a self-introspection checkpoint on about one user prompt in 7, drawn at random (UserPromptSubmit); grade `kind:tests-pass` predictions from a test run's exit status (PostToolUse for a pass, PostToolUseFailure for a failure) and tell you once per session, at Stop, how many predictions are overdue (to you, never as context: Claude Code reads Stop context as \"keep going\").",
+  "description": "Anamnesis calibration hooks: inject standing calibration at SessionStart; re-surface it as a self-introspection checkpoint on about one user prompt in 7, drawn at random (UserPromptSubmit); grade `kind:tests-pass` predictions from a test run's exit status (PostToolUse for a pass, PostToolUseFailure for a failure), log one silent line per test run and per file edit to outcomes.jsonl (never a command, a file name or content), and tell you once per session, at Stop, how many predictions are overdue (to you, never as context: Claude Code reads Stop context as \"keep going\").",
   "hooks": {
     "SessionStart": [
       {
@@ -37,6 +37,16 @@
     "PostToolUse": [
       {
         "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool.sh\"",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit|NotebookEdit",
         "hooks": [
           {
             "type": "command",

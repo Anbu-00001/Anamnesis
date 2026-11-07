@@ -258,6 +258,12 @@ on the web, and to resolve it from the page. These are graded binary claims, so 
 they enter the primary outcome above like any other. They are not filtered out, and the
 secondary outcomes are also reported without them, labelled exploratory.
 
+**Note, 2026-11-07: two more instruments, neither part of this trial.** The person's bets on
+the agent (`?70`, `bets.json`) are not claims in the agent ledger and enter no outcome here
+or in addendum 4. Audit sampling (`ANAMNESIS_AUDIT_RATE`) refuses runs, so it stays off on
+this machine until the confirmatory reading above. Any later reading of it gets its own
+addendum, written first.
+
 ## Addendum 4, 2026-11-07: the whole tool, a week at a time, before any data
 
 Written before the outcome log below had recorded a single run. Addendum 3 asks about one
@@ -270,18 +276,25 @@ holds the time, session, the session's current prompt number, project and repo, 
 whether a subagent ran it, `after_edit`, the runner label, `via` (`bare` or `ana_run`), the
 exit status, and what the grader made of it (`pass`, `fail`, `untrusted`, `not_graded` or
 `background`, by the same `grade_of` rules that grade claims). It never records the command,
-its output or the prompt. It is written whether or not a claim is open and whether or not
+its output or the prompt. Every file edit gets a line too (`pin::log_edit`, from a
+`PostToolUse` matcher on `Edit|Write|MultiEdit|NotebookEdit`): time, session, prompt, project
+and repo, never the file's name or its content. Both kinds carry the trial arm in force, or
+`null` outside a trial. The log is written whether or not a claim is open and whether or not
 the pin reminder is on, and it prints nothing.
 
-**Not built yet, and required before week 1:**
-- one line per file edit (a `PostToolUse` matcher on `Edit|Write|MultiEdit|NotebookEdit`,
-  carrying time, session, prompt and repo, never content), which the primary outcome needs;
-- the arm gate, which silences every hook that speaks to the model in an OFF week;
-- `ana trial start`, which writes `trial.json` once, under the lock;
-- `validation/crossover_report.py`.
+**Built the same day, before any data:** `ana trial start` writes `trial.json` once, under the
+ledger lock, and refuses a start that is not a future Monday on or after 2027-01-04
+(`src/trial.rs`). `ana trial status` names the week but never the arm or the schedule. The
+arm gate is `trial::speaks`: in an OFF week the session-start and checkpoint hooks print
+nothing, the pin refusal does not fire, the post-tool hooks grade without telling the model,
+and the MCP server sends empty instructions. A missing or unreadable `trial.json` reads as no
+trial, so it can only leave the tool ON. `validation/crossover_report.py` implements the rules
+below and carries a `--selftest`.
 
-This addendum is frozen with them. If they have not shipped by 2027-01-04, the start moves to
-the first Monday after they do, and nothing else changes.
+**Still to do before week 1, by the owner:** move the protocol text in the global agent
+instructions into the session-start output, so that the arm controls it, and register the edit
+matcher wherever the hooks are installed by hand rather than by the plugin. If either is not
+done by 2027-01-04, the start moves to the first Monday after, and nothing else changes.
 
 **The design.** Thirteen pairs of weeks, Monday to Sunday, from the first Monday after
 addendum 3's confirmatory reading, and not before 2027-01-04. In each pair one week is ON and
@@ -355,6 +368,7 @@ about ten points or more over six months.
 python3 validation/protocol_report.py                 # everything
 python3 validation/protocol_report.py --since 2026-10-20   # Q2: the fixed logger (addendum 1)
 python3 validation/effect_report.py                   # the checkpoint experiment (addendum 3)
+python3 validation/crossover_report.py                # the weekly trial (addendum 4)
 ```
 
 ## Switching it off

@@ -98,6 +98,21 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   way, reading what is gained and what is lost, because a false `ana_run` flatters the
   compliance figure and a false refusal costs a turn. `origin_here` stamps claims with their
   session. See `docs/MEASUREMENT.md`, addenda 1 and 2.
+- [src/bet.rs](src/bet.rs) — the person's bets on the agent (`?70` typed as a whole prompt):
+  blocked by the UserPromptSubmit hook so it never reaches the model, stored in `bets.json`
+  (never the agent ledger, which the agent's tools read), graded by the first test run after
+  an edit from the next turn on, and reported to the person only. Never put a bet where a
+  model-facing line can list it.
+- [src/trial.rs](src/trial.rs) — the weekly ON/OFF crossover (MEASUREMENT.md, addendum 4):
+  `trial.json` written once by `ana trial start`, `arm_on` per UTC date, and `speaks`, the one
+  gate every model-facing hook output and the MCP instructions consult. An unreadable file
+  reads as no trial, so a fault can only leave the tool ON. Grading and the logs
+  (`outcomes.jsonl`: one line per test run and per edit, `pin::log_outcome`/`log_edit`) run in
+  both arms; never gate them, they are the measurement.
+- **Audit sampling** (`pin::audit_rate`, `ANAMNESIS_AUDIT_RATE`, opt-in): the hook draws a
+  turn with chance π from a hash of session and prompt, so rewording cannot redraw it, and
+  refuses that turn's bare after-edit test runs until they are pinned. **`ana where`** reads
+  `counters/hook-<Event>.stat`: runs, last run, and bytes sent to the model, per event.
 - [src/check.rs](src/check.rs) — `ana add --check` / `ana run`: a claim pinned to the
   command that settles it, graded from that process's own exit status (`hook::judge_run`
   shares the hook's runner rules). The hook leaves a pinned claim to `ana run`.

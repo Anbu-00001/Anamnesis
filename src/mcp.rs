@@ -166,8 +166,8 @@ pub fn serve(ledger: PathBuf) -> io::Result<()> {
 
         let resp = match method {
             // Modern era: no handshake, one discovery call. Servers MUST implement it.
-            "server/discover" => discover(id),
-            "initialize" => initialize(&req, id),
+            "server/discover" => discover(id, crate::trial::speaks(&ledger)),
+            "initialize" => initialize(&req, id, crate::trial::speaks(&ledger)),
             "ping" => json!({ "jsonrpc": "2.0", "id": id, "result": {} }),
             "tools/list" => {
                 json!({ "jsonrpc": "2.0", "id": id, "result": { "tools": tool_schemas() } })
@@ -193,7 +193,7 @@ fn rpc_error(id: Value, code: i64, message: &str) -> Value {
 /// `server/discover` — the modern replacement for the `initialize` handshake.
 /// A dual-era client probes with this first; a recognised modern reply tells it
 /// the server is modern, and anything else sends it back to `initialize`.
-fn discover(id: Value) -> Value {
+fn discover(id: Value, speaks: bool) -> Value {
     json!({ "jsonrpc": "2.0", "id": id, "result": {
         "resultType": "complete",
         "supportedVersions": supported_versions(),
@@ -204,7 +204,7 @@ fn discover(id: Value) -> Value {
                 "version": env!("CARGO_PKG_VERSION")
             }
         },
-        "instructions": SERVER_INSTRUCTIONS
+        "instructions": if speaks { SERVER_INSTRUCTIONS } else { "" }
     }})
 }
 
@@ -218,7 +218,7 @@ fn unsupported_version(id: Value, requested: &str) -> Value {
 
 const SERVER_INSTRUCTIONS: &str = "Log falsifiable predictions BEFORE acting (predict), resolve them the moment reality answers (resolve), and read your standing over/under-confidence (calibration). Always pass `by` (the date you expect to know the answer, YYYY-MM-DD): the sequential evidence test orders claims by that date, and a prediction without one is scored but cannot count as evidence. The engine is no-LLM and cannot flatter you — honesty is the optimal strategy.";
 
-fn initialize(req: &Value, id: Value) -> Value {
+fn initialize(req: &Value, id: Value, speaks: bool) -> Value {
     // Reply with a revision we actually support, not with whatever was asked for.
     let ver = negotiate_legacy(
         req.pointer("/params/protocolVersion")
@@ -228,7 +228,7 @@ fn initialize(req: &Value, id: Value) -> Value {
         "protocolVersion": ver,
         "capabilities": { "tools": { "listChanged": false } },
         "serverInfo": { "name": "anamnesis", "version": env!("CARGO_PKG_VERSION") },
-        "instructions": SERVER_INSTRUCTIONS
+        "instructions": if speaks { SERVER_INSTRUCTIONS } else { "" }
     }})
 }
 

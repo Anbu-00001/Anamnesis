@@ -764,3 +764,264 @@ fn every_test_run_leaves_one_outcome_line_and_nothing_else_does() {
     assert_eq!(field(2, "graded"), "untrusted");
     assert!(!text.contains("cargo test"), "the command leaked: {text}");
 }
+
+/// Write a trial whose current week is OFF: it started this Monday and its one pair
+/// opens with the OFF week.
+fn enrol_off_this_week(s: &Setup) {
+    use chrono::Datelike;
+    let today = chrono::Utc::now().date_naive();
+    let monday = today - chrono::Duration::days(i64::from(today.weekday().num_days_from_monday()));
+    let trial = serde_json::json!({
+        "v": 1, "id": "t1", "seed": 1, "start": monday, "on_first": [false],
+        "protocol": "test", "engine": "test", "created_at": "2026-11-07T00:00:00Z"
+    });
+    fs::write(s.dir.join("trial.json"), trial.to_string()).unwrap();
+}
+
+/// In an OFF week nothing reaches the model, and the grader and the logs keep working.
+#[test]
+fn an_off_week_says_nothing_to_the_model_and_still_grades() {
+    let on = setup("trial_on");
+    let said = hook(&on, "post-tool", &fixture("pass_cargo_test"));
+    assert!(
+        said.contains("additionalContext"),
+        "an ON week tells the model: {said}"
+    );
+
+    let s = setup("trial_off");
+    enrol_off_this_week(&s);
+    assert_eq!(hook(&s, "session-start", &fixture("pass_cargo_test")), "");
+    let out = hook(&s, "post-tool", &fixture("pass_cargo_test"));
+    assert!(!out.contains("additionalContext"), "{out}");
+    assert!(
+        out.contains("systemMessage"),
+        "the person is still told: {out}"
+    );
+    assert_eq!(
+        resolution(&s).map(|r| r.0).as_deref(),
+        Some("true"),
+        "the grader works in both arms"
+    );
+    let log = fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap();
+    assert!(log.contains(r#""arm":"off""#), "{log}");
+    for _ in 0..20 {
+        assert_eq!(hook(&s, "user-prompt", &fixture("pass_cargo_test")), "");
+    }
+    let draws = fs::read_to_string(s.dir.join("checkpoints.jsonl")).unwrap();
+    assert_eq!(draws.lines().count(), 20);
+    assert!(
+        !draws.contains(r#""drawn":true"#),
+        "an OFF week draws nothing"
+    );
+}
+
+/// A file edit leaves one line with the repo and prompt, and nothing of the file.
+#[test]
+fn an_edit_leaves_a_line_without_the_file_or_its_content() {
+    let s = setup("edits");
+    let payload = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Edit",
+        "cwd": "/work/project",
+        "tool_input": {"file_path": "/work/project/src/secret_name.rs",
+                       "old_string": "let a = 1;", "new_string": "let a = 2;"},
+        "tool_response": {"filePath": "/work/project/src/secret_name.rs"}
+    })
+    .to_string();
+    assert_eq!(hook(&s, "post-tool", &payload), "");
+    let log = fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap();
+    let line: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(line["kind"], "edit");
+    assert_eq!(line["session"], "s1");
+    assert!(
+        !log.contains("secret_name") && !log.contains("let a"),
+        "{log}"
+    );
+    let bash = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+        "cwd": "/work/project", "tool_input": {"command": "ls"},
+        "tool_response": {"stdout": "", "stderr": ""}
+    })
+    .to_string();
+    hook(&s, "post-tool", &bash);
+    assert_eq!(
+        fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap(),
+        log
+    );
+}
+
+/// `?70` is a bet the person makes on the agent. The prompt is blocked, so the model never
+/// sees it, the prompt counter does not move, and the bet is graded by the first test run
+/// after an edit from the agent's next turn on, told to the person only.
+#[test]
+fn a_bet_never_reaches_the_model_and_is_graded_by_the_next_turns_run() {
+    let s = setup("bet");
+    let session = "00000000-0000-0000-0000-000000000000";
+    let prompt = |text: &str| {
+        serde_json::json!({
+            "session_id": session, "hook_event_name": "UserPromptSubmit",
+            "cwd": "/work/project", "prompt": text
+        })
+        .to_string()
+    };
+    let out = hook(&s, "user-prompt", &prompt("?70"));
+    let v: serde_json::Value = serde_json::from_str(&out).expect(&out);
+    assert_eq!(v["decision"], "block", "{out}");
+    assert_eq!(v["hookSpecificOutput"]["suppressOriginalPrompt"], true);
+    assert!(
+        v.get("additionalContext").is_none()
+            && v["hookSpecificOutput"].get("additionalContext").is_none()
+    );
+    assert!(
+        !s.dir.join("checkpoints.jsonl").exists(),
+        "a bet is not a prompt to the model"
+    );
+    let bets = || -> serde_json::Value {
+        serde_json::from_str(&fs::read_to_string(s.dir.join("bets.json")).unwrap()).unwrap()
+    };
+    assert_eq!(bets()["claims"][0]["forecasts"][0]["prob"], 0.7);
+    assert!(
+        !fs::read_to_string(&s.ledger).unwrap().contains("agent-bet"),
+        "the agent's ledger never holds the bet"
+    );
+    // Something that looks like a bet but is not a chance is still kept from the model.
+    let bad = hook(&s, "user-prompt", &prompt("?150"));
+    assert!(
+        bad.contains(r#""decision":"block""#) && bad.contains("not a bet"),
+        "{bad}"
+    );
+
+    // A run after an edit, with the agent's transcript showing the edit.
+    let transcript = s.dir.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_EDIT","name":"Edit","input":{}}]}}"#,
+    )
+    .unwrap();
+    let mut run: serde_json::Value = serde_json::from_str(&fixture("pass_cargo_test")).unwrap();
+    run["transcript_path"] = transcript.to_string_lossy().into();
+    let run = run.to_string();
+    // Same turn as the bet: not graded yet.
+    hook(&s, "post-tool", &run);
+    assert!(
+        bets()["claims"][0]["resolution"].is_null(),
+        "graded in the turn it was made"
+    );
+    // The agent's next turn.
+    hook(&s, "user-prompt", &prompt("now fix the parser"));
+    let out = hook(&s, "post-tool", &run);
+    assert_eq!(
+        bets()["claims"][0]["resolution"]["outcome"],
+        "true",
+        "{out}"
+    );
+    let v: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert!(
+        v["systemMessage"].as_str().unwrap().contains("your bet"),
+        "{out}"
+    );
+    let context = v["hookSpecificOutput"]["additionalContext"]
+        .as_str()
+        .unwrap_or("");
+    assert!(
+        !context.contains("bet"),
+        "the bet leaked to the model: {context}"
+    );
+}
+
+/// `ana where` says whether each hook has run on this machine and how much of it reached
+/// the model: the liveness line a silently broken hook otherwise never gets.
+#[test]
+fn where_counts_each_hook_and_the_bytes_it_sent_the_model() {
+    let s = setup("liveness");
+    hook(&s, "post-tool", &fixture("pass_cargo_test"));
+    hook(&s, "post-tool", &fixture("pass_echo"));
+    let out = Command::new(ANA)
+        .args(["--json", "where"])
+        .env("HOME", &s.dir)
+        .env("USERPROFILE", &s.dir)
+        .env("ANAMNESIS_AGENT_DATA", &s.ledger)
+        .output()
+        .unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    let post = v["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["event"] == "PostToolUse")
+        .unwrap()
+        .clone();
+    assert_eq!(post["fires"], 2, "{v}");
+    assert!(
+        post["model_bytes"].as_u64().unwrap() > 0,
+        "the graded run told the model: {v}"
+    );
+    let stop = v["hooks"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|h| h["event"] == "Stop")
+        .unwrap();
+    assert_eq!(stop["fires"], 0);
+    assert!(stop["last"].is_null());
+}
+
+/// Card A, opt-in: with `ANAMNESIS_AUDIT_RATE` set, a drawn turn's bare test run after an
+/// edit is refused until it is pinned; unset, the pre-tool hook stays out of the way.
+#[test]
+fn an_audited_turn_refuses_a_bare_run_after_an_edit_and_nothing_else() {
+    let s = setup("audit");
+    let transcript = s.dir.join("transcript.jsonl");
+    fs::write(
+        &transcript,
+        r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"toolu_EDIT","name":"Edit","input":{}}]}}"#,
+    )
+    .unwrap();
+    let payload = |cmd: &str| {
+        serde_json::json!({
+            "session_id": "s-audit", "hook_event_name": "PreToolUse", "cwd": "/work/project",
+            "transcript_path": transcript, "tool_name": "Bash",
+            "tool_input": {"command": cmd}, "tool_use_id": "toolu_RUN"
+        })
+        .to_string()
+    };
+    let pre = |rate: Option<&str>, cmd: &str| {
+        let mut c = Command::new(ANA);
+        c.args(["hook", "pre-tool"])
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("ANAMNESIS_PIN_NUDGE")
+            .env_remove("ANAMNESIS_AUDIT_RATE")
+            .env("ANAMNESIS_AGENT_DATA", &s.ledger)
+            .env("HOME", &s.dir)
+            .env("USERPROFILE", &s.dir)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped());
+        if let Some(r) = rate {
+            c.env("ANAMNESIS_AUDIT_RATE", r);
+        }
+        let mut child = c.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(payload(cmd).as_bytes())
+            .unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
+    };
+    assert_eq!(pre(None, "cargo test"), "", "off unless asked for");
+    let refused = pre(Some("1"), "cargo test");
+    assert!(
+        refused.contains("anamnesis audit") && refused.contains(r#""deny""#),
+        "{refused}"
+    );
+    assert_eq!(
+        pre(Some("1"), "ana run abc123 -- cargo test"),
+        "",
+        "a pinned run goes ahead"
+    );
+    assert_eq!(pre(Some("1"), "ls -la"), "", "not a test run");
+    let log = fs::read_to_string(s.dir.join("protocol.jsonl")).unwrap();
+    assert!(
+        log.contains(r#""action":"audit_refused""#) && log.contains(r#""audit_p":1.0"#),
+        "{log}"
+    );
+}

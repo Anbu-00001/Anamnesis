@@ -35,6 +35,35 @@ pub fn enabled() -> bool {
     )
 }
 
+/// The audit share π (card A), from `ANAMNESIS_AUDIT_RATE`: off unless set to a number
+/// in (0, 1]. It refuses the agent's after-edit test runs, so it is opt-in, and it is not
+/// meant to run before addendum 3's confirmatory reading: it would change what the
+/// checkpoint trial measures.
+pub fn audit_rate() -> Option<f64> {
+    std::env::var("ANAMNESIS_AUDIT_RATE")
+        .ok()?
+        .trim()
+        .parse::<f64>()
+        .ok()
+        .filter(|p| *p > 0.0 && *p <= 1.0)
+}
+
+/// Whether turn `prompt` of `session` is audited, with chance `p`: a hash of the two, so
+/// rewording a command cannot redraw it, and a second run in the same turn gets the same
+/// answer.
+pub(crate) fn audit_drawn(session: &str, prompt: u64, p: f64) -> bool {
+    let mut h: u64 = 0x6a09_e667_f3bc_c908; // FNV-1a with its own basis, apart from the checkpoint's
+    for b in session.bytes().chain(prompt.to_le_bytes()).chain(*b"audit") {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    let mut z = h.wrapping_add(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    ((z >> 11) as f64 / ((1u64 << 53) as f64)) < p
+}
+
 /// Split a shell line at `|`, `;`, `&` and newlines that are not inside quotes.
 ///
 /// Cutting inside quotes would find a runner in `echo "a | cargo test"`, and a reminder
@@ -362,11 +391,13 @@ struct Run<'a> {
     model: Option<String>,
     subagent: bool,
     after_edit: Option<bool>,
+    /// The audit share in force and whether this turn was drawn (card A), when it is on.
+    audit: Option<(f64, bool)>,
 }
 
 /// Bumped when the log's meaning changes, so a reader can tell which logger wrote a line.
 /// Lines with no `v` predate it; 3 added `repo` and `after_edit` and widened what is a run.
-const LOG_VERSION: u32 = 3;
+const LOG_VERSION: u32 = 4;
 
 fn log(ledger_path: &Path, run: &Run, runner: &str, action: &str) {
     let rec = json!({
@@ -378,6 +409,8 @@ fn log(ledger_path: &Path, run: &Run, runner: &str, action: &str) {
         "model": run.model,
         "subagent": run.subagent,
         "after_edit": run.after_edit,
+        "audit_p": run.audit.map(|a| a.0),
+        "audit_drawn": run.audit.map(|a| a.1),
         "runner": runner,
         "action": action,
     });
@@ -398,12 +431,12 @@ pub(crate) fn log_outcome(
     exit: Option<i64>,
     graded: &str,
     prompt: Option<u64>,
-) {
+) -> Option<bool> {
     let (via, runner) = match ana_run_in(cmd) {
         Some(r) => ("ana_run", r),
         None => match test_run_in(cmd) {
             Some((r, _)) => ("bare", r),
-            None => return,
+            None => return None,
         },
     };
     let session = input
@@ -412,6 +445,14 @@ pub(crate) fn log_outcome(
         .unwrap_or("default");
     let cwd = input.get("cwd").and_then(Value::as_str);
     let tail = transcript_tail(input);
+    let edited = tail.as_ref().and_then(|(t, whole)| {
+        after_edit(
+            cmd,
+            t,
+            *whole,
+            input.get("tool_use_id").and_then(Value::as_str),
+        )
+    });
     let rec = json!({
         "v": 1,
         "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
@@ -424,13 +465,65 @@ pub(crate) fn log_outcome(
             .map(untrusted::tag),
         "model": tail.as_ref().and_then(|(t, _)| model_of(t)),
         "subagent": input.get("agent_id").is_some(),
-        "after_edit": tail.as_ref().and_then(|(t, whole)| {
-            after_edit(cmd, t, *whole, input.get("tool_use_id").and_then(Value::as_str))
-        }),
+        "after_edit": edited,
+        "kind": "run",
+        "arm": crate::trial::arm_today(ledger_path).map(crate::trial::Arm::label),
         "runner": runner,
         "via": via,
         "exit": exit,
         "graded": graded,
+    });
+    let _ = store::append_private(
+        &ledger_path.with_file_name("outcomes.jsonl"),
+        &rec.to_string(),
+    );
+    edited
+}
+
+/// The tools that change a file, as Claude Code names them.
+const EDIT_TOOLS: [&str; 4] = ["Edit", "Write", "MultiEdit", "NotebookEdit"];
+
+/// Whether this post-tool payload is a file edit.
+pub(crate) fn is_edit(input: &Value) -> bool {
+    input
+        .get("tool_name")
+        .and_then(Value::as_str)
+        .is_some_and(|t| EDIT_TOOLS.contains(&t))
+}
+
+/// One line per file edit in `outcomes.jsonl`: when, which session and prompt, which
+/// repo. Never the file's name or anything of its content. The weekly trial's primary
+/// outcome is whether the first test run after a turn's last edit failed, and needs it.
+pub(crate) fn log_edit(input: &Value, ledger_path: &Path, prompt: Option<u64>) {
+    let session = input
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let cwd = input.get("cwd").and_then(Value::as_str);
+    let file = ["/tool_input/file_path", "/tool_input/notebook_path"]
+        .iter()
+        .find_map(|p| input.pointer(p).and_then(Value::as_str));
+    let repo = file
+        .map(Path::new)
+        .and_then(|f| {
+            let dir = if f.is_absolute() {
+                f.to_path_buf()
+            } else {
+                Path::new(cwd.unwrap_or(".")).join(f)
+            };
+            dir.parent().and_then(repo_of)
+        })
+        .or_else(|| cwd.and_then(|d| repo_of(Path::new(d))));
+    let rec = json!({
+        "v": 1,
+        "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "kind": "edit",
+        "session": untrusted::tag(session),
+        "prompt": prompt,
+        "project": untrusted::tag(&project_slug(cwd)),
+        "repo": repo.as_deref().map(untrusted::tag),
+        "subagent": input.get("agent_id").is_some(),
+        "arm": crate::trial::arm_today(ledger_path).map(crate::trial::Arm::label),
     });
     let _ = store::append_private(
         &ledger_path.with_file_name("outcomes.jsonl"),
@@ -722,7 +815,30 @@ pub fn pre_tool(input: &Value, ledger: &Ledger, ledger_path: &Path) -> Option<Va
             let current = input.get("tool_use_id").and_then(Value::as_str);
             after_edit(cmd, t, *whole, current)
         }),
+        audit: None,
     };
+    // Card A: the hook, not the agent, picks which after-edit runs need a forecast. A
+    // turn is drawn with chance π, and every bare test run after an edit in a drawn turn
+    // is refused until it goes through `ana run` with a pinned forecast.
+    let mut run = run;
+    if let (Some(p), Some(true)) = (audit_rate(), run.after_edit) {
+        let n = crate::hook::current_prompt(session).unwrap_or(0);
+        run.audit = Some((p, audit_drawn(session, n, p)));
+    }
+    if let (Some((p, true)), None) = (run.audit, ana_runner) {
+        let (runner, plain) = bare.clone()?;
+        log(ledger_path, &run, runner, "audit_refused");
+        let shown = untrusted::line(&plain, 120);
+        let cmd_for_pin = if quotable(&shown) {
+            shown
+        } else {
+            "<the plain test command>".to_string()
+        };
+        return Some(deny(format!(
+            "anamnesis audit: this turn was drawn (chance {pct:.0}%, by the hook, not by you) for a forecast before its test run after an edit. Nothing was run. Log one and run it through `ana run`:\n  1. ana add \"<what you expect>\" --prob <your honest probability> --by <today's date> --tags who:claude,kind:tests-pass,kind:audited,project:<repo folder name, lowercase>,session:<today's date>,model:<your model> --check \"{cmd_for_pin}\"\n  2. ana run <the id it printed> -- {cmd_for_pin}\nAudited runs are a random sample of your after-edit checks, so their calibration is not chosen by you. (ANAMNESIS_AUDIT_RATE turns this off when unset.)",
+            pct = p * 100.0
+        )));
+    }
 
     // Already going through `ana run`: that is the behaviour wanted. Count it.
     if let Some(runner) = ana_runner {
@@ -730,6 +846,16 @@ pub fn pre_tool(input: &Value, ledger: &Ledger, ledger_path: &Path) -> Option<Va
         return None;
     }
     let (runner, plain) = bare?;
+    // Audit on, the pin reminder off: an undrawn run goes ahead, and is counted.
+    if !enabled() {
+        let action = if run.audit.is_some() {
+            "audit_not_drawn"
+        } else {
+            "audit_not_eligible" // not after an edit, or the transcript could not say
+        };
+        log(ledger_path, &run, runner, action);
+        return None;
+    }
 
     if !first_denial_of_session(session) {
         log(ledger_path, &run, runner, "allowed_after_nudge");
@@ -765,6 +891,16 @@ pub fn pre_tool(input: &Value, ledger: &Ledger, ledger_path: &Path) -> Option<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_audit_draw_has_the_chance_it_says_and_is_fixed_per_turn() {
+        let drawn = (0..4000)
+            .filter(|i| audit_drawn(&format!("s{}", i / 20), i % 20, 0.2))
+            .count();
+        assert!((650..950).contains(&drawn), "{drawn} of 4000 at 0.2");
+        assert_eq!(audit_drawn("s", 3, 0.2), audit_drawn("s", 3, 0.2));
+        assert!((0..50).all(|n| audit_drawn("s", n, 1.0)));
+    }
 
     fn model_in(input: &Value) -> Option<String> {
         transcript_tail(input).and_then(|(tail, _)| model_of(&tail))

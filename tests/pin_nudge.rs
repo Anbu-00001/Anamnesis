@@ -857,7 +857,7 @@ fn the_edit_question_goes_unanswered_when_the_transcript_is_cut_or_missing() {
     assert!(l[0]["after_edit"].is_null(), "{l:?}");
     assert_eq!(l[0]["model"], "claude-opus-5-5");
     assert!(l[1]["after_edit"].is_null(), "{l:?}");
-    assert_eq!(l[0]["v"], 3);
+    assert_eq!(l[0]["v"], 4);
     let _ = fs::remove_dir_all(&s.dir);
 }
 

@@ -12,6 +12,7 @@
 //! network, no model. The rest is storage ([`store`]), the domain model
 //! ([`model`]), and human-readable reporting ([`report`]).
 
+pub mod bet;
 pub mod check;
 pub mod demo;
 pub mod evidence;
@@ -22,6 +23,7 @@ pub mod pin;
 pub mod report;
 pub mod scoring;
 pub mod store;
+pub mod trial;
 pub mod untrusted;
 
 pub use model::{gen_id, Claim, ClaimKind, Forecast, Ledger, NumericForecast, Outcome, Resolution};

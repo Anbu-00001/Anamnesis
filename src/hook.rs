@@ -50,6 +50,78 @@ impl Event {
     }
 }
 
+/// What `ana where` says about one hook event on this machine.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HookStat {
+    pub event: &'static str,
+    /// When it last ran, as it recorded it (RFC 3339).
+    pub last: Option<String>,
+    pub fires: u64,
+    /// Bytes of its output that reached the model, summed over every firing.
+    pub model_bytes: u64,
+}
+
+const ALL_EVENTS: [Event; 6] = [
+    Event::SessionStart,
+    Event::UserPrompt,
+    Event::PreTool,
+    Event::PostTool,
+    Event::PostToolFailure,
+    Event::Stop,
+];
+
+fn stat_file(event: Event) -> Option<std::path::PathBuf> {
+    dirs_counters().map(|d| d.join(format!("hook-{}.stat", event.name())))
+}
+
+fn read_stat(event: Event) -> HookStat {
+    let text = stat_file(event)
+        .and_then(|f| std::fs::read_to_string(f).ok())
+        .unwrap_or_default();
+    let mut it = text.split_whitespace();
+    let fires = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    let model_bytes = it.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    HookStat {
+        event: event.name(),
+        last: it.next().map(str::to_string),
+        fires,
+        model_bytes,
+    }
+}
+
+/// Count a firing (`fired`) or the bytes it sent the model. Read-modify-write without a
+/// lock: two hooks of one event at the same instant can lose a count, which makes this a
+/// liveness line and an approximate cost, never a measurement.
+fn note(event: Event, model_bytes: usize, fired: bool) {
+    let Some(file) = stat_file(event) else {
+        return;
+    };
+    let mut st = read_stat(event);
+    if fired {
+        st.fires += 1;
+        st.last = Some(Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true));
+    }
+    st.model_bytes += model_bytes as u64;
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    let tmp = file.with_extension("stat.tmp");
+    let line = format!(
+        "{} {} {}\n",
+        st.fires,
+        st.model_bytes,
+        st.last.as_deref().unwrap_or("-")
+    );
+    if std::fs::write(&tmp, line).is_ok() {
+        let _ = std::fs::rename(&tmp, &file);
+    }
+}
+
+/// Every hook event's record on this machine, for `ana where`.
+pub fn hook_stats() -> Vec<HookStat> {
+    ALL_EVENTS.iter().map(|e| read_stat(*e)).collect()
+}
+
 /// Below this many graded calls, a calibration line is noise and is not shown.
 const MIN_N: usize = 6;
 /// Re-surface the standing calibration every Nth user prompt. A counter, not
@@ -286,6 +358,7 @@ fn log_checkpoint(
         "p": 1.0 / every.max(1) as f64,
         "drawn": drawn,
         "shown": shown,
+        "arm": crate::trial::arm_today(ledger_path).map(crate::trial::Arm::label),
         "engine": VERSION,
     });
     let _ = store::append_private(
@@ -310,7 +383,7 @@ fn bump_counter(session: &str) -> u64 {
 }
 
 /// The current prompt number of `session`, read without counting a new prompt.
-fn current_prompt(session: &str) -> Option<u64> {
+pub(crate) fn current_prompt(session: &str) -> Option<u64> {
     let file = dirs_counters()?.join(format!("{}.count", sanitize(session)));
     std::fs::read_to_string(file).ok()?.trim().parse().ok()
 }
@@ -836,6 +909,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
     let mut raw = String::new();
     let _ = std::io::stdin().read_to_string(&mut raw);
     let input: Value = serde_json::from_str(raw.trim()).unwrap_or_else(|_| json!({}));
+    note(event, 0, true);
 
     // Every path below fails soft into "say nothing" — except a missing engine,
     // which cannot happen here because the engine IS this binary. That was the
@@ -851,11 +925,33 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
     let today = Utc::now().date_naive();
     let cwd = input.get("cwd").and_then(Value::as_str);
     let slug = project_slug(cwd);
+    // Inside an OFF week of the weekly trial (MEASUREMENT.md, addendum 4) nothing that
+    // reaches the model is said; grading and the logs go on as in an ON week.
+    let speaks = crate::trial::speaks(ledger_path);
+
+    // A file edit: one silent line in the outcome log, which the trial's primary outcome
+    // needs, and nothing else.
+    if event == Event::PostTool && crate::pin::is_edit(&input) {
+        crate::pin::log_edit(
+            &input,
+            ledger_path,
+            input
+                .get("session_id")
+                .and_then(Value::as_str)
+                .and_then(current_prompt),
+        );
+        return Ok(());
+    }
 
     // The opt-in "pin first" reminder runs before the call, and is its own reply.
     if event == Event::PreTool {
-        if crate::pin::enabled() {
+        if (crate::pin::enabled() || crate::pin::audit_rate().is_some()) && speaks {
             if let Some(out) = crate::pin::pre_tool(&input, &ledger, ledger_path) {
+                let said = out
+                    .pointer("/hookSpecificOutput/permissionDecisionReason")
+                    .and_then(Value::as_str)
+                    .map_or(0, str::len);
+                note(event, said, false);
                 println!("{out}");
             }
         }
@@ -867,19 +963,61 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
 
     let mut context: Vec<String> = Vec::new();
     let mut user_message: Option<String> = None;
+    // What the post-tool hook has to tell the person about their bets, if anything.
+    let mut bet_note: Option<String> = None;
     // A drawn checkpoint, logged once it is known whether anything was shown.
     let mut checkpoint: Option<(&str, u64, u64)> = None;
 
     match event {
         Event::PreTool => {} // handled above
         Event::SessionStart | Event::UserPrompt => {
+            if event == Event::SessionStart && !speaks {
+                return Ok(());
+            }
             if event == Event::UserPrompt {
                 let session = input
                     .get("session_id")
                     .and_then(Value::as_str)
                     .unwrap_or("default");
+                // A bet on the agent is blocked before the counter moves: it never
+                // reaches the model, so it is not one of the model's prompts.
+                if let Some(parsed) = input
+                    .get("prompt")
+                    .and_then(Value::as_str)
+                    .and_then(crate::bet::parse)
+                {
+                    let reason = match parsed.and_then(|p| {
+                        crate::bet::record(
+                            ledger_path,
+                            session,
+                            current_prompt(session).unwrap_or(0),
+                            &slug,
+                            p,
+                        )
+                        .map(|id| (id, p))
+                    }) {
+                        Ok((id, p)) => format!(
+                            "anamnesis: bet [{}] logged, {:.0}% that {}. The agent was not told. It is graded by that run's exit status; `ana --data {} report` reads your bets.",
+                            untrusted::tag(&id),
+                            p * 100.0,
+                            crate::bet::STATEMENT,
+                            crate::bet::path(ledger_path).display()
+                        ),
+                        Err(e) => format!(
+                            "anamnesis: not a bet, and not sent to the agent: {}",
+                            untrusted::line(&e, 160)
+                        ),
+                    };
+                    println!("{}", crate::bet::block(reason));
+                    return Ok(());
+                }
                 let every = env_usize("ANAMNESIS_INTROSPECT_EVERY", DEFAULT_EVERY);
                 let n = bump_counter(session);
+                if !speaks {
+                    // An OFF week draws nothing; the line records that the prompt happened.
+                    log_checkpoint(ledger_path, session, n, every, false, false);
+                    return Ok(());
+                }
                 let drawn = checkpoint_drawn(session, n, every);
                 if !drawn {
                     log_checkpoint(ledger_path, session, n, every, false, false);
@@ -975,14 +1113,36 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                     Grade::NotATest => "not_graded",
                 };
                 let session = input.get("session_id").and_then(Value::as_str);
-                crate::pin::log_outcome(
-                    &input,
-                    ledger_path,
-                    cmd,
-                    exit,
-                    graded,
-                    session.and_then(current_prompt),
-                );
+                let prompt = session.and_then(current_prompt);
+                let edited =
+                    crate::pin::log_outcome(&input, ledger_path, cmd, exit, graded, prompt);
+                // The person's bets on the agent (`?70`): graded by a run that came after
+                // an edit, and told to the person only.
+                if let (Grade::Exit(code), Some(true), Some(s), Some(n)) =
+                    (&grade, edited, session, prompt)
+                {
+                    match crate::bet::grade(ledger_path, s, n, *code) {
+                        Ok(bets) if !bets.is_empty() => {
+                            bet_note = Some(format!(
+                                "anamnesis: your bet{} on the agent {} ({}): the test run after its edit {}",
+                                if bets.len() > 1 { "s" } else { "" },
+                                bets.iter()
+                                    .map(|(id, p)| format!("[{}] {:.0}%", untrusted::tag(id), p * 100.0))
+                                    .collect::<Vec<_>>()
+                                    .join(", "),
+                                if *code == 0 { "came true" } else { "did not come true" },
+                                if *code == 0 { "passed".to_string() } else { format!("failed, exit {code}") }
+                            ));
+                        }
+                        Ok(_) => {}
+                        Err(e) => {
+                            bet_note = Some(format!(
+                                "anamnesis: a bet was not graded ({})",
+                                untrusted::line(&e, 160)
+                            ))
+                        }
+                    }
+                }
             }
             match grade {
                 Grade::NotATest => return Ok(()),
@@ -1002,7 +1162,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                                 untrusted::line(&e, 160)
                             ));
                         }
-                        Ok(resolved) if resolved.is_empty() => return Ok(()),
+                        Ok(resolved) if resolved.is_empty() => {}
                         Ok(resolved) => {
                             let happened = code == 0;
                             context.push(format!(
@@ -1099,14 +1259,27 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
         }
     }
 
+    if let Some(b) = bet_note {
+        user_message = Some(match user_message {
+            Some(m) => format!("{m}; {b}"),
+            None => b,
+        });
+    }
+    // An OFF week: whatever was computed, none of it reaches the model. What goes to the
+    // person (`systemMessage`) is not part of the arm.
+    if !speaks {
+        context.clear();
+    }
     if context.is_empty() && user_message.is_none() {
         return Ok(());
     }
     let mut out = json!({});
     if !context.is_empty() {
+        let said = context.join("\n");
+        note(event, said.len(), false);
         out["hookSpecificOutput"] = json!({
             "hookEventName": event.name(),
-            "additionalContext": context.join("\n"),
+            "additionalContext": said,
         });
     }
     if let Some(msg) = user_message {
@@ -1246,7 +1419,7 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["at", "drawn", "engine", "p", "prompt", "session", "shown", "v"]
+            ["arm", "at", "drawn", "engine", "p", "prompt", "session", "shown", "v"]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
