@@ -27,7 +27,7 @@ newer() {   # is dotted version $1 strictly newer than $2?
 }
 ANA=""
 best=""
-for cand in "$HOME/.anamnesis/bin/ana" "$(command -v ana 2>/dev/null || true)"; do
+for cand in "$HOME/.anamnesis/bin/ana" "$HOME/.anamnesis/bin/ana.exe" "$(command -v ana 2>/dev/null || true)"; do
   { [ -n "$cand" ] && [ -x "$cand" ]; } || continue
   v="$(version_of "$cand")"
   [ -n "$v" ] || continue

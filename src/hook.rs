@@ -309,6 +309,12 @@ fn bump_counter(session: &str) -> u64 {
     n
 }
 
+/// The current prompt number of `session`, read without counting a new prompt.
+fn current_prompt(session: &str) -> Option<u64> {
+    let file = dirs_counters()?.join(format!("{}.count", sanitize(session)));
+    std::fs::read_to_string(file).ok()?.trim().parse().ok()
+}
+
 /// Whether this is the first Stop of the session, remembered in a marker file beside the
 /// prompt counters. The Stop hook speaks once per session, not at the end of every turn.
 /// If the marker cannot be written there is nothing to remember it by, and it speaks.
@@ -399,7 +405,23 @@ pub struct RunFacts {
     pub fail_marker: bool,
     /// Words that mean the run never got going: `command not found`, `No module named`.
     pub env_error: bool,
+    /// A runner saying no test ran: unittest's `NO TESTS RAN`, pytest's `collected 0
+    /// items` or `no tests ran`, jest's `No tests found`, go's `[no test files]`.
+    pub no_tests: bool,
+    /// Any runner's words for a test that passed: `3 passed`, go's `ok  pkg`, unittest's
+    /// `Ran 3 tests` followed by `OK`.
+    pub saw_pass: bool,
 }
+
+/// Phrases that say no test ran at all.
+const NO_TESTS: [&str; 6] = [
+    "no tests ran",
+    "collected 0 items",
+    "no tests collected",
+    "no tests found",
+    "[no test files]",
+    "ran 0 tests",
+];
 
 /// Phrases that say the run itself went wrong, whatever the exit code.
 const ENV_ERRORS: [&str; 10] = [
@@ -460,6 +482,16 @@ impl RunFacts {
         if ENV_ERRORS.iter().any(|e| lower.contains(e)) {
             self.env_error = true;
         }
+        if NO_TESTS.iter().any(|e| lower.contains(e)) {
+            self.no_tests = true;
+        }
+        if counts_before(&lower, "passed").any(|n| n > 0)
+            || l.starts_with("ok ")
+            || l.starts_with("ok\t")
+            || counts_before(&lower, "test").any(|n| n > 0) && lower.starts_with("ran ")
+        {
+            self.saw_pass = true;
+        }
     }
 
     /// Fold another stream's facts into these (stdout and stderr are read separately).
@@ -469,6 +501,8 @@ impl RunFacts {
         self.compile_error |= other.compile_error;
         self.fail_marker |= other.fail_marker;
         self.env_error |= other.env_error;
+        self.no_tests |= other.no_tests;
+        self.saw_pass |= other.saw_pass;
     }
 }
 
@@ -686,6 +720,11 @@ pub enum RunJudgement {
 
 /// Judge a finished run of `runner` from its exit `code` and what its output showed.
 fn judge(runner: Runner, code: i64, facts: &RunFacts) -> RunJudgement {
+    // `go test ./...` in a module without tests prints `[no test files]` and exits 0; that
+    // passed nothing. Mixed output (`ok` for one package) still passes.
+    if facts.no_tests && !facts.saw_pass && !facts.fail_marker && !facts.cargo_failed {
+        return RunJudgement::NotGraded("the runner says no test ran");
+    }
     if code == 0 {
         if runner.confirms_pass(facts) {
             RunJudgement::Passed
@@ -707,10 +746,25 @@ fn judge(runner: Runner, code: i64, facts: &RunFacts) -> RunJudgement {
 /// no shell to swallow the status and the shape checks a hook needs do not apply. The
 /// runner knowledge does. A command that is not a test runner, `make ci` or a script, is
 /// simply judged by its own exit status, since pinning it was the claim-maker's choice.
+///
+/// What it will not do is grade a run that never ran a test, whatever the command: one
+/// that only lists or builds them (`--collect-only`, `--no-run`), one whose runner says
+/// no test ran (unittest exits 5 with `NO TESTS RAN`), or one that never started
+/// (`No module named pytest`, `command not found`). An audit of 0.5.0 found each of
+/// those graded FALSE, a failure that did not happen.
 pub fn judge_run(argv: &[String], code: i64, facts: &RunFacts) -> RunJudgement {
     let toks: Vec<&str> = argv.iter().map(String::as_str).collect();
+    if has_non_running_flag(&toks) {
+        return RunJudgement::NotGraded("that command lists or builds tests without running them");
+    }
     match runner_of(&toks) {
         Some(runner) => judge(runner, code, facts),
+        None if facts.no_tests && !facts.saw_pass && !facts.fail_marker => {
+            RunJudgement::NotGraded("the runner says no test ran")
+        }
+        None if code != 0 && facts.env_error && !facts.fail_marker => {
+            RunJudgement::NotGraded("the command never started")
+        }
         None if code == 0 => RunJudgement::Passed,
         None => RunJudgement::Failed,
     }
@@ -899,7 +953,38 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
             // The exit status is the fact. Grading a "the tests will pass"
             // prediction from the agent's own account of what happened is the
             // weakest link in a self-graded ledger; this removes it.
-            match grade_of(event, &input, cmd) {
+            let grade = grade_of(event, &input, cmd);
+            {
+                let background = input
+                    .pointer("/tool_input/run_in_background")
+                    .and_then(Value::as_bool)
+                    == Some(true);
+                let exit = match event {
+                    _ if background => None,
+                    Event::PostTool => Some(0),
+                    _ => input
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .and_then(exit_code_in),
+                };
+                let graded = match grade {
+                    _ if background => "background",
+                    Grade::Exit(0) => "pass",
+                    Grade::Exit(_) => "fail",
+                    Grade::Untrusted => "untrusted",
+                    Grade::NotATest => "not_graded",
+                };
+                let session = input.get("session_id").and_then(Value::as_str);
+                crate::pin::log_outcome(
+                    &input,
+                    ledger_path,
+                    cmd,
+                    exit,
+                    graded,
+                    session.and_then(current_prompt),
+                );
+            }
+            match grade {
                 Grade::NotATest => return Ok(()),
                 Grade::Exit(code) => {
                     match auto_resolve(
@@ -996,7 +1081,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
             let overdue = ledger
                 .claims
                 .iter()
-                .filter(|c| !c.is_void() && c.is_due(today))
+                .filter(|c| crate::evidence::came_due(c, today))
                 .count();
             if overdue == 0 {
                 return Ok(());
@@ -1009,7 +1094,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 return Ok(());
             }
             user_message = Some(format!(
-                "anamnesis (ana {VERSION}): {overdue} prediction(s) are past their due date and ungraded, which leaves the calibration numbers resting on a self-selected sample. Resolve or void them. (Said once per session.)"
+                "anamnesis (ana {VERSION}): {overdue} prediction(s) are past their due date (their --by, or 1 to 7 days after they were logged, by kind) and ungraded, which leaves the calibration numbers resting on a self-selected sample. Resolve or void them. (Said once per session.)"
             ));
         }
     }
@@ -1320,6 +1405,55 @@ mod tests {
         assert_eq!(j("make ci", 0, ""), Passed);
         assert_eq!(j("make ci", 2, ""), Failed);
         assert_eq!(j("./scripts/check.sh", 1, "anything"), Failed);
+        // A run that never ran a test is not graded either way (audit of 0.5.0).
+        let ng = |r: RunJudgement| matches!(r, NotGraded(_));
+        assert!(ng(j(
+            "python3 -m pytest -q --co",
+            1,
+            "/usr/bin/python3: No module named pytest"
+        )));
+        assert!(ng(j(
+            "python3 -m pytest --collect-only",
+            0,
+            "collected 4 items"
+        )));
+        assert!(ng(j(
+            "python3 -m unittest",
+            5,
+            "Ran 0 tests in 0.000s\n\nNO TESTS RAN"
+        )));
+        assert!(ng(j(
+            "go test ./...",
+            0,
+            "?   \texample.com/m\t[no test files]"
+        )));
+        assert!(ng(j(
+            "./scripts/missing.sh",
+            127,
+            "sh: ./scripts/missing.sh: No such file or directory"
+        )));
+        // ...while a mixed `go test ./...` that passed a package still passes,
+        assert_eq!(
+            j(
+                "go test ./...",
+                0,
+                "?   \texample.com/m\t[no test files]\nok  \texample.com/m/sub\t0.01s"
+            ),
+            Passed
+        );
+        // and unittest's real answers are read from its exit status.
+        assert_eq!(
+            j("python3 -m unittest", 0, "Ran 3 tests in 0.01s\n\nOK"),
+            Passed
+        );
+        assert_eq!(
+            j(
+                "python3 -m unittest",
+                1,
+                "Ran 3 tests\n\nFAILED (failures=1)"
+            ),
+            Failed
+        );
         // A test runner: only its own failure code, and evidence for either answer.
         assert_eq!(
             j("cargo test", 0, "test result: ok. 2 passed; 0 failed"),

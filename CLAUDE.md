@@ -276,6 +276,31 @@ it is the point.
 - The lesson compounds: if your `personal`/self predictions are overconfident (they
   were, in the demo seed), plan with more slack next time.
 
+### Research the risky points before you build on them
+
+A point is risky when a mistake would not show in `cargo test` or `validation/repro.sh`, and
+you hold it below 80% (96% before a release, a ledger-format change, or a claim in docs).
+In this repo the risky points are:
+- **What a runner's exit status means** (`hook.rs` judging, `check.rs`, `pin.rs`). pytest
+  exits 5 when it collected nothing; cargo exits 101 for a missing manifest too. A new runner
+  rule cites that runner's exit-code page and is replayed on captured output.
+- **What Claude Code sends and runs** (payloads, events, matchers, shells). The hooks page is
+  the primary source, and a captured payload in `tests/fixtures/` outranks it. Hooks run in
+  Git Bash on Windows, or in PowerShell when Git Bash is missing, so every `.sh` launcher is a
+  platform claim.
+- **A statistical guarantee** (`scoring.rs`, `evidence.rs`, METHODS.md, MEASUREMENT.md). Read
+  the theorem's assumptions on the paper's own page, then keep a simulation in `validation/`.
+- **A claim about another project, paper or number.** Give the URL, keep what a README claims
+  apart from what the code does, and mark anything unverified.
+
+Local first: the code index, `--help`, the real binary with `ANAMNESIS_DATA` on a temp file.
+Then up to 3 searches in one message and 1-3 primary pages, asking for the exact line. Log the
+belief first as `kind:external-fact` and resolve it from the page; `ana decide --tag
+kind:external-fact` then moves the bar with the record. These claims enter addendum 3's
+primary outcome (MEASUREMENT.md, dated note). The beliefs research overturned are its yield,
+not proof that research improves the work: the agent picks what to research, so nothing is
+compared.
+
 ## Design rationale & decisions (folded from the agent's working memory)
 
 *Distilled from the session memory that lived only on one machine

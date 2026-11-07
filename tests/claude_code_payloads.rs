@@ -738,3 +738,29 @@ fn a_test_run_grades_only_its_own_sessions_claims() {
     );
     let _ = fs::remove_dir_all(&s.dir);
 }
+
+/// Every test run the hook sees leaves one line in `outcomes.jsonl`, pinned or not, and
+/// nothing else does. The line never holds the command or its output.
+#[test]
+fn every_test_run_leaves_one_outcome_line_and_nothing_else_does() {
+    let s = setup("outcomes");
+    hook(&s, "post-tool", &fixture("pass_cargo_test"));
+    hook(&s, "post-tool-failure", &fixture("fail_cargo_test_101"));
+    hook(&s, "post-tool", &fixture("masked_by_pipe"));
+    hook(&s, "post-tool", &fixture("pass_echo"));
+    let text = fs::read_to_string(s.dir.join("outcomes.jsonl")).expect("outcomes.jsonl");
+    let lines: Vec<serde_json::Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 3, "{text}");
+    let field = |i: usize, k: &str| lines[i][k].clone();
+    assert_eq!(field(0, "graded"), "pass");
+    assert_eq!(field(0, "exit"), 0);
+    assert_eq!(field(0, "via"), "bare");
+    assert_eq!(field(0, "runner"), "cargo");
+    assert_eq!(field(1, "graded"), "fail");
+    assert_eq!(field(1, "exit"), 101);
+    assert_eq!(field(2, "graded"), "untrusted");
+    assert!(!text.contains("cargo test"), "the command leaked: {text}");
+}

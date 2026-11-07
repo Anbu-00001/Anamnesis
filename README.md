@@ -23,7 +23,9 @@ model or the network to decide anything.
 # from source (needs Rust 1.89 or newer)
 cargo install --git https://github.com/Anbu-00001/Anamnesis --locked
 
-# or a prebuilt binary; installs nothing unless the release checksum matches
+# or a prebuilt binary; installs nothing unless the release checksum matches, and with
+# `gh` signed in, nothing unless its GitHub build attestation verifies (Linux, macOS,
+# and Windows under Git Bash)
 bash <(curl -fsSL https://raw.githubusercontent.com/Anbu-00001/Anamnesis/main/plugin/install-ana.sh)
 export PATH="$HOME/.anamnesis/bin:$PATH"   # the installer puts ana here
 ```

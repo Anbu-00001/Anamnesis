@@ -5,7 +5,8 @@
 #   bash install-ana.sh [version]      # version defaults to "latest"
 #
 # The download is verified against the release's sha256.sum and FAILS CLOSED: if
-# the checksum file is missing, or does not match, nothing is installed. A tool
+# the checksum file is missing, or does not match, nothing is installed. From 0.5.0 the
+# build attestation is checked too when the GitHub CLI is signed in. A tool
 # whose whole subject is not fooling yourself should not install an unverified
 # binary because verification was inconvenient.
 set -euo pipefail
@@ -17,7 +18,11 @@ DEST="$HOME/.anamnesis/bin"
 # here fails with "package ID specification `ana` did not match any packages".
 BUILD_HINT="cargo install --git https://github.com/$REPO --locked"
 
+bin=ana; ext=""
 case "$(uname -s)-$(uname -m)" in
+  # Git Bash, MSYS2 or Cygwin on Windows: Claude Code runs its hooks through Git Bash.
+  MINGW*-x86_64|MSYS*-x86_64|CYGWIN*-x86_64)
+                  target=x86_64-pc-windows-msvc; ext=".exe"; bin=ana.exe ;;
   Linux-x86_64)   target=x86_64-unknown-linux-gnu ;;
   Linux-aarch64)  target=aarch64-unknown-linux-gnu ;;
   Darwin-x86_64)  target=x86_64-apple-darwin ;;
@@ -53,7 +58,7 @@ elif [ "$ver" = "latest" ]; then
 else
   base="https://github.com/$REPO/releases/download/$ver"
 fi
-asset="ana-$target"
+asset="ana-$target$ext"
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT
@@ -86,8 +91,38 @@ if [ "$want" != "$got" ]; then
 fi
 echo "✓ sha256 verified"
 
+# Provenance. The checksum comes from the same release as the binary, so it proves the
+# download is intact, not who built it. From 0.5.0 every release file carries a GitHub
+# build attestation tying it to this repository's release workflow. With the GitHub CLI
+# signed in, it is checked and a failure stops the install; without it, the command to
+# check it by hand is printed.
+ATTEST_FROM_MINOR=5   # 0.5.0
+older_than_attestations() {
+  case "$ver" in latest) return 1 ;; esac
+  v="${ver#v}"
+  major="${v%%.*}"; rest="${v#*.}"; minor="${rest%%.*}"
+  case "$major$minor" in *[!0-9]*|"") return 1 ;; esac
+  [ "$major" -eq 0 ] && [ "$minor" -lt "$ATTEST_FROM_MINOR" ]
+}
+if [ -n "${ANAMNESIS_RELEASE_BASE:-}" ] || [ "${ANAMNESIS_SKIP_ATTESTATION:-}" = 1 ]; then
+  :
+elif older_than_attestations; then
+  echo "  (releases before 0.5.0 carry no build attestation)"
+elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+  if gh attestation verify "$tmp/ana" --repo "$REPO" >/dev/null 2>&1; then
+    echo "✓ build provenance verified (GitHub attestation from $REPO)"
+  else
+    echo "BUILD ATTESTATION FAILED for $asset: it was not built by $REPO's release workflow." >&2
+    echo "Nothing was installed. (ANAMNESIS_SKIP_ATTESTATION=1 skips this check.)" >&2
+    exit 1
+  fi
+else
+  echo "  provenance not checked (needs the GitHub CLI, signed in). To check it yourself:"
+  echo "    gh attestation verify ~/.anamnesis/bin/$bin --repo $REPO"
+fi
+
 mkdir -p "$DEST"
-mv "$tmp/ana" "$DEST/ana"
-chmod +x "$DEST/ana"
-echo "✓ installed $("$DEST/ana" --version) → $DEST/ana"
+mv "$tmp/ana" "$DEST/$bin"
+chmod +x "$DEST/$bin"
+echo "✓ installed $("$DEST/$bin" --version) → $DEST/$bin"
 echo "  add to PATH if you like:  export PATH=\"\$HOME/.anamnesis/bin:\$PATH\""

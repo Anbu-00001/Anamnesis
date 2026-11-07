@@ -29,7 +29,10 @@ this repo:
   beside the ledger. That makes it an experiment: prompts with and without the
   checkpoint differ only by chance, so `validation/effect_report.py` can ask whether
   it changes anything. The rules are fixed in
-  [MEASUREMENT.md](MEASUREMENT.md), addendum 3.
+  [MEASUREMENT.md](MEASUREMENT.md), addendum 3. The post-tool hooks also append one
+  line per test run to `outcomes.jsonl` (runner, exit status, how it was graded; never
+  the command or its output), the outcome a later weekly trial of the whole tool reads
+  (addendum 4).
 
   > **Tuning the cadence —** the checkpoint interval is controlled by the
   > `ANAMNESIS_INTROSPECT_EVERY` environment variable (**default `7`**, a chance of

@@ -384,6 +384,60 @@ fn log(ledger_path: &Path, run: &Run, runner: &str, action: &str) {
     let _ = store::append_private(&log_path(ledger_path), &rec.to_string());
 }
 
+/// One line per test run the post-tool hook sees, in `outcomes.jsonl` beside the ledger.
+///
+/// `protocol.jsonl` records what the agent did before a run (pinned or not); this records
+/// how the run ended, so a later analysis has an outcome that does not depend on whether a
+/// prediction was logged (docs/MEASUREMENT.md, addendum 4). Never the command or its
+/// output: the runner label, how it was run, the exit status and what the grader made of
+/// it. It is written whether or not the pin reminder is on, and it never prints anything.
+pub(crate) fn log_outcome(
+    input: &Value,
+    ledger_path: &Path,
+    cmd: &str,
+    exit: Option<i64>,
+    graded: &str,
+    prompt: Option<u64>,
+) {
+    let (via, runner) = match ana_run_in(cmd) {
+        Some(r) => ("ana_run", r),
+        None => match test_run_in(cmd) {
+            Some((r, _)) => ("bare", r),
+            None => return,
+        },
+    };
+    let session = input
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let cwd = input.get("cwd").and_then(Value::as_str);
+    let tail = transcript_tail(input);
+    let rec = json!({
+        "v": 1,
+        "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "session": untrusted::tag(session),
+        "prompt": prompt,
+        "project": untrusted::tag(&project_slug(cwd)),
+        "repo": cwd
+            .and_then(|d| repo_of(&run_dir(cmd, Path::new(d))))
+            .as_deref()
+            .map(untrusted::tag),
+        "model": tail.as_ref().and_then(|(t, _)| model_of(t)),
+        "subagent": input.get("agent_id").is_some(),
+        "after_edit": tail.as_ref().and_then(|(t, whole)| {
+            after_edit(cmd, t, *whole, input.get("tool_use_id").and_then(Value::as_str))
+        }),
+        "runner": runner,
+        "via": via,
+        "exit": exit,
+        "graded": graded,
+    });
+    let _ = store::append_private(
+        &ledger_path.with_file_name("outcomes.jsonl"),
+        &rec.to_string(),
+    );
+}
+
 /// The repository a directory belongs to, by its folder name and nothing else of its path.
 /// A linked worktree counts as its main repository: `project`, the folder a command ran in,
 /// made one codebase look like 23 projects, which is the error a per-repo reading must avoid.

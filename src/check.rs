@@ -96,6 +96,67 @@ pub fn split_command(s: &str) -> Result<Vec<String>, String> {
     Ok(words)
 }
 
+/// Programs whose exit status says nothing about whether a claim came true.
+const VACUOUS: [&str; 15] = [
+    "true", ":", "false", "echo", "printf", "exit", "yes", "pwd", "date", "whoami", "sleep",
+    "uname", "hostname", "id", "env",
+];
+
+/// Programs that check something only when given something to check: `ls build/out` can
+/// fail, a bare `ls` cannot, and `test 1` is constant.
+const VACUOUS_BARE: [&str; 4] = ["ls", "cat", "test", "["];
+
+/// Wrappers that run the next word as the program.
+const WRAPPERS: [&str; 7] = ["env", "command", "exec", "nice", "nohup", "time", "timeout"];
+
+/// The program a command really runs: past `VAR=value` assignments, wrappers and their
+/// flags (`env -i`, `nice -n 5`, `timeout 30`), and into `sh -c "…"`, by base name.
+/// A bare `env` is itself the program.
+fn effective_program(words: &[String]) -> (String, Vec<String>) {
+    let base = |w: &str| w.rsplit('/').next().unwrap_or(w).to_string();
+    let mut i = 0;
+    while i < words.len() {
+        let w = words[i].as_str();
+        if w.contains('=') && !w.starts_with('-') {
+            i += 1;
+            continue;
+        }
+        let b = base(w);
+        if WRAPPERS.contains(&b.as_str()) && i + 1 < words.len() {
+            i += 1;
+            // the wrapper's own flags and arguments
+            while i < words.len() {
+                let x = words[i].as_str();
+                if x.starts_with('-') || x.contains('=') || x.parse::<f64>().is_ok() {
+                    i += 1;
+                } else {
+                    break;
+                }
+            }
+            if i >= words.len() {
+                return (b, Vec::new());
+            }
+            continue;
+        }
+        if matches!(b.as_str(), "sh" | "bash" | "zsh" | "dash") {
+            if let Some(pos) = words[i..].iter().position(|x| x == "-c") {
+                // Only a script that is one plain command is looked into: `sh -c true`.
+                // A compound one (`;`, `&&`, a pipe, `$`) is the claim-maker's own.
+                let simple = |sc: &str| !sc.contains(|c| ";&|$`()<>\n".contains(c));
+                if let Some(script) = words.get(i + pos + 1).filter(|sc| simple(sc)) {
+                    if let Ok(inner) = split_command(script) {
+                        if !inner.is_empty() {
+                            return effective_program(&inner);
+                        }
+                    }
+                }
+            }
+        }
+        return (b, words[i + 1..].to_vec());
+    }
+    (String::new(), Vec::new())
+}
+
 /// A command as it is pinned: trimmed, kept as typed, and refused if it is empty, spans
 /// lines, has an unbalanced quote, or is longer than anyone would type.
 pub fn pin(raw: &str) -> Result<String, String> {
@@ -114,16 +175,18 @@ pub fn pin(raw: &str) -> Result<String, String> {
         return Err("a check must name the command that settles the claim".into());
     }
     // A command that exits the same way whatever happened settles nothing, and `ana run`
-    // would still label the grade as coming from an exit status.
-    let program = words
-        .iter()
-        .find(|w| !w.contains('='))
-        .map(|w| w.rsplit('/').next().unwrap_or(w).to_string())
-        .unwrap_or_default();
-    if matches!(
-        program.as_str(),
-        "true" | ":" | "false" | "echo" | "printf" | "exit" | "yes"
-    ) {
+    // would still label the grade as coming from an exit status. A list cannot be
+    // complete; this one catches the commands an audit actually pinned (`true`, `env
+    // true`, `sh -c true`, `test 1`, `ls`) and says so plainly for any other.
+    let (program, args) = effective_program(&words);
+    let constant_test = matches!(program.as_str(), "test" | "[")
+        && args
+            .iter()
+            .all(|a| !a.starts_with('-') || a == "-n" || a == "-z")
+        && args.len() <= 2;
+    if VACUOUS.contains(&program.as_str())
+        || (VACUOUS_BARE.contains(&program.as_str()) && (args.is_empty() || constant_test))
+    {
         return Err(format!(
             "--check `{program}` settles nothing: it exits the same way whatever happened. Pin the command that would fail if you were wrong, such as `cargo test`."
         ));

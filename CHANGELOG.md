@@ -3,6 +3,50 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+The rest of the 0.5.0 audit, and the first piece of a weekly trial of the whole tool.
+
+### Upgrading
+
+- `--check` now also refuses commands that cannot fail through a wrapper or a shell:
+  `env true`, `sh -c true`, `bash -c 'exit 0'`, `nice -n 5 true`, `timeout 30 true`, `sleep 1`,
+  a bare `ls`, `cat`, `env`, and a constant `test` such as `test 1`. A command with real
+  arguments is still accepted (`ls build/out`, `test -f Cargo.toml`, `env RUST_LOG=debug cargo
+  test`, `timeout 600 cargo test`, `sh -c 'cargo build && cargo test'`).
+- A run that the runner says ran no tests is no longer graded: pytest exit 5 or "collected 0
+  items", unittest "NO TESTS RAN", go "[no test files]", "no tests found", "ran 0 tests". The
+  same goes for `ana run` on a command that only lists or builds tests (`--collect-only`,
+  `--co`, `--no-run`, `--list`), and for a command that never started (the shell could not find or run it).
+
+### Added
+
+- **`outcomes.jsonl`**: one line per test run the post-tool hook sees, pinned or not. It holds
+  the runner, `bare` or `ana_run`, the exit status, what the grader made of it, `after_edit`,
+  the repo, the model and the session's prompt number, and never the command, its output or
+  the prompt. It prints nothing. It is the outcome a trial of the whole tool needs
+  (`docs/MEASUREMENT.md`, addendum 4, which sets that trial's rules before any data and says
+  what is still to build before it can start, not before 2027-01-04).
+- **Easy calls are named.** When 30% or more of the graded calls were said at 95% or more
+  either way, the report adds a line saying so, with the Brier score on the rest (at five or
+  more of them). Such a record does not get the top label. Sure things lower a Brier score
+  without showing much judgement.
+- **Release binaries carry a build attestation** (`actions/attest-build-provenance`).
+  `install-ana.sh` verifies it with `gh attestation verify` when `gh` is installed and signed
+  in, and aborts if verification fails. Otherwise it prints the command to run. Releases
+  before 0.5.0 have none, and the installer says so.
+- **Windows.** `install-ana.sh` installs `ana.exe` under Git Bash (MINGW, MSYS, Cygwin on
+  x86_64). The launchers look for `~/.anamnesis/bin/ana.exe`, and the release smoke test runs
+  the installer and a session-start hook under Git Bash on Windows.
+- The `decide` VERIFY line now says how to check: run it here if you can, and read the primary
+  source if it lives off this machine.
+
+### Fixed
+
+- The Stop hook counted a claim as overdue only by its `--by` date. It now uses the due date
+  the evidence order uses (`evidence::came_due`: the `--by` date, or 1 to 7 days after it was
+  logged, by kind), and the message says so.
+
 ## [0.5.0] — 2026-11-07
 
 An outside review drove most of this release, and it was right on each point it checked.

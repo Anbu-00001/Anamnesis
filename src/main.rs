@@ -1798,7 +1798,7 @@ fn run(cli: Cli) -> Result<(), String> {
             } else {
                 let gloss = match d.act {
                     scoring::Act::Proceed => "confidence clears the bar for the stakes",
-                    scoring::Act::Verify => "in the doubt zone — verify before you commit",
+                    scoring::Act::Verify => "in the doubt zone — check before you commit: run it here if you can; if it lives off this machine, read the primary source",
                     scoring::Act::Abstain => {
                         "more likely to fail than succeed — replan or escalate"
                     }

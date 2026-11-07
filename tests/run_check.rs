@@ -121,8 +121,8 @@ fn a_claim_logged_without_a_check_has_no_check_field_at_all() {
 fn run_grades_true_from_a_zero_exit_and_passes_it_through() {
     let dir = workdir("true");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "the check passes", "sh -c 'exit 0'");
-    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit 0"]);
+    let id = add_pinned(&ledger, "the check passes", "sh -c 'cd / && exit 0'");
+    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "cd / && exit 0"]);
     let (out, err) = text(&o);
     assert_eq!(o.status.code(), Some(0), "{out}{err}");
     assert_eq!(outcome(&ledger, &id).as_deref(), Some("true"), "{out}{err}");
@@ -140,8 +140,8 @@ fn run_grades_true_from_a_zero_exit_and_passes_it_through() {
 fn run_grades_false_from_a_nonzero_exit_and_passes_the_code_through() {
     let dir = workdir("false");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "the check passes", "sh -c 'exit 3'");
-    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit 3"]);
+    let id = add_pinned(&ledger, "the check passes", "sh -c 'cd / && exit 3'");
+    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "cd / && exit 3"]);
     assert_eq!(
         o.status.code(),
         Some(3),
@@ -159,10 +159,21 @@ fn run_grades_false_from_a_nonzero_exit_and_passes_the_code_through() {
 fn the_commands_own_output_still_reaches_the_caller() {
     let dir = workdir("tee");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "it prints", "sh -c 'echo hello-from-the-check'");
+    let id = add_pinned(
+        &ledger,
+        "it prints",
+        "sh -c 'cd / && echo hello-from-the-check'",
+    );
     let o = ana(
         &ledger,
-        &["run", &id, "--", "sh", "-c", "echo hello-from-the-check"],
+        &[
+            "run",
+            &id,
+            "--",
+            "sh",
+            "-c",
+            "cd / && echo hello-from-the-check",
+        ],
     );
     let (out, _) = text(&o);
     assert!(
@@ -179,12 +190,12 @@ fn a_different_command_is_refused_and_never_run() {
     let dir = workdir("mismatch");
     let ledger = dir.join("l.json");
     let marker = dir.join("MARKER");
-    let id = add_pinned(&ledger, "the full suite passes", "sh -c 'exit 1'");
+    let id = add_pinned(&ledger, "the full suite passes", "sh -c 'cd / && exit 1'");
     let touch = format!("touch {}", marker.display());
     let o = ana(&ledger, &["run", &id, "--", "sh", "-c", &touch]);
     let (_, err) = text(&o);
     assert!(!o.status.success());
-    assert!(err.contains("pinned to `sh -c 'exit 1'`"), "{err}");
+    assert!(err.contains("pinned to `sh -c 'cd / && exit 1'`"), "{err}");
     assert!(
         !marker.exists(),
         "a command that did not match the pin was executed"
@@ -203,28 +214,37 @@ fn run_needs_an_open_claim_that_has_a_check() {
         let (out, _) = text(&ana(&ledger, &["add", "no check here", "--prob", "0.6"]));
         out.split(['[', ']']).nth(1).unwrap().to_string()
     };
-    let o = ana(&ledger, &["run", &plain, "--", "sh", "-c", "exit 0"]);
+    let o = ana(
+        &ledger,
+        &["run", &plain, "--", "sh", "-c", "cd / && exit 0"],
+    );
     assert!(!o.status.success());
     assert!(text(&o).1.contains("no check pinned"), "{}", text(&o).1);
 
     // Already resolved.
-    let done = add_pinned(&ledger, "resolve me first", "sh -c 'exit 0'");
-    assert!(ana(&ledger, &["run", &done, "--", "sh", "-c", "exit 0"])
-        .status
-        .success());
-    let o = ana(&ledger, &["run", &done, "--", "sh", "-c", "exit 0"]);
+    let done = add_pinned(&ledger, "resolve me first", "sh -c 'cd / && exit 0'");
+    assert!(
+        ana(&ledger, &["run", &done, "--", "sh", "-c", "cd / && exit 0"])
+            .status
+            .success()
+    );
+    let o = ana(&ledger, &["run", &done, "--", "sh", "-c", "cd / && exit 0"]);
     assert!(!o.status.success());
     assert!(text(&o).1.contains("already resolved"), "{}", text(&o).1);
 
     // Void.
-    let gone = add_pinned(&ledger, "a question that went away", "sh -c 'exit 0'");
+    let gone = add_pinned(
+        &ledger,
+        "a question that went away",
+        "sh -c 'cd / && exit 0'",
+    );
     assert!(ana(
         &ledger,
         &["void", &gone, "--reason", "no longer answerable"]
     )
     .status
     .success());
-    let o = ana(&ledger, &["run", &gone, "--", "sh", "-c", "exit 0"]);
+    let o = ana(&ledger, &["run", &gone, "--", "sh", "-c", "cd / && exit 0"]);
     assert!(!o.status.success());
     let _ = fs::remove_dir_all(&dir);
 }
@@ -250,12 +270,12 @@ fn resolve_refuses_a_pinned_claim_and_names_the_command() {
 fn the_ledger_is_not_locked_while_the_command_runs() {
     let dir = workdir("nolock");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "a slow check passes", "sleep 2");
+    let id = add_pinned(&ledger, "a slow check passes", "sh -c 'sleep 2 && cd /'");
 
     let slow = {
         let ledger = ledger.clone();
         let id = id.clone();
-        std::thread::spawn(move || ana(&ledger, &["run", &id, "--", "sleep", "2"]))
+        std::thread::spawn(move || ana(&ledger, &["run", &id, "--", "sh", "-c", "sleep 2 && cd /"]))
     };
     std::thread::sleep(Duration::from_millis(500));
     let t = Instant::now();
@@ -340,14 +360,17 @@ fn ana_run_never_executes_text_from_the_ledger() {
 fn a_quoted_check_matches_the_command_it_spells() {
     let dir = workdir("quoted");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "quoted", "sh -c 'exit 4'");
-    // Four words is not three: the quotes make "exit 4" one argument.
-    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit", "4"]);
+    let id = add_pinned(&ledger, "quoted", "sh -c 'cd / && exit 4'");
+    // Seven words is not three: the quotes make the script one argument.
+    let o = ana(
+        &ledger,
+        &["run", &id, "--", "sh", "-c", "cd", "/", "&&", "exit", "4"],
+    );
     assert!(!o.status.success());
     assert!(text(&o).1.contains("pinned to"), "{}", text(&o).1);
     assert!(outcome(&ledger, &id).is_none());
     // The command as typed matches, and exits with its own code.
-    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit 4"]);
+    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "cd / && exit 4"]);
     assert_eq!(o.status.code(), Some(4), "{}", text(&o).1);
     assert_eq!(outcome(&ledger, &id).as_deref(), Some("false"));
     let _ = fs::remove_dir_all(&dir);
@@ -457,6 +480,16 @@ fn a_check_that_cannot_fail_is_refused() {
         "/bin/true",
         "FOO=1 true",
         "exit 0",
+        // the audit's escapes from the first list
+        "env true",
+        "sh -c true",
+        "bash -c 'exit 0'",
+        "test 1",
+        "ls",
+        "nice -n 5 true",
+        "timeout 30 true",
+        "env",
+        "sleep 1",
     ] {
         let o = ana(
             &ledger,
@@ -474,6 +507,34 @@ fn a_check_that_cannot_fail_is_refused() {
         let (_, err) = text(&o);
         assert!(!o.status.success(), "--check {check} was accepted");
         assert!(err.contains("settles nothing"), "{check}: {err}");
+    }
+    // Commands that can fail are still the claim-maker's to choose.
+    for check in [
+        "ls build/out",
+        "test -f Cargo.toml",
+        "sh -c 'cargo build && cargo test'",
+        "env RUST_LOG=debug cargo test",
+        "timeout 600 cargo test",
+        "make ci",
+    ] {
+        let o = ana(
+            &ledger,
+            &[
+                "add",
+                "real",
+                "--prob",
+                "0.8",
+                "--tags",
+                "kind:tests-pass",
+                "--check",
+                check,
+            ],
+        );
+        assert!(
+            o.status.success(),
+            "--check {check} was refused: {}",
+            text(&o).1
+        );
     }
     let _ = fs::remove_dir_all(&dir);
 }

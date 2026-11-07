@@ -841,7 +841,20 @@ pub struct ReportData {
     /// these forecasts, but [`SENSITIVITY_SHRINK`] too extreme, that the test would flag.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub sensitivity: Option<f64>,
+    /// Graded calls said at [`EASY_P`] or more (or its mirror), and the Brier of the rest
+    /// when at least [`CONTESTED_MIN_N`] remain. A record padded with sure things scores
+    /// well and says little: 40 trivially true calls at 0.97 drew "100/100".
+    pub easy_calls: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub brier_contested: Option<f64>,
 }
+
+/// A forecast this sure is close to a free point: [`ReportData::easy_calls`].
+pub const EASY_P: f64 = 0.95;
+/// Fewest contested calls worth scoring on their own.
+pub const CONTESTED_MIN_N: usize = 5;
+/// From this share of easy calls up, the report says so.
+pub const EASY_SHARE_NOTE: f64 = 0.3;
 
 /// The error the sensitivity line is about: numbers 30% further from 50/50 than the truth.
 pub const SENSITIVITY_SHRINK: f64 = 0.3;
@@ -875,6 +888,12 @@ impl ReportData {
             .filter(matches_tag)
             .collect();
         let samples: Vec<Sample> = resolved_claims.iter().filter_map(|c| c.sample()).collect();
+        let is_easy = |s: &Sample| s.prob >= EASY_P || s.prob <= 1.0 - EASY_P;
+        let easy_calls = samples.iter().filter(|s| is_easy(s)).count();
+        let contested: Vec<Sample> = samples.iter().filter(|s| !is_easy(s)).cloned().collect();
+        let brier_contested = (contested.len() >= CONTESTED_MIN_N)
+            .then(|| scoring::brier(&contested))
+            .flatten();
         let numeric_samples: Vec<NumericSample> = resolved_claims
             .iter()
             .filter_map(|c| c.numeric_sample())
@@ -1348,6 +1367,8 @@ impl ReportData {
 
             verdict,
             sensitivity,
+            easy_calls,
+            brier_contested,
         }
     }
 
@@ -1664,6 +1685,9 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                     out,
                     "  Base rate        {base:.3}   (fraction of your claims that came true){ci}"
                 );
+                if let Some(note) = easy_note(&d) {
+                    let _ = writeln!(out, "  Easy calls       {note}");
+                }
             }
 
             if !detail {
@@ -2298,6 +2322,29 @@ struct PlainSummary {
 /// you look, so a call joins it once its due date has passed, however early you
 /// resolved it. A person who logs 30 calls and resolves them the same week saw "not
 /// enough data" with 30 resolved, and no way to know why.
+/// Whether at least [`EASY_SHARE_NOTE`] of the graded calls were near-certain.
+fn easy_heavy(d: &ReportData) -> bool {
+    d.resolved_binary > 0 && d.easy_calls as f64 >= EASY_SHARE_NOTE * d.resolved_binary as f64
+}
+
+/// Whether the record leans on near-certain calls, in one sentence.
+fn easy_note(d: &ReportData) -> Option<String> {
+    let n = d.resolved_binary;
+    if !easy_heavy(d) {
+        return None;
+    }
+    let rest = match d.brier_contested {
+        Some(b) => format!("; on the other {} it is {b:.3}", n - d.easy_calls),
+        None => format!("; too few others ({}) to score apart", n - d.easy_calls),
+    };
+    Some(format!(
+        "{} of your {n} graded calls ({:.0}%) were said at {:.0}% or more either way. Sure things lower a Brier score without showing much judgement{rest}",
+        d.easy_calls,
+        100.0 * d.easy_calls as f64 / n as f64,
+        EASY_P * 100.0
+    ))
+}
+
 /// How much a quiet test is worth at this record, in one sentence.
 fn sensitivity_note(d: &ReportData) -> Option<String> {
     let r = d.sensitivity?;
@@ -2365,6 +2412,13 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
             } else {
                 a.push_str(". A void hides a miss whenever it is made, so past one in ten no verdict is read.");
             }
+        }
+        if let Some(note) = easy_note(d) {
+            a.push_str(&format!(
+                " Also, {}{}.",
+                note[..1].to_lowercase(),
+                &note[1..]
+            ));
         }
         if rd.overdue > 0 {
             a.push_str(&format!(" Watch out: {} of those are past their due date — resolve them, or these scores quietly flatter you.", rd.overdue));
@@ -2721,7 +2775,8 @@ fn mood(d: &ReportData) -> Mood {
             if s >= 75
                 && d.evidence_n >= VERDICT_CONFIDENT_N
                 && mcb_ratio(d).is_none_or(|r| r <= 1.0)
-                && d.sensitivity.is_none_or(|r| r >= DIALED_MIN_SENSITIVITY) =>
+                && d.sensitivity.is_none_or(|r| r >= DIALED_MIN_SENSITIVITY)
+                && !easy_heavy(d) =>
         {
             (CAT_DIALED, "DIALED IN")
         }
@@ -2743,6 +2798,10 @@ fn mood(d: &ReportData) -> Mood {
         Some(_) if blind => {
             format!("{dir}, but at this record the test would miss most errors of 30%")
         }
+        Some(s) if easy_heavy(d) => format!(
+            "calibration {s}/100 · {dir} · {:.0}% of it near-certain calls",
+            100.0 * d.easy_calls as f64 / d.resolved_binary.max(1) as f64
+        ),
         Some(s) => format!("calibration {s}/100 · {dir}"),
         None => dir.to_string(),
     };

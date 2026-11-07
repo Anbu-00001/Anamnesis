@@ -831,7 +831,7 @@ fn tool_decide(args: &Value, ledger: &Path) -> ToolResult {
 
     let (verb, gloss) = match d.act {
         scoring::Act::Proceed => ("PROCEED", "confidence clears the bar for the stakes"),
-        scoring::Act::Verify => ("VERIFY", "in the doubt zone — check before you commit"),
+        scoring::Act::Verify => ("VERIFY", "in the doubt zone — check before you commit: run it here if you can; if it lives off this machine, read the primary source"),
         scoring::Act::Abstain => (
             "ABSTAIN",
             "more likely to fail than succeed — replan or escalate",

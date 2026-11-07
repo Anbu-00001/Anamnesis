@@ -183,6 +183,15 @@ fn due_key(c: &Claim) -> NaiveDate {
     })
 }
 
+/// An open claim whose due date has passed: its `--by`, or the horizon after it was
+/// logged. The same date the evidence test uses, so the hooks and the report count the
+/// same backlog. `Claim::is_due` reads `--by` alone, and the Stop hook used it: on a
+/// 5,000-claim ledger the session-start line named 742 ungraded calls while Stop said
+/// nothing, because none had a `--by`.
+pub fn came_due(c: &Claim, today: NaiveDate) -> bool {
+    c.is_open() && !c.is_void() && due_key(c) < today
+}
+
 /// What a ledger's voids add up to.
 ///
 /// A void is how a question that stopped making sense leaves the record, and it is

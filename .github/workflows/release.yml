@@ -67,6 +67,11 @@ jobs:
   publish:
     needs: build
     runs-on: ubuntu-latest
+    # The attestation needs an OIDC token and the right to store it.
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/download-artifact@v4
         with:
@@ -79,6 +84,13 @@ jobs:
           find staging -type f ! -name '*.sha256' -exec cp {} dist/ \;
           ( cd dist && sha256sum * > sha256.sum )
           cat dist/sha256.sum
+
+      # A checksum from the same release only proves the download is intact. A build
+      # attestation ties each file to this repository's release workflow, so a binary
+      # swapped into the release afterwards fails `gh attestation verify`.
+      - uses: actions/attest-build-provenance@v4
+        with:
+          subject-path: 'dist/*'
 
       - uses: softprops/action-gh-release@v2
         with:
@@ -116,6 +128,18 @@ jobs:
           got="$("$HOME/.anamnesis/bin/ana" --version)"
           [ "$got" = "ana $want" ] || { echo "installed '$got', expected 'ana $want'"; exit 1; }
           "$HOME/.anamnesis/bin/ana" demo > /dev/null
+
+      # Claude Code runs plugin hooks through Git Bash on Windows, so the installer and
+      # the hook launcher have to work there too, not only from PowerShell.
+      - name: Prebuilt binary via install-ana.sh under Git Bash (Windows)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          bash plugin/install-ana.sh "$TAG"
+          want="${TAG#v}"; want="${want%%-*}"
+          got="$("$HOME/.anamnesis/bin/ana.exe" --version)"
+          [ "$got" = "ana $want" ] || { echo "installed '$got', expected 'ana $want'"; exit 1; }
+          echo '{"session_id":"smoke","cwd":"'"$PWD"'"}' | bash plugin/hooks/_run.sh session-start > /dev/null
 
       - name: The README's prebuilt install line, exactly as written
         if: runner.os != 'Windows' && !contains(github.ref_name, '-')

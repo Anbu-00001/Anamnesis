@@ -252,6 +252,103 @@ better than calls made without it?
 made right after it. **What it cannot:** the effect of the tool as a whole, which is always on,
 or of the session-start line, which every session gets. Those stay unmeasured.
 
+**Note, 2026-11-07, before the first such claim.** From today the agent's global
+instructions ask it to log a `kind:external-fact` claim before it researches a risky point
+on the web, and to resolve it from the page. These are graded binary claims, so by rule 4
+they enter the primary outcome above like any other. They are not filtered out, and the
+secondary outcomes are also reported without them, labelled exploratory.
+
+## Addendum 4, 2026-11-07: the whole tool, a week at a time, before any data
+
+Written before the outcome log below had recorded a single run. Addendum 3 asks about one
+part, the checkpoint. This asks about all of it, at the only scale one person's volume can
+carry, and it does not start until addendum 3 has had its confirmatory reading.
+
+**What is recorded now, from the release that adds it.** Every test run the post-tool hook
+sees gets one line in `outcomes.jsonl` beside the ledger (`pin::log_outcome`, `v: 1`). It
+holds the time, session, the session's current prompt number, project and repo, model,
+whether a subagent ran it, `after_edit`, the runner label, `via` (`bare` or `ana_run`), the
+exit status, and what the grader made of it (`pass`, `fail`, `untrusted`, `not_graded` or
+`background`, by the same `grade_of` rules that grade claims). It never records the command,
+its output or the prompt. It is written whether or not a claim is open and whether or not
+the pin reminder is on, and it prints nothing.
+
+**Not built yet, and required before week 1:**
+- one line per file edit (a `PostToolUse` matcher on `Edit|Write|MultiEdit|NotebookEdit`,
+  carrying time, session, prompt and repo, never content), which the primary outcome needs;
+- the arm gate, which silences every hook that speaks to the model in an OFF week;
+- `ana trial start`, which writes `trial.json` once, under the lock;
+- `validation/crossover_report.py`.
+
+This addendum is frozen with them. If they have not shipped by 2027-01-04, the start moves to
+the first Monday after they do, and nothing else changes.
+
+**The design.** Thirteen pairs of weeks, Monday to Sunday, from the first Monday after
+addendum 3's confirmatory reading, and not before 2027-01-04. In each pair one week is ON and
+one is OFF. The order is drawn once at enrolment from a seeded hash and written to
+`trial.json` before the first week begins, and it is never shown to the model. In an OFF week
+every hook that speaks to the model stays silent: the session-start line, the checkpoint (it
+logs `arm: off` and draws nothing), the pin refusals, and the MCP server's instructions. The
+protocol text in the owner's global agent instructions moves into the session-start output
+first, so that the arm controls it. The grader, the ledger and the outcome log keep working in
+both arms.
+
+**The question.** Does Anamnesis, as a whole, change how often the agent hands over code that
+fails its next test run?
+
+**Rules**, implemented by `validation/crossover_report.py`, which does not get to pick them:
+
+1. **Primary outcome:** a week's handoff failure rate. Take the prompt turns that edited a
+   file. The rate is the share whose first graded test run after the last edit failed, where
+   that run may come in the same turn or a later turn of the same session and repo. Lower is
+   better. Turns with no later graded run are counted per arm and left out of the rate.
+2. **Test:** the exact sign-flip randomization test over the 13 within-pair differences (OFF
+   minus ON). It uses all 8,192 assignments, is two-sided at α = 0.05, and comes with its 95%
+   interval.
+3. **One confirmatory reading,** at the end of the thirteenth pair. The e-value may be read at
+   any time and is labelled anytime-valid. It is the mean over λ ∈ {1, 2, 3, 4, 6, 8} of
+   ∏ exp(λd − λ²d²/2), valid because cosh x ≤ exp(x²/2). The p-value is read once.
+4. **Adherence:** a week is in its arm if at least 90% of its graded runs carry that arm. A
+   week that is not stays in its assigned arm (intent to treat), and the count is reported.
+5. **Secondary outcomes, all exploratory:**
+   - the share of edit-turns ending green;
+   - time to green;
+   - test runs per edit-turn (whether OFF changes how often the agent tests);
+   - the share of edit-turns with no later graded run, per arm;
+   - `ana` calls in OFF weeks.
+6. **This addendum and addendum 3 answer different questions,** each at α = 0.05. No result is
+   reported as the two combined.
+
+**Why the test is valid, and where it is weak.**
+
+- The p-value rests on the draws that ordered each pair, not on any model of weeks, as in
+  addendum 3 (Bojinov & Shephard 2019).
+- **Power is low unless the effect is large.** A simulation written for this design, with 60
+  edit-turns a week and a base rate of 0.75, gives two figures, which hold only under its own
+  assumed distributions. Thirteen pairs detect a 10-point change with power 0.66 to 0.98, and
+  a 5-point change with 0.21 to 0.48. A null is the expected reading for anything smaller, and
+  it is reported as a null, not as proof of none.
+- **The owner knows the arm.** The weeks are not blinded, because the session-start line is
+  missing in OFF weeks. If the owner checks the agent's work more closely in one arm, that is
+  part of the result.
+- **Contamination.** The MCP tool list stays visible in OFF weeks, and the agent can still call
+  `ana` from habit. Those calls are counted.
+- **Drift.** Projects change from week to week. Pairing adjacent weeks removes slow drift, but
+  not a change of project inside a pair.
+- **Carryover.** If habits persist from an ON week into an OFF one, through memory or
+  instructions the arm does not control, the contrast shrinks. The test then under-reads the
+  effect and never invents one.
+
+**What it can show:** whether the tool as a whole changes handoff failures for this owner by
+about ten points or more over six months.
+
+**What it cannot show:**
+- a smaller effect;
+- the effect on the owner as a forecaster;
+- which part of the tool does the work;
+- anything about other people's agents, which needs other people to run the same protocol and
+  publish their e-values.
+
 ## Running it
 
 ```bash
