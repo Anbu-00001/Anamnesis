@@ -122,6 +122,40 @@ pub fn hook_stats() -> Vec<HookStat> {
     ALL_EVENTS.iter().map(|e| read_stat(*e)).collect()
 }
 
+/// The most of `protocol.md` that is passed on; past it the file is cut, and says so.
+const PROTOCOL_MAX_BYTES: usize = 6000;
+
+/// The owner's standing protocol for agents on this machine: `protocol.md` beside the agent
+/// ledger, given at session start.
+///
+/// It lives here rather than in the agent's global instructions so the weekly trial's OFF
+/// weeks can withhold it with everything else the tool says (MEASUREMENT.md, addendum 4).
+/// It is the owner's configuration, like those instructions, not ledger text, so it is
+/// passed as written, framed by where it came from. No file, no line: nothing changes for
+/// anyone who has not written one.
+fn owner_protocol(ledger_path: &std::path::Path) -> Option<String> {
+    let file = ledger_path.with_file_name("protocol.md");
+    let text = std::fs::read_to_string(&file).ok()?;
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    let mut cut = text.len().min(PROTOCOL_MAX_BYTES);
+    while !text.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    let tail = if cut < text.len() {
+        format!("\n(cut at {PROTOCOL_MAX_BYTES} bytes of {})", text.len())
+    } else {
+        String::new()
+    };
+    Some(format!(
+        "⟢ Standing protocol on this machine, set by its owner ({}):\n{}{tail}",
+        file.display(),
+        &text[..cut]
+    ))
+}
+
 /// Below this many graded calls, a calibration line is noise and is not shown.
 const MIN_N: usize = 6;
 /// Re-surface the standing calibration every Nth user prompt. A counter, not
@@ -1068,6 +1102,11 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
             // instruction a model would otherwise skip is the start of its context.
             if event == Event::SessionStart && crate::pin::enabled() {
                 context.push(crate::pin::standing_rule());
+            }
+            if event == Event::SessionStart {
+                if let Some(p) = owner_protocol(ledger_path) {
+                    context.push(p);
+                }
             }
             if context.len() == 1 {
                 if let Some((s, n, every)) = checkpoint {

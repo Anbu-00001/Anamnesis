@@ -27,6 +27,10 @@ The rest of the 0.5.0 audit, and the first piece of a weekly trial of the whole 
   the prompt. It prints nothing. It is the outcome a trial of the whole tool needs
   (`docs/MEASUREMENT.md`, addendum 4, which sets that trial's rules before any data and says
   what is still to build before it can start, not before 2027-01-04).
+- **An owner's protocol, given at session start.** A `protocol.md` beside the agent ledger is
+  passed to the model by the session-start hook, labelled as the owner's, cut at 6000 bytes,
+  and withheld in an OFF week. Putting standing instructions there instead of in the agent's
+  global instructions is what lets the weekly trial switch them off. No file, no change.
 - **Bet on your agent.** Type `?70` as a whole prompt: a 70% bet that the agent's first graded
   test run after an edit, from its next turn on, passes. The UserPromptSubmit hook blocks the
   prompt, so it never reaches the model, and leaves its text out of the block message. The

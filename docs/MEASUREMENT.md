@@ -296,6 +296,14 @@ instructions into the session-start output, so that the arm controls it, and reg
 matcher wherever the hooks are installed by hand rather than by the plugin. If either is not
 done by 2027-01-04, the start moves to the first Monday after, and nothing else changes.
 
+**Done 2026-11-07, on the owner's machine.** The edit matcher is registered in
+`~/.claude/settings.json`. The Anamnesis protocol has moved out of `~/.claude/CLAUDE.md`
+into `~/.anamnesis/protocol.md`, which the session-start hook gives and an OFF week
+withholds (`hook::owner_protocol`). The global file now only says the protocol comes from
+the hook. Contamination that remains, recorded now: this repository's own `CLAUDE.md` and
+the project memory describe the tool, so sessions spent working on Anamnesis itself see it
+in both arms.
+
 **The design.** Thirteen pairs of weeks, Monday to Sunday, from the first Monday after
 addendum 3's confirmatory reading, and not before 2027-01-04. In each pair one week is ON and
 one is OFF. The order is drawn once at enrolment from a seeded hash and written to

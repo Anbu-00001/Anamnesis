@@ -1025,3 +1025,25 @@ fn an_audited_turn_refuses_a_bare_run_after_an_edit_and_nothing_else() {
         "{log}"
     );
 }
+
+/// The owner's `protocol.md` beside the agent ledger is given at session start, and, like
+/// everything the tool says, not in an OFF week.
+#[test]
+fn the_owners_protocol_is_given_at_session_start_and_withheld_in_an_off_week() {
+    let s = setup("protocol");
+    assert!(!hook(&s, "session-start", &fixture("pass_cargo_test")).contains("Standing protocol"));
+    fs::write(
+        s.dir.join("protocol.md"),
+        "- Log before acting.\n- Resolve before rationalising.\n",
+    )
+    .unwrap();
+    let out = hook(&s, "session-start", &fixture("pass_cargo_test"));
+    assert!(
+        out.contains("Standing protocol on this machine")
+            && out.contains("Resolve before rationalising"),
+        "{out}"
+    );
+    assert!(!hook(&s, "user-prompt", &fixture("pass_cargo_test")).contains("Standing protocol"));
+    enrol_off_this_week(&s);
+    assert_eq!(hook(&s, "session-start", &fixture("pass_cargo_test")), "");
+}
