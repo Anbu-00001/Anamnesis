@@ -133,8 +133,9 @@ Known limits:
 - **A claim counts in the test only once it is due**, 7 days after it is logged unless
   `--by` says otherwise. Thirty calls logged and resolved in an afternoon get "not
   enough data" for a week, and the report says on what date they join.
-- **Voiding can hide a miss.** Every void is counted, whenever it is made, and past one
-  in ten of your settled calls no verdict is given.
+- **Voiding or rewording can hide a miss.** Every void, and every statement reworded
+  with `ana amend`, is counted, whenever it is made, and past one in ten of your settled
+  calls no verdict is given.
 - **An exit status grades a claim; it does not choose the command.** `--check true` is
   refused, but a test suite too narrow to fail still passes.
 - **Whether using the tool makes anyone better is unmeasured.** One part of it is now

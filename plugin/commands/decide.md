@@ -1,7 +1,7 @@
 ---
 description: Should you act on a stated probability? Get a stake-aware PROCEED / VERIFY / ABSTAIN, corrected by your own track record.
 argument-hint: --prob 0.8 [--stake 3] [--verify-cost 0.2] [--tag kind:estimate]
-allowed-tools: Bash(ana:*)
+allowed-tools: Bash(ana decide:*)
 ---
 Decide whether to act on a belief *before* you commit to a costly or irreversible step. This is the operational end of calibration — the moment a probability becomes an action.
 
@@ -14,7 +14,7 @@ The gate does two things you cannot reliably do by introspection:
 
 Steps:
 1. Parse `$ARGUMENTS` into `--prob P` and optional `--stake N` (default 1; raise it for irreversible or expensive actions), `--verify-cost C` (default 0.2), and `--tag` (scope the correction to a kind, e.g. `kind:estimate`).
-2. Run, e.g.: `ana --data "$LEDGER" decide --prob 0.8 --stake 3`
+2. Run, e.g.: `ana decide --data "$LEDGER" --prob 0.8 --stake 3`
 3. Report the verdict — **PROCEED** (confidence clears the bar), **VERIFY** (in the doubt zone — gather evidence first), or **ABSTAIN** (worse than even odds after correction — replan or escalate) — along with the corrected probability and the threshold. Then **do what it says.**
 
 Use this at any decision point where being wrong is costly: shipping without a test, running a migration, deleting something, committing to an estimate you'll be held to. It is the difference between *knowing* how sure you are and *acting* on it — the gap the calibration research finds agents fall into.

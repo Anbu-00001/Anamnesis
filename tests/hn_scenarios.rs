@@ -20,6 +20,8 @@ fn workdir(name: &str) -> PathBuf {
 
 fn run(ledger: &Path, args: &[&str]) -> (String, String, bool) {
     let out = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .arg("--data")
         .arg(ledger)
         .args(args)
@@ -52,6 +54,8 @@ fn concurrent_adds_keep_every_claim() {
         for i in 0..40 {
             kids.push(
                 Command::new(ANA)
+                    .env_remove("CLAUDE_CODE_SESSION_ID")
+                    .env_remove("AI_AGENT")
                     .arg("--data")
                     .arg(&ledger)
                     .args(["add", &format!("claim {i}"), "--prob", "0.5"])
@@ -112,6 +116,8 @@ fn corrupt_human_ledger_does_not_break_mcp() {
     fs::write(dir.join(".anamnesis.json"), "{ not json at all").unwrap();
 
     let mut child = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .arg("mcp")
         .env("HOME", &dir)
         .env("USERPROFILE", &dir)
@@ -183,6 +189,8 @@ fn splitmix(state: &mut u64) -> f64 {
 
 fn report_json(ledger: &Path) -> serde_json::Value {
     let out = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .args(["--json", "--data"])
         .arg(ledger)
         .arg("report")
@@ -738,6 +746,9 @@ fn mcp(ledger: &Path, requests: &[&str], env: &[(&str, &str)]) -> Vec<serde_json
     use std::process::Stdio;
 
     let mut cmd = Command::new(ANA);
+    // A test must not inherit the Claude Code session of whoever runs it.
+    cmd.env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT");
     cmd.arg("--data").arg(ledger).arg("mcp");
     for (k, v) in env {
         cmd.env(k, v);
@@ -1447,6 +1458,8 @@ fn the_breakdown_keys_off_whatever_the_ledger_populates_or_says_why_not() {
 #[test]
 fn the_demo_sits_in_the_silent_band_on_purpose() {
     let out = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .args(["--json", "demo"])
         .output()
         .expect("run ana demo");
@@ -1471,6 +1484,8 @@ fn the_demo_sits_in_the_silent_band_on_purpose() {
     // interpret it. Both halves of that have to hold.
     let text = String::from_utf8_lossy(
         &Command::new(ANA)
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("AI_AGENT")
             .arg("demo")
             .output()
             .expect("run ana demo")
@@ -1611,7 +1626,7 @@ fn write_hook_ledger(path: &Path) {
             .to_string(),
     );
     claims.push(
-        r#"{"id":"testspass1","statement":"the suite passes","created_at":"2024-01-01T00:00:00Z","resolve_by":"2099-01-01","tags":["who:claude","kind:tests-pass","project:verify-slug"],"kind":"binary","forecasts":[{"at":"2024-01-01T00:00:00Z","prob":0.8}]}"#
+        r#"{"id":"testspass1","statement":"the suite passes","created_at":"2024-01-01T00:00:00Z","resolve_by":"2099-01-01","origin":{"session":"v4"},"tags":["who:claude","kind:tests-pass","project:verify-slug"],"kind":"binary","forecasts":[{"at":"2024-01-01T00:00:00Z","prob":0.8}]}"#
             .to_string(),
     );
     fs::write(path, format!("{{\"claims\":[{}]}}", claims.join(","))).unwrap();
@@ -1628,6 +1643,9 @@ fn drive_hook(
     use std::io::Write;
     use std::process::Stdio;
     let mut cmd = Command::new(ANA);
+    // A test must not inherit the Claude Code session of whoever runs it.
+    cmd.env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT");
     cmd.args(["hook", event])
         .env("ANAMNESIS_AGENT_DATA", ledger)
         // The person running these tests may have the opt-in reminder switched on for
@@ -2781,4 +2799,101 @@ fn a_quiet_verdict_says_how_often_it_would_catch_a_real_error() {
     }
     assert!(!rich.contains("+0.000 (toward"), "{rich}");
     let _ = fs::remove_dir_all(&dir);
+}
+
+/// Build a ledger of `(prob, n, true_count)` levels, all resolved long ago.
+fn levels_ledger(name: &str, levels: &[(f64, usize, usize)]) -> (PathBuf, PathBuf) {
+    let dir = workdir(name);
+    let ledger = dir.join("l.json");
+    let mut claims = Vec::new();
+    for (k, &(p, n, yes)) in levels.iter().enumerate() {
+        for i in 0..n {
+            claims.push(serde_json::json!({
+                "id": format!("l{k}x{i:04}"), "statement": "s", "tags": [], "kind": "binary",
+                "created_at": "2026-09-01T00:00:00Z",
+                "forecasts": [{"at": "2026-09-01T00:00:00Z", "prob": p}],
+                "resolution": {"at": "2026-09-02T00:00:00Z",
+                               "outcome": if i < yes { "true" } else { "false" }}
+            }));
+        }
+    }
+    fs::write(&ledger, serde_json::json!({ "claims": claims }).to_string()).unwrap();
+    (dir, ledger)
+}
+
+/// Agent A's p1d: 10 points overconfident at both levels, MCB 1.13x its floor, a test
+/// with about a 15% chance of seeing it. The cat said "[DIALED IN] calibration 99/100".
+#[test]
+fn the_friendliest_cat_needs_a_test_that_could_have_seen_the_error() {
+    let (dir, ledger) = levels_ledger("dialed", &[(0.9, 60, 48), (0.6, 60, 30)]);
+    let plain = run(&ledger, &["report", "--plain"]).0;
+    assert!(!plain.contains("DIALED IN"), "{plain}");
+    assert!(!plain.contains("99/100"), "{plain}");
+    assert!(plain.contains("would miss most errors"), "{plain}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Agent A's p1c: one forecast value, 0.9, true 80% of the time. It sorts nothing by
+/// construction, and was told "Right on average" with the error at 1.56x its floor.
+#[test]
+fn one_value_with_its_level_visibly_off_is_not_called_uninformative() {
+    let (dir, ledger) = levels_ledger("onevalue", &[(0.9, 50, 40)]);
+    let json: serde_json::Value =
+        serde_json::from_str(&run(&ledger, &["--json", "report"]).0).unwrap();
+    assert_ne!(json["verdict"], "calibrated_but_uninformative", "{json}");
+    let plain = run(&ledger, &["report", "--plain"]).0;
+    assert!(!plain.contains("Right on average"), "{plain}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// Agent A's amend variant of the void attack: reword a call that is visibly going
+/// wrong into its opposite before resolving it.
+#[test]
+fn rewording_the_misses_into_hits_withholds_the_verdict() {
+    let dir = workdir("reword");
+    let ledger = dir.join("l.json");
+    for i in 0..25 {
+        let (o, _, _) = run(&ledger, &["add", &format!("c{i} ships"), "--prob", "0.9"]);
+        let id = o.split(['[', ']']).nth(1).unwrap().to_string();
+        if i < 3 {
+            let (_, e, ok) = run(
+                &ledger,
+                &["amend", &id, "--statement", &format!("c{i} does NOT ship")],
+            );
+            assert!(ok, "{e}");
+        }
+        assert!(run(&ledger, &["resolve", &id, "yes"]).2);
+    }
+    let rich = run(&ledger, &["report"]).0;
+    assert!(rich.contains("WITHHELD"), "{rich}");
+    assert!(rich.contains("Reworded: 3 settled claim(s)"), "{rich}");
+    assert!(rich.contains("were reworded"), "{rich}");
+    assert!(!rich.contains("Brier score"), "{rich}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A slash command pre-approves only the subcommands it uses. `Bash(ana:*)` also
+/// pre-approved `ana run`, which executes whatever command a claim was pinned to.
+#[test]
+fn no_slash_command_pre_approves_ana_run() {
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("plugin/commands");
+    for e in fs::read_dir(root).unwrap() {
+        let path = e.unwrap().path();
+        let text = fs::read_to_string(&path).unwrap();
+        let grant = text
+            .lines()
+            .find(|l| l.starts_with("allowed-tools:"))
+            .unwrap_or("");
+        assert!(
+            !grant.contains("Bash(ana:*)"),
+            "{}: {grant}",
+            path.display()
+        );
+        assert!(!grant.contains("ana run"), "{}: {grant}", path.display());
+        assert!(
+            !grant.contains("Bash(ana --data"),
+            "{}: {grant}",
+            path.display()
+        );
+    }
 }

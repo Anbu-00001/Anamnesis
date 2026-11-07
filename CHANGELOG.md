@@ -58,6 +58,27 @@ Every finding was reproduced against the 0.4.2 binary before it was fixed.
   sequence already read.
 - The post-tool hook named open claims from every project when a test run could not be graded;
   it names only this project's or this session's.
+- **Found by an audit of 0.5.0 before release** (each reproduced, then fixed):
+  - The plain report, cat and badge said "[DIALED IN] calibration 99/100" for a forecaster
+    10 points overconfident at 120 calls, with the calibration error above its floor and a
+    test that could see that error 15% of the time. DIALED IN now needs the error at or
+    under its floor and a test that would catch a 30% error at least 80% of the time;
+    below even odds, no score out of 100 is printed.
+  - One forecast value at 0.9 that came true 80% of the time was called "uninformative"
+    ("right on average") with its error at 1.56x the floor. The level is the finding there.
+    METHODS.md's verdict table now says what the code does.
+  - `ana amend` could reword "ships" into "does NOT ship" before resolving, and nothing
+    recorded it. A reworded claim now counts toward the same one-in-ten line as a void,
+    and the report lists them.
+  - A plain test run graded every open `tests-pass` claim tagged with the folder's name,
+    from any session or checkout. It now grades only its own session's claims (or, with
+    no session on the claim, one logged in the last 12 hours), and the report separates
+    claims graded by their pinned command from claims graded by whatever run came next.
+  - The checkpoint log wrote `drawn` before it knew anything would be shown. It now
+    writes `shown` too (`"v": 2`); the analysis stays by the draw.
+  - The plugin's slash commands pre-approved `Bash(ana:*)`, which includes `ana run`, which
+    executes whatever command a claim was pinned to. Each now pre-approves only the
+    subcommands it uses, and `ana run` asks first.
 - "Not self-reported" overstated auto-grading. The report and hooks now say the grade is not
   yours but the choice of command was.
 

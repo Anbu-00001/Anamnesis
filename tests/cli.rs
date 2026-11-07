@@ -8,6 +8,8 @@ use std::process::{Command, Stdio};
 
 fn ana(data: &str, args: &[&str]) -> (String, String, bool) {
     let out = Command::new(env!("CARGO_BIN_EXE_ana"))
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .arg("--data")
         .arg(data)
         .args(args)
@@ -46,6 +48,8 @@ fn add_resolve(data: &str, prob: &str, outcome: &str) {
 /// the pipe, and return everything it wrote to stdout.
 fn ana_mcp(data: &str, requests: &[&str]) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_ana"))
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .arg("--data")
         .arg(data)
         .arg("mcp")

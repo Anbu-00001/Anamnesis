@@ -100,8 +100,11 @@ of the queue blocking everything behind it.
 ## Auto-resolution: the part that rests least on your word
 
 When a plain test command settles an open `kind:tests-pass` claim for the current
-project, the hooks grade it **from the command's exit status**, recording
-`resolved_by: "auto"` and the command that produced it.
+project and the same session, the hooks grade it **from the command's exit status**, recording
+`resolved_by: "auto"` and the command that produced it. A claim logged inside Claude Code carries its session (`origin.session`) and is
+graded only by a run in that session; one without a session is graded only by a run
+within 12 hours of being logged. Until 0.5.0 any run in a folder of the same name graded
+every open claim tagged with it, from any session or checkout.
 
 Claude Code does not send an exit status. It sends a command that exited 0 as
 `PostToolUse`, and one that exited non-zero as `PostToolUseFailure`, with the code only

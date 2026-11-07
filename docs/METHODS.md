@@ -524,8 +524,8 @@ whether you are calibrated. The plain report, the cat, the badge, the HTML card,
 | state | condition |
 |---|---|
 | `insufficient_data` | fewer than 20 graded calls |
-| `no_evidence_of_miscalibration` | MCB at or below its floor, e below 20 |
-| `calibrated_but_uninformative` | the above, and DSC ≈ 0 |
+| `no_evidence_of_miscalibration` | e below 20. MCB may sit above its floor, which one calibrated forecaster in twenty does on any look; at 1.5× the floor or more the report says the two checks disagree, and the cat cannot say DIALED IN |
+| `calibrated_but_uninformative` | e below 20 and DSC ≈ 0, with MCB under 1.5× its floor (or, with two or more forecast values, DSC ≈ 0 whatever e is) |
 | `overconfident` / `underconfident` | e ≥ 20, MCB above floor, with a clear direction |
 | `biased_yes` / `biased_no` | as above, with a directional lean dominating |
 | `miscalibrated_both_ways` | as above, but the gap is too small to name a direction |

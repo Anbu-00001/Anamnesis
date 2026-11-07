@@ -27,6 +27,8 @@ fn workdir(name: &str) -> PathBuf {
 
 fn ana(ledger: &Path, args: &[&str]) -> Output {
     Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .arg("--data")
         .arg(ledger)
         .args(args)
@@ -394,6 +396,8 @@ fn a_grandchild_holding_the_pipes_does_not_hang_ana_run() {
 
 fn mcp(ledger: &Path, requests: &[String]) -> Vec<serde_json::Value> {
     let mut child = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .arg("--data")
         .arg(ledger)
         .arg("mcp")

@@ -91,8 +91,8 @@ fn standing_line(d: &ReportData) -> Option<String> {
     Some(match d.verdict {
         Verdict::InsufficientData => return None,
         Verdict::Withheld => format!(
-            "NO VERDICT: {} of your {} settled claims were voided, so no reading of your {n} graded calls can be trusted. Resolve a claim when it answers, even when it went against you; void only a question that stopped making sense, and fix a typo with `ana amend`.",
-            d.voids.total, d.voids.settled
+            "NO VERDICT: {} of your {} settled claims {}, so no reading of your {n} graded calls can be trusted. Resolve a claim when it answers, even when it went against you; void only a question that stopped making sense, and reword only before the answer is in sight.",
+            d.voids.edited().0, d.voids.settled, d.voids.edited().1
         ),
         Verdict::NoEvidenceOfMiscalibration => format!(
             "no miscalibration found across {n} graded calls — which is not proof you are calibrated, only that nothing shows otherwise"
@@ -266,14 +266,26 @@ pub(crate) fn checkpoint_drawn(session: &str, n: u64, every: u64) -> bool {
 /// it had, and whether it was drawn. Never the prompt. This is the assignment record the
 /// analysis in `validation/effect_report.py` reads; claims are matched to the prompt they
 /// were logged under by their `origin.session` and time.
-fn log_checkpoint(ledger_path: &std::path::Path, session: &str, n: u64, every: u64, drawn: bool) {
+/// `drawn` is the assignment, made before anything is known; `shown` is whether the
+/// checkpoint was then actually printed. They differ when a drawn prompt has nothing to
+/// say (an empty or unreadable ledger), and the analysis needs both: the assignment for
+/// the test, the difference for how often it was a no-op.
+fn log_checkpoint(
+    ledger_path: &std::path::Path,
+    session: &str,
+    n: u64,
+    every: u64,
+    drawn: bool,
+    shown: bool,
+) {
     let rec = json!({
-        "v": 1,
+        "v": 2,
         "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
         "session": untrusted::tag(session),
         "prompt": n,
         "p": 1.0 / every.max(1) as f64,
         "drawn": drawn,
+        "shown": shown,
         "engine": VERSION,
     });
     let _ = store::append_private(
@@ -801,6 +813,8 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
 
     let mut context: Vec<String> = Vec::new();
     let mut user_message: Option<String> = None;
+    // A drawn checkpoint, logged once it is known whether anything was shown.
+    let mut checkpoint: Option<(&str, u64, u64)> = None;
 
     match event {
         Event::PreTool => {} // handled above
@@ -813,10 +827,11 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 let every = env_usize("ANAMNESIS_INTROSPECT_EVERY", DEFAULT_EVERY);
                 let n = bump_counter(session);
                 let drawn = checkpoint_drawn(session, n, every);
-                log_checkpoint(ledger_path, session, n, every, drawn);
                 if !drawn {
+                    log_checkpoint(ledger_path, session, n, every, false, false);
                     return Ok(()); // silent on the prompts the draw passed over
                 }
+                checkpoint = Some((session, n, every));
                 context.push(format!(
                     "⟢ Anamnesis (ana {VERSION}) — self-introspection checkpoint (prompt #{n})"
                 ));
@@ -834,6 +849,9 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                         untrusted::line(&e.to_string(), 200)
                     ) })
                 );
+                if let Some((s, n, every)) = checkpoint {
+                    log_checkpoint(ledger_path, s, n, every, true, false);
+                }
                 return Ok(());
             }
             let d = ReportData::compute(&agent_claims(&ledger), Some("who:claude"), 10, today);
@@ -860,11 +878,17 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 context.push(crate::pin::standing_rule());
             }
             if context.len() == 1 {
+                if let Some((s, n, every)) = checkpoint {
+                    log_checkpoint(ledger_path, s, n, every, true, false);
+                }
                 return Ok(()); // header only: nothing worth saying
             }
             context.push(
                 "Log predictions with a probability BEFORE acting; resolve them the moment reality answers.".into(),
             );
+            if let Some((s, n, every)) = checkpoint {
+                log_checkpoint(ledger_path, s, n, every, true, true);
+            }
         }
 
         Event::PostTool | Event::PostToolFailure => {
@@ -878,7 +902,13 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
             match grade_of(event, &input, cmd) {
                 Grade::NotATest => return Ok(()),
                 Grade::Exit(code) => {
-                    match auto_resolve(ledger_path, &slug, cmd, code) {
+                    match auto_resolve(
+                        ledger_path,
+                        &slug,
+                        input.get("session_id").and_then(Value::as_str),
+                        cmd,
+                        code,
+                    ) {
                         // The ledger was busy or unreadable: the run is not graded, and
                         // the user is told so rather than left to wonder.
                         Err(e) => {
@@ -1006,9 +1036,32 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
 ///
 /// Deliberately narrow: only claims explicitly tagged `kind:tests-pass`, only in
 /// this project, and only when the claim was made before the command ran.
+/// How old an unstamped claim may be and still be graded by a test run seen now.
+const AUTO_UNSTAMPED_HOURS: i64 = 12;
+
+/// Whether a claim belongs to the session whose test run is being graded.
+///
+/// A claim stamped with a session (`origin.session`, 0.5.0 on, inside Claude Code) is
+/// graded only by a run in that session. One without a stamp, or a run whose session is
+/// unknown, falls back to recency. Until 0.5.0 every open claim tagged with the folder's
+/// name was graded by any run there: an October claim from another session, about another
+/// checkout with the same folder name, was resolved by today's `cargo test`.
+fn same_session(c: &Claim, session: Option<&str>, now: chrono::DateTime<Utc>) -> bool {
+    let stamped = c
+        .extra
+        .get("origin")
+        .and_then(|o| o.get("session"))
+        .and_then(Value::as_str);
+    match (stamped, session) {
+        (Some(mine), Some(run)) => mine == untrusted::tag(run),
+        _ => now - c.created_at <= chrono::Duration::hours(AUTO_UNSTAMPED_HOURS),
+    }
+}
+
 fn auto_resolve(
     ledger_path: &std::path::Path,
     slug: &str,
+    session: Option<&str>,
     cmd: &str,
     exit_code: i64,
 ) -> Result<Vec<String>, String> {
@@ -1038,7 +1091,7 @@ fn auto_resolve(
         if !c.tags.iter().any(|t| t == &project) {
             continue;
         }
-        if c.created_at > now {
+        if c.created_at > now || !same_session(c, session, now) {
             continue;
         }
         c.resolution = Some(Resolution {
@@ -1086,8 +1139,8 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("ana-cp-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let ledger = dir.join("agent.json");
-        log_checkpoint(&ledger, "sess-1", 3, 7, true);
-        log_checkpoint(&ledger, "sess-1", 4, 7, false);
+        log_checkpoint(&ledger, "sess-1", 3, 7, true, true);
+        log_checkpoint(&ledger, "sess-1", 4, 7, false, false);
         let text = std::fs::read_to_string(dir.join("checkpoints.jsonl")).unwrap();
         let rows: Vec<Value> = text
             .lines()
@@ -1097,6 +1150,7 @@ mod tests {
         assert_eq!(rows[0]["prompt"], 3);
         assert_eq!(rows[0]["drawn"], true);
         assert_eq!(rows[1]["drawn"], false);
+        assert_eq!(rows[0]["shown"], true);
         assert!((rows[0]["p"].as_f64().unwrap() - 1.0 / 7.0).abs() < 1e-12);
         let mut keys: Vec<&str> = rows[0]
             .as_object()
@@ -1107,7 +1161,7 @@ mod tests {
         keys.sort_unstable();
         assert_eq!(
             keys,
-            ["at", "drawn", "engine", "p", "prompt", "session", "v"]
+            ["at", "drawn", "engine", "p", "prompt", "session", "shown", "v"]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

@@ -1065,7 +1065,7 @@ fn tool_schemas() -> Value {
         },
         {
             "name": "amend",
-            "description": "Fix a typo in a claim's statement, or correct its tags. Pre-resolution only, and never the probability or the timestamps — those are the record. The previous wording is kept.",
+            "description": "Fix a typo in a claim's statement, or correct its tags. Pre-resolution only, and never the probability or the timestamps — those are the record. The previous wording is kept, and a reworded statement counts like a void toward the one-in-ten line that withholds the verdict, so reword only before the answer is in sight.",
             "inputSchema": { "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {
                 "id": { "type": "string", "description": "claim id (any unique prefix)" },
                 "statement": { "type": "string", "description": "replacement statement" },

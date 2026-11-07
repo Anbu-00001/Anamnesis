@@ -41,6 +41,9 @@ fn payload(session: &str, command: &str) -> String {
 
 fn hook(s: &Setup, event: &str, stdin: &str, nudge: bool) -> String {
     let mut cmd = Command::new(ANA);
+    // A test must not inherit the Claude Code session of whoever runs it.
+    cmd.env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT");
     cmd.args(["hook", event])
         .env("ANAMNESIS_AGENT_DATA", &s.ledger)
         .env("HOME", &s.dir)
@@ -860,6 +863,9 @@ fn the_edit_question_goes_unanswered_when_the_transcript_is_cut_or_missing() {
 
 fn add(s: &Setup, cwd: &std::path::Path, env: &[(&str, &str)]) -> serde_json::Value {
     let mut cmd = Command::new(ANA);
+    // A test must not inherit the Claude Code session of whoever runs it.
+    cmd.env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT");
     cmd.current_dir(cwd)
         .args(["--data", s.ledger.to_str().unwrap()])
         .args(["add", "the suite passes", "--prob", "0.8"])
@@ -901,6 +907,8 @@ fn a_claim_logged_inside_claude_code_is_stamped_and_others_are_left_alone() {
     // It survives every later save, and the report still reads the ledger.
     let id = c["id"].as_str().unwrap();
     let ok = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .args(["--data", s.ledger.to_str().unwrap(), "resolve", id, "true"])
         .output()
         .unwrap();

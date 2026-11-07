@@ -202,7 +202,10 @@ without losing anything that matters.
 shown on every 7th prompt. Each prompt gets it with probability 1/7, drawn from a hash of the
 session id and the prompt number, and every draw is logged to `checkpoints.jsonl` beside the
 ledger: time, session, prompt number, the probability, whether it was drawn. Never the prompt.
-This is a micro-randomized trial (Klasnja et al. 2015; Boruvka et al. 2018): within a session,
+A drawn prompt can still print nothing (an unreadable ledger, or nothing to say), so
+each line also records `shown`. The test compares prompts by the draw, never by
+`shown`: what was shown depends on the ledger, and only the draw is random (intent to
+treat). The share drawn but not shown is reported beside it. This is a micro-randomized trial (Klasnja et al. 2015; Boruvka et al. 2018): within a session,
 prompts that got the checkpoint and prompts that did not differ only by the draw. A claim
 logged inside Claude Code carries `origin.session`, and is assigned to the latest prompt of
 that session at or before its creation time.

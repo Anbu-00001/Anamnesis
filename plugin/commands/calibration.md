@@ -1,10 +1,10 @@
 ---
 description: Show your standing calibration — the mirror — from the global agent ledger.
 argument-hint: [--tag kind:estimate]   [--bins 10]
-allowed-tools: Bash(ana:*)
+allowed-tools: Bash(ana report:*)
 ---
 Run:
-`ana --data "${ANAMNESIS_AGENT_DATA:-$HOME/.anamnesis/agent.json}" report --tag who:claude $ARGUMENTS`
+`ana report --data "${ANAMNESIS_AGENT_DATA:-$HOME/.anamnesis/agent.json}" --tag who:claude $ARGUMENTS`
 
 Predictions you logged through the MCP tools carry `who:claude-code` (Claude Code's own
 name for itself), not `who:claude`. If you have used those tools, run the same command

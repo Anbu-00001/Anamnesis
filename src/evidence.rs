@@ -202,6 +202,13 @@ pub struct VoidAccount {
     pub late: usize,
     /// Claims in scope that came due, resolved or were voided: what `total` is a share of.
     pub settled: usize,
+    /// Settled claims, not voided, whose statement was reworded after it was logged.
+    /// `amend` refuses a resolved claim, but an answer can be known before it is
+    /// recorded: "the release ships" at 90%, reworded to "does NOT ship" once it
+    /// visibly would not, then resolved yes, scored Brier 0.010 and showed nowhere.
+    /// A reword can do what a void does, so it counts toward the same line.
+    #[serde(default)]
+    pub reworded: usize,
 }
 
 /// More than this share of the settled claims voided, and the verdict is withheld.
@@ -226,9 +233,27 @@ impl VoidAccount {
         (self.total > 0 && self.settled > 0).then(|| self.total as f64 / self.settled as f64)
     }
 
-    /// Whether the voids are numerous enough that no verdict should be read.
+    /// How many settled claims were edited out of the record, and the words for how:
+    /// `(4, "were voided")`, or `"were voided or reworded"` once a reword is among them.
+    pub fn edited(&self) -> (usize, &'static str) {
+        let verb = match (self.total, self.reworded) {
+            (_, 0) => "were voided",
+            (0, _) => "were reworded",
+            _ => "were voided or reworded",
+        };
+        (self.total + self.reworded, verb)
+    }
+
+    /// The share of settled claims that were voided or reworded.
+    pub fn edit_rate(&self) -> Option<f64> {
+        let edited = self.total + self.reworded;
+        (edited > 0 && self.settled > 0).then(|| edited as f64 / self.settled as f64)
+    }
+
+    /// Whether the voids and rewordings are numerous enough that no verdict should be read.
     pub fn withholds_verdict(&self) -> bool {
-        self.total >= VOID_WITHHOLD_MIN && self.void_rate().is_some_and(|r| r > VOID_WITHHOLD_RATE)
+        self.total + self.reworded >= VOID_WITHHOLD_MIN
+            && self.edit_rate().is_some_and(|r| r > VOID_WITHHOLD_RATE)
     }
 }
 
@@ -255,8 +280,12 @@ pub fn void_account(claims: &[Claim], today: NaiveDate, tag: Option<&str>) -> Vo
         if voided_late(c) {
             acct.late += 1;
         }
-        if c.is_void() || c.resolution.is_some() || due_key(c) <= today {
+        let settled = c.is_void() || c.resolution.is_some() || due_key(c) <= today;
+        if settled {
             acct.settled += 1;
+        }
+        if settled && !c.is_void() && c.amendments.iter().any(|a| a.new_statement.is_some()) {
+            acct.reworded += 1;
         }
     }
     acct
@@ -766,6 +795,7 @@ mod tests {
             total,
             late: 0,
             settled,
+            reworded: 0,
         };
         assert!(!acct(0, 30).withholds_verdict());
         assert!(!acct(2, 30).withholds_verdict());
@@ -780,6 +810,17 @@ mod tests {
         );
         assert!(acct(3, 5).withholds_verdict());
         assert!(!VoidAccount::default().withholds_verdict());
+        // A reword counts like a void.
+        let mixed = VoidAccount {
+            total: 2,
+            late: 0,
+            settled: 30,
+            reworded: 2,
+        };
+        assert!(
+            mixed.withholds_verdict(),
+            "2 voids + 2 rewords of 30 is 13%"
+        );
     }
 
     #[test]

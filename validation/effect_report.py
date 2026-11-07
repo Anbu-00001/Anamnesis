@@ -167,6 +167,11 @@ def main():
           f"(probabilities used: {', '.join(f'{p:g}' for p in sorted(ps))})")
     expected = sum(p for p, _ in prompt_info.values())
     print(f"  expected about {expected:.0f} drawn; a large gap means the draw is not what the log says")
+    logged_shown = [e for e in checkpoints if "shown" in e and e.get("drawn")]
+    if logged_shown:
+        silent = sum(1 for e in logged_shown if not e["shown"])
+        print(f"  {silent} of the {len(logged_shown)} drawn prompts logged with `shown` (engine 0.5.0 on) printed nothing;")
+        print("  the comparison below is by the draw (intent to treat), which stays valid either way")
 
     # claims, matched to the prompt they were logged under
     per_brier, per_gap, per_true = collections.defaultdict(list), collections.defaultdict(list), collections.defaultdict(list)

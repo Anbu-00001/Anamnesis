@@ -624,7 +624,13 @@ pub fn verdict_from(
     // calibrated-but-useless case, saying 0.5 to everything on a fair coin. It
     // reaches here rather than the check above because with a single forecast
     // value there was never anything to rank.
-    if dsc.is_some_and(|d| d.abs() < DSC_UNINFORMATIVE) {
+    //
+    // Not when the level is visibly off, though: 50 calls at 0.9 that came true 80% of
+    // the time also sort nothing (one value), and were told "right on average" with the
+    // calibration error at 1.56x its floor. That is the level, not the ranking.
+    let level_off =
+        matches!((mcb, mcb_floor), (Some(m), Some(f)) if f > 0.0 && m / f >= MCB_RATIO_NOTABLE);
+    if !level_off && dsc.is_some_and(|d| d.abs() < DSC_UNINFORMATIVE) {
         return Verdict::CalibratedButUninformative;
     }
     Verdict::NoEvidenceOfMiscalibration
@@ -666,6 +672,10 @@ pub struct ResolutionDiscipline {
     /// self-graded ledger?" is the first fair objection, and this is the part of
     /// the answer that is a number.
     pub auto_graded: usize,
+    /// Of `auto_graded`, those pinned with `--check` when they were logged, so the
+    /// command was fixed before the outcome. The rest were graded by whichever plain
+    /// test run the hook saw next.
+    pub auto_pinned: usize,
     /// Standardized gap (ASMD) between those two boldness profiles — the
     /// missing-not-at-random diagnostic. `> 0.1` ⇒ your open and graded calls differ
     /// enough that the split is unlikely to be random. `None` below two per side.
@@ -835,6 +845,10 @@ pub struct ReportData {
 
 /// The error the sensitivity line is about: numbers 30% further from 50/50 than the truth.
 pub const SENSITIVITY_SHRINK: f64 = 0.3;
+
+/// The friendliest cat needs a test that would have caught an error of
+/// [`SENSITIVITY_SHRINK`] at least this often.
+pub const DIALED_MIN_SENSITIVITY: f64 = 0.8;
 
 impl ReportData {
     /// Compute every metric once, for the binary and numeric claims that match
@@ -1213,6 +1227,14 @@ impl ReportData {
                                 == Some(crate::model::ResolvedBy::Auto)
                         })
                         .count(),
+                    auto_pinned: resolved_claims
+                        .iter()
+                        .filter(|c| {
+                            c.check.is_some()
+                                && c.resolution.as_ref().and_then(|r| r.resolved_by)
+                                    == Some(crate::model::ResolvedBy::Auto)
+                        })
+                        .count(),
                     resolved_boldness: scoring::mean_boldness(&resolved_probs),
                     open_boldness: scoring::mean_boldness(&open_probs),
                     boldness_asmd: scoring::asmd(&resolved_probs, &open_probs),
@@ -1493,6 +1515,13 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 d.voids.total, d.voids.settled, pct(d.voids.void_rate().unwrap_or(0.0)), d.voids.late
             );
         }
+        if d.voids.reworded > 0 {
+            let _ = writeln!(
+                out,
+                "    Reworded: {} settled claim(s) had their statement changed after they were logged (`ana show <id>` lists each change). A reword can turn a miss into a hit; it counts toward the same one-in-ten line as a void.",
+                d.voids.reworded
+            );
+        }
         if d.voided_after_resolution > 0 {
             let _ = writeln!(
                 out,
@@ -1503,9 +1532,11 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         if rd.auto_graded > 0 {
             let _ = writeln!(
                 out,
-                "    {} of them ({:.0}%) were graded from the exit status of a command pinned before the outcome: the grade is not yours, though the choice of command was.",
+                "    {} of them ({:.0}%) were graded from a test run's exit status: {} by the command pinned when they were logged, {} by the next plain test run the hook saw. The grade is not yours, though the choice of command was.",
                 rd.auto_graded,
-                100.0 * rd.auto_graded as f64 / rd.resolved.max(1) as f64
+                100.0 * rd.auto_graded as f64 / rd.resolved.max(1) as f64,
+                rd.auto_pinned,
+                rd.auto_graded - rd.auto_pinned
             );
         }
         // Missing-not-at-random check: are the calls you left open a different breed
@@ -1553,8 +1584,8 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
         if d.verdict == Verdict::Withheld {
             let _ = writeln!(
                 out,
-                "                   {} of the {} settled claims were voided. Every score here leaves voided claims out, and the misses are the ones that get voided, so none of them is read.",
-                d.voids.total, d.voids.settled
+                "                   {} of the {} settled claims {}. Every score here leaves voided claims out and scores a reworded one as reworded, and the misses are the ones that get edited, so none of them is read.",
+                d.voids.edited().0, d.voids.settled, d.voids.edited().1
             );
         }
         // Under a withheld verdict no reading is printed (invariant 9): every one of them
@@ -2305,8 +2336,8 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
     if let Some(rd) = &d.resolution_discipline {
         let mut a = if d.verdict == Verdict::Withheld {
             format!(
-                "No. {} of your {} settled call(s) were voided, and every number leaves a voided call out, so what remains may be the calls that went your way.",
-                d.voids.total, d.voids.settled
+                "No. {} of your {} settled call(s) {}, and every number leaves a voided call out and scores a reworded one as reworded, so what remains may be the calls that went your way.",
+                d.voids.edited().0, d.voids.settled, d.voids.edited().1
             )
         } else if rd.open == 0 && d.voids.total == 0 {
             format!("Yes — you've graded every one of your {} call(s). This isn't a picture cherry-picked from only the predictions that went your way.", rd.resolved)
@@ -2544,8 +2575,8 @@ fn plain_summary(d: &ReportData) -> PlainSummary {
 
     let headline = match d.verdict {
         Verdict::Withheld => format!(
-            "No verdict: {} of your {} settled calls were voided.",
-            d.voids.total, d.voids.settled
+            "No verdict: {} of your {} settled calls {}.",
+            d.voids.edited().0, d.voids.settled, d.voids.edited().1
         ),
         Verdict::Underconfident => {
             "You undersell yourself — trust your sure calls more.".to_string()
@@ -2641,9 +2672,9 @@ const MOOD_WORST_EXCESS: f64 = 0.10;
 /// cancelled to a gap of −1e-15. A cat is the most screenshot-able thing this
 /// program produces, so it is the last place a cancelling statistic belongs.
 fn mood(d: &ReportData) -> Mood {
-    // Not "is it over the floor": that happens to one calibrated forecaster in
-    // twenty on any given look, and the cat should not flicker with it.
-    let notable = mcb_ratio(d).is_some_and(|r| r >= MCB_RATIO_NOTABLE);
+    // Only DIALED IN asks "is it over the floor", and it may drop to NOTHING OFF YET one
+    // look in twenty for a calibrated forecaster. That costs a friendlier name, never a
+    // false reassurance; the other names follow the size of the error.
     let excess = match (d.mcb, d.mcb_null_q95) {
         (Some(m), Some(f)) => Some((m - f).max(0.0)),
         (Some(m), None) => Some(m.max(0.0)),
@@ -2681,7 +2712,17 @@ fn mood(d: &ReportData) -> Mood {
         // overconfident at n = 160 scored 90/100 and drew the happiest face in the
         // program while MCB was twice the floor. The friendliest cat answers to
         // BOTH instruments.
-        Some(s) if s >= 75 && d.evidence_n >= VERDICT_CONFIDENT_N && !notable => {
+        // And, measured again on 0.5.0: 10 points overconfident at n = 120, MCB 1.13x
+        // the floor, a test with a 15% chance of seeing it, drew "DIALED IN 99/100".
+        // The bar the comment above states is "not above its floor", so that is the
+        // test, and the test must have been able to see an error: past 80% for one
+        // 30% too extreme.
+        Some(s)
+            if s >= 75
+                && d.evidence_n >= VERDICT_CONFIDENT_N
+                && mcb_ratio(d).is_none_or(|r| r <= 1.0)
+                && d.sensitivity.is_none_or(|r| r >= DIALED_MIN_SENSITIVITY) =>
+        {
             (CAT_DIALED, "DIALED IN")
         }
         Some(s) if s >= 75 => (CAT_CLOSE, "NOTHING OFF YET"),
@@ -2695,7 +2736,13 @@ fn mood(d: &ReportData) -> Mood {
         Verdict::CalibratedButUninformative => (art, "UNINFORMATIVE"),
         _ => (art, band),
     };
+    // A score out of 100 beside a test that could not have seen the error reads as a
+    // grade it has not earned, so below even odds of catching one it is not printed.
+    let blind = d.sensitivity.is_some_and(|r| r < 0.5);
     let gloss = match score {
+        Some(_) if blind => {
+            format!("{dir}, but at this record the test would miss most errors of 30%")
+        }
         Some(s) => format!("calibration {s}/100 · {dir}"),
         None => dir.to_string(),
     };

@@ -199,7 +199,8 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    a ledger with a −0.520 Brier skill had a gap of −1e-15 and was announced as
    `[DIALED IN] · well calibrated`. Never derive a pass/fail from the gap. The
    verdict is also **withheld** (`Verdict::Withheld`) when more than one in ten of the
-   settled claims were voided, at whatever time, with at least three voids
+   settled claims were voided or reworded (`ana amend --statement`), at whatever time,
+   with at least three of them
    (`evidence::VoidAccount`): every score drops voided claims, so past that line they
    describe a tidied record. **Count every void, not only late ones**: a due date is
    the latest an answer can arrive, not when it does, and voiding the visible misses

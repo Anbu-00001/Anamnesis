@@ -1,11 +1,11 @@
 ---
 description: Revise an open prediction as evidence arrives. The old forecast is kept, never overwritten.
 argument-hint: <id> --prob P   |   <id> --interval LOW..HIGH [--level L]   [--because "what changed"]
-allowed-tools: Bash(ana:*)
+allowed-tools: Bash(ana update:*), Bash(ana show:*)
 ---
 Revise an open prediction in the agent ledger `${ANAMNESIS_AGENT_DATA:-$HOME/.anamnesis/agent.json}`.
 
-Run: `ana --data "$LEDGER" update $ARGUMENTS`
+Run: `ana update --data "$LEDGER" $ARGUMENTS`
 
 Do this the **moment your belief actually moves** — you read the failing test, you
 found the real stack trace, the migration turned out to touch three more tables.

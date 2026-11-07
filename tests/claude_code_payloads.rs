@@ -42,11 +42,13 @@ fn setup(name: &str) -> Setup {
     let _ = fs::remove_dir_all(&dir);
     fs::create_dir_all(&dir).unwrap();
     let ledger = dir.join("agent.json");
+    // Logged a minute ago: an unstamped claim is graded only by a recent run (0.5.0).
+    let created = (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
     let claim = serde_json::json!({
         "id": "testspass1", "statement": "the suite passes",
-        "created_at": "2024-01-01T00:00:00Z", "resolve_by": "2099-01-01",
+        "created_at": created, "resolve_by": "2099-01-01",
         "tags": ["who:claude", "kind:tests-pass", "project:project"], "kind": "binary",
-        "forecasts": [{"at": "2024-01-01T00:00:00Z", "prob": 0.8}]
+        "forecasts": [{"at": created, "prob": 0.8}]
     });
     fs::write(
         &ledger,
@@ -59,6 +61,8 @@ fn setup(name: &str) -> Setup {
 /// Run `ana hook <event>` with `payload` on stdin; return its stdout.
 fn hook(s: &Setup, event: &str, payload: &str) -> String {
     let mut child = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .args(["hook", event])
         .env("ANAMNESIS_AGENT_DATA", &s.ledger)
         .env_remove("ANAMNESIS_PIN_NUDGE")
@@ -313,6 +317,8 @@ fn a_hook_that_cannot_get_the_ledger_gives_up_and_says_so() {
     let held = anamnesis::store::lock(&s.ledger).unwrap();
     let t = std::time::Instant::now();
     let mut child = Command::new(ANA)
+        .env_remove("CLAUDE_CODE_SESSION_ID")
+        .env_remove("AI_AGENT")
         .args(["hook", "post-tool"])
         .env("ANAMNESIS_AGENT_DATA", &s.ledger)
         .env("ANAMNESIS_HOOK_LOCK_WAIT_MS", "300")
@@ -673,5 +679,62 @@ fn commands_that_only_mention_a_runner_are_not_test_runs_after_the_fact_either()
     assert!(out.contains("this one is on your word"), "{out}");
     v["tool_input"]["command"] = "cd tiny && cargo test 2>&1 | tail -5".into();
     assert!(hook(&s, "post-tool", &v.to_string()).contains("this one is on your word"));
+    let _ = fs::remove_dir_all(&s.dir);
+}
+
+/// A test run grades only the claims of its own session. It used to grade every open
+/// claim tagged with the folder's name: an October claim from another session, about
+/// another checkout with the same folder name, was resolved by today's `cargo test`.
+#[test]
+fn a_test_run_grades_only_its_own_sessions_claims() {
+    let payload = fixture("pass_cargo_test");
+    let run_session = serde_json::from_str::<serde_json::Value>(&payload).unwrap()["session_id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let stamp = |s: &Setup, origin: serde_json::Value, created: &str| {
+        let mut v: serde_json::Value =
+            serde_json::from_str(&fs::read_to_string(&s.ledger).unwrap()).unwrap();
+        v["claims"][0]["origin"] = origin;
+        v["claims"][0]["created_at"] = created.into();
+        v["claims"][0]["forecasts"][0]["at"] = created.into();
+        fs::write(&s.ledger, v.to_string()).unwrap();
+    };
+    let recent = (chrono::Utc::now() - chrono::Duration::minutes(1)).to_rfc3339();
+
+    let s = setup("othersession");
+    stamp(
+        &s,
+        serde_json::json!({"session": "another-session"}),
+        &recent,
+    );
+    hook(&s, "post-tool", &payload);
+    assert!(
+        resolution(&s).is_none(),
+        "graded a claim from another session"
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+
+    let s = setup("samesession");
+    stamp(
+        &s,
+        serde_json::json!({"session": run_session}),
+        "2024-01-01T00:00:00Z",
+    );
+    hook(&s, "post-tool", &payload);
+    assert_eq!(
+        resolution(&s).map(|r| r.1).as_deref(),
+        Some("auto"),
+        "a claim from this session, however old, is graded by its run"
+    );
+    let _ = fs::remove_dir_all(&s.dir);
+
+    let s = setup("oldunstamped");
+    stamp(&s, serde_json::Value::Null, "2024-01-01T00:00:00Z");
+    hook(&s, "post-tool", &payload);
+    assert!(
+        resolution(&s).is_none(),
+        "graded an old claim with no session"
+    );
     let _ = fs::remove_dir_all(&s.dir);
 }
