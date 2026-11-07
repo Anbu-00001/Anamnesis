@@ -1506,6 +1506,46 @@ pub fn gate_recalibration_seq(
 /// decision needs — and `exp` would produce `inf`, which serialises to `null`.
 pub const EPROCESS_LOG_CAP: f64 = 27.63; // ≈ ln(10^12)
 
+/// **Sensitivity of the calibration test at this record**: of `sims` simulated forecasters
+/// who made exactly these forecasts, in this order and with these gaps, but whose true
+/// chance on each call was `0.5 + (1 − shrink)·(p − 0.5)`, the share the e-process flags
+/// (final e-value at or above `alarm`). `shrink = 0.3` is a forecaster whose numbers are
+/// 30% too far from 50/50.
+///
+/// A quiet test reads as a clean bill of health unless it says how loud a real error would
+/// have been. Measured on the 0.4.2 binary by an outside review: 60 calls 30% too extreme
+/// were caught in 0 of 40 runs. This is that measurement, on the reader's own forecasts.
+/// Reproducible: the same `seed` gives the same rate. `None` when no step is graded or
+/// `sims` is zero.
+pub fn detection_rate(
+    steps: &[Step],
+    shrink: f64,
+    alarm: f64,
+    sims: usize,
+    seed: u64,
+) -> Option<f64> {
+    if sims == 0 || !steps.iter().any(|s| s.outcome.is_some()) {
+        return None;
+    }
+    let log_alarm = alarm.ln();
+    let mut state = seed;
+    let mut sim = steps.to_vec();
+    let mut hits = 0usize;
+    for _ in 0..sims {
+        for (st, orig) in sim.iter_mut().zip(steps) {
+            if orig.outcome.is_some() {
+                let truth = (0.5 + (1.0 - shrink) * (orig.prob - 0.5)).clamp(0.0, 1.0);
+                let u = (splitmix64(&mut state) >> 11) as f64 / (1u64 << 53) as f64;
+                st.outcome = Some(if u < truth { 1.0 } else { 0.0 });
+            }
+        }
+        if calibration_log_eprocess_seq(&sim).is_some_and(|l| l >= log_alarm) {
+            hits += 1;
+        }
+    }
+    Some(hits as f64 / sims as f64)
+}
+
 /// The mixture e-value on the natural scale, capped at `10^12` so the report
 /// never has to print a 66-digit integer or the word `inf`.
 ///
@@ -2543,5 +2583,31 @@ mod tests {
         // No positive weight, or a length mismatch ⇒ None.
         assert!(brier_weighted(&s, &[0.0, 0.0]).is_none());
         assert!(brier_weighted(&s, &[1.0]).is_none());
+    }
+
+    #[test]
+    fn detection_rate_is_rare_for_a_calibrated_forecaster_and_grows_with_the_error() {
+        let probs = [0.9, 0.8, 0.7, 0.95, 0.85, 0.6, 0.75, 0.9, 0.8, 0.65];
+        let steps: Vec<Step> = (0..200).map(|i| Step::graded(probs[i % 10], 1.0)).collect();
+        let calibrated = detection_rate(&steps, 0.0, 20.0, 400, 7).unwrap();
+        // Ville: a calibrated forecaster reaches 20 at most one time in 20, at any n.
+        assert!(calibrated <= 0.05 + 0.03, "calibrated flagged {calibrated}");
+        let mild = detection_rate(&steps, 0.3, 20.0, 400, 7).unwrap();
+        let strong = detection_rate(&steps, 0.6, 20.0, 400, 7).unwrap();
+        assert!(
+            calibrated < mild && mild < strong,
+            "{calibrated} {mild} {strong}"
+        );
+        assert!(strong > 0.9, "strong {strong}");
+        // reproducible
+        assert_eq!(detection_rate(&steps, 0.3, 20.0, 400, 7).unwrap(), mild);
+        // a gap stays a gap, and it can only lower the rate
+        let mut gapped = steps.clone();
+        for s in gapped.iter_mut().step_by(4) {
+            *s = Step::gap(s.prob);
+        }
+        assert!(detection_rate(&gapped, 0.3, 20.0, 400, 7).unwrap() <= mild + 0.05);
+        assert_eq!(detection_rate(&[Step::gap(0.9)], 0.3, 20.0, 10, 7), None);
+        assert_eq!(detection_rate(&steps, 0.3, 20.0, 0, 7), None);
     }
 }

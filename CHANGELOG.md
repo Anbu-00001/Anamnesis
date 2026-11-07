@@ -3,9 +3,67 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] — 2026-11-07
+
+An outside review drove most of this release, and it was right on each point it checked.
+Every finding was reproduced against the 0.4.2 binary before it was fixed.
+
+### Upgrading from 0.4.x
+
+- `report --json`: `voids.came_due` is now `voids.settled` (claims that came due, resolved or
+  were voided), and every void counts toward the one-in-ten line, not only late ones. A ledger
+  with many early voids can now read `withheld`.
+- A `--by` date in the past is refused. Record past forecasts with `ana import`.
+- `--check true` (and `false`, `:`, `echo`, `printf`, `exit`, `yes`) is refused.
+- `ANAMNESIS_INTROSPECT_EVERY` is now a chance per prompt (1 in N), not a period. `1` still
+  means every prompt.
 
 ### Added
+
+- **The checkpoint is an experiment.** The mid-session calibration checkpoint is shown on a
+  random one prompt in seven, drawn from a hash of the session and prompt number, and every
+  draw is logged to `checkpoints.jsonl` (never the prompt). `validation/effect_report.py`
+  compares the calls made with and without it, by an exact randomization test, under rules
+  fixed before any data in `docs/MEASUREMENT.md`, addendum 3. It is the first measurement in
+  this repository of whether any part of the tool changes what an agent does.
+- **The report says how strong a quiet test is.** Beside "no miscalibration found" it prints
+  how often the test would catch a forecaster 30% too extreme at your own record
+  (`scoring::detection_rate`, a seeded simulation; `sensitivity` in `--json`). At 60 calls that
+  is about 4%, which the old label hid.
+- **The report says when resolved claims join the test**: "30 resolved call(s) join the test on
+  2026-11-14", and that until then the numbers describe rather than decide.
+- Input: `--prob 70%` and `.7` are read; `--prob 70` is refused with the two ways to write it;
+  `--prob -0.2` gets the range error, not a clap parse error; `resolve <id> YES`, `y`, `n` are
+  read; a probability of exactly 0 or 1 prints a note about the log score it risks.
+- The data file reads `"outcome"` as `"true"`/`"false"`, `"yes"`/`"no"` in any case, booleans
+  and `1`/`0`. The example in `docs/DATA_FORMAT.md` is now loaded by a test.
+
+### Fixed
+
+- **Voiding the misses before they came due hid them.** 40 calls at 90% with a far-off
+  `--by`, the 20 winners resolved and the 20 losers voided early, read Brier 0.010, "100%
+  graded" and no warning, because only voids after the due date were counted. Every void now
+  counts, and past one in ten of the settled claims (with at least three voids) the verdict is
+  withheld. Withheld now outranks "not enough data", and under it the report prints no reading.
+  `docs/METHODS.md` no longer calls a pre-due void safe.
+- **Terminal escapes in `list`, `show`, `add` and `amend` output.** A statement imported from
+  someone else's CSV could carry ESC/OSC sequences, bidi overrides or a newline that forged a
+  row. Human-facing text now goes through `untrusted::printable`.
+- **Contradictions at small n.** Below 10 graded calls the rich report leaves out the band, the
+  decomposition, the confidence gap, the vocabulary and the diagram (at n=2 they read "Brier
+  skill −3.000" and a band of [1.000, 1.000]). Discrimination reads n/a when every call
+  resolved the same way, instead of "carries NO information"; `+0.000 (toward NO)` cannot
+  print; a selective line with no misses says so. The deprecated exact-value line is gone.
+- A deadline earlier than the claim's creation no longer puts it into the part of the evidence
+  sequence already read.
+- The post-tool hook named open claims from every project when a test run could not be graded;
+  it names only this project's or this session's.
+- "Not self-reported" overstated auto-grading. The report and hooks now say the grade is not
+  yours but the choice of command was.
+
+### Also in 0.5.0: what is logged, and how (committed 2026-10-19 to 2026-11-05)
+
+#### Added
 
 - **Claims logged inside Claude Code now say which session and repository they came from**
   (`origin`), so the agent's record can be read per session. Nothing renders it, and nothing
@@ -35,7 +93,7 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
   concluded (no comparison under 20 claims per side; one confirmatory look), and the analysis,
   all fixed before any data exists.
 
-### Fixed
+#### Fixed
 
 - **The post-tool nudge matched the words `cargo test` anywhere in a command.** The `ana add
   --check "cargo test"` that logs a pinned prediction therefore told the agent to resolve that

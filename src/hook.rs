@@ -91,8 +91,8 @@ fn standing_line(d: &ReportData) -> Option<String> {
     Some(match d.verdict {
         Verdict::InsufficientData => return None,
         Verdict::Withheld => format!(
-            "NO VERDICT: {} of the {} claims that came due were voided after their due date, so no reading of your {n} graded calls can be trusted. Resolve a claim when it answers; void only a question that stopped making sense before you knew.",
-            d.voids.late, d.voids.came_due
+            "NO VERDICT: {} of your {} settled claims were voided, so no reading of your {n} graded calls can be trusted. Resolve a claim when it answers, even when it went against you; void only a question that stopped making sense, and fix a typo with `ana amend`.",
+            d.voids.total, d.voids.settled
         ),
         Verdict::NoEvidenceOfMiscalibration => format!(
             "no miscalibration found across {n} graded calls — which is not proof you are calibrated, only that nothing shows otherwise"
@@ -240,6 +240,48 @@ fn framed(lines: Vec<String>) -> Vec<String> {
 }
 
 /// The per-session prompt counter, kept next to the ledger. Returns the new count.
+/// Whether prompt `n` of `session` gets the checkpoint: a draw with probability `1/every`.
+///
+/// It used to be every `every`-th prompt, which shows the same amount but can say nothing
+/// about whether it helps: a fixed schedule has no comparison. A draw per prompt, logged
+/// with its probability, is a micro-randomized trial (Klasnja et al. 2015): within one
+/// session, prompts that got it and prompts that did not differ only by chance, so a few
+/// sessions are enough for a randomization test that is exact. The draw is a hash of the
+/// session id and the prompt number, so it is reproducible and cannot depend on what the
+/// prompt says. `every = 1` shows it every time.
+pub(crate) fn checkpoint_drawn(session: &str, n: u64, every: u64) -> bool {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325; // FNV-1a
+    for b in session.bytes().chain(n.to_le_bytes()) {
+        h ^= u64::from(b);
+        h = h.wrapping_mul(0x0100_0000_01b3);
+    }
+    let mut z = h.wrapping_add(0x9e37_79b9_7f4a_7c15); // SplitMix64's finaliser
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^= z >> 31;
+    z.is_multiple_of(every.max(1))
+}
+
+/// One line per prompt in `checkpoints.jsonl`, beside the ledger: which prompt, the chance
+/// it had, and whether it was drawn. Never the prompt. This is the assignment record the
+/// analysis in `validation/effect_report.py` reads; claims are matched to the prompt they
+/// were logged under by their `origin.session` and time.
+fn log_checkpoint(ledger_path: &std::path::Path, session: &str, n: u64, every: u64, drawn: bool) {
+    let rec = json!({
+        "v": 1,
+        "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+        "session": untrusted::tag(session),
+        "prompt": n,
+        "p": 1.0 / every.max(1) as f64,
+        "drawn": drawn,
+        "engine": VERSION,
+    });
+    let _ = store::append_private(
+        &ledger_path.with_file_name("checkpoints.jsonl"),
+        &rec.to_string(),
+    );
+}
+
 fn bump_counter(session: &str) -> u64 {
     let Some(dir) = dirs_counters() else {
         return 1;
@@ -770,8 +812,10 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                     .unwrap_or("default");
                 let every = env_usize("ANAMNESIS_INTROSPECT_EVERY", DEFAULT_EVERY);
                 let n = bump_counter(session);
-                if !n.is_multiple_of(every) {
-                    return Ok(()); // silent on the other six prompts in seven
+                let drawn = checkpoint_drawn(session, n, every);
+                log_checkpoint(ledger_path, session, n, every, drawn);
+                if !drawn {
+                    return Ok(()); // silent on the prompts the draw passed over
                 }
                 context.push(format!(
                     "⟢ Anamnesis (ana {VERSION}) — self-introspection checkpoint (prompt #{n})"
@@ -847,7 +891,7 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                         Ok(resolved) => {
                             let happened = code == 0;
                             context.push(format!(
-                                "⟢ Anamnesis (ana {VERSION}): resolved {} prediction(s) from the command's exit status ({code}) — {}, not self-reported: {}",
+                                "⟢ Anamnesis (ana {VERSION}): resolved {} prediction(s) from the command's exit status ({code}) — {}, graded by the exit status, not by you: {}",
                                 resolved.len(),
                                 if happened { "it passed" } else { "it failed" },
                                 resolved
@@ -864,6 +908,8 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                     }
                 }
                 Grade::Untrusted => {
+                    let project = format!("project:{slug}");
+                    let session = input.get("session_id").and_then(Value::as_str);
                     // A test command ran, but its exit status cannot be trusted
                     // (piped, chained, or no test ran). Say so, and say plainly
                     // that resolving it now is on the agent's word.
@@ -874,6 +920,19 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                         .filter(|c| {
                             c.tags.iter().any(|t| t == "kind:tests-pass")
                                 || c.tags.iter().any(|t| t == "kind:approach")
+                        })
+                        // Only this project's claims, or this session's. It used to name
+                        // open claims from every project on the machine, which an agent
+                        // can only resolve by guessing.
+                        .filter(|c| {
+                            c.tags.iter().any(|t| t == &project)
+                                || session.is_some_and(|s| {
+                                    c.extra
+                                        .get("origin")
+                                        .and_then(|o| o.get("session"))
+                                        .and_then(Value::as_str)
+                                        == Some(s)
+                                })
                         })
                         .take(5)
                         .map(|c| untrusted::tag(&c.id))
@@ -1004,6 +1063,54 @@ fn auto_resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_checkpoint_draw_has_the_logged_chance_and_every_one_always_draws() {
+        let mut drawn = 0;
+        for s in 0..400 {
+            let session = format!("session-{s:04}");
+            for n in 1..=50u64 {
+                drawn += usize::from(checkpoint_drawn(&session, n, 7));
+                assert!(checkpoint_drawn(&session, n, 1));
+                assert!(checkpoint_drawn(&session, n, 0), "0 is read as always");
+            }
+        }
+        // 20,000 draws at 1/7: 2857 expected, sd about 49.
+        assert!((2650..3070).contains(&drawn), "{drawn} of 20000");
+        // The same prompt of the same session always gets the same draw.
+        assert_eq!(checkpoint_drawn("abc", 9, 7), checkpoint_drawn("abc", 9, 7));
+    }
+
+    #[test]
+    fn the_checkpoint_log_records_the_draw_and_never_the_prompt() {
+        let dir = std::env::temp_dir().join(format!("ana-cp-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let ledger = dir.join("agent.json");
+        log_checkpoint(&ledger, "sess-1", 3, 7, true);
+        log_checkpoint(&ledger, "sess-1", 4, 7, false);
+        let text = std::fs::read_to_string(dir.join("checkpoints.jsonl")).unwrap();
+        let rows: Vec<Value> = text
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["prompt"], 3);
+        assert_eq!(rows[0]["drawn"], true);
+        assert_eq!(rows[1]["drawn"], false);
+        assert!((rows[0]["p"].as_f64().unwrap() - 1.0 / 7.0).abs() < 1e-12);
+        let mut keys: Vec<&str> = rows[0]
+            .as_object()
+            .unwrap()
+            .keys()
+            .map(String::as_str)
+            .collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            ["at", "drawn", "engine", "p", "prompt", "session", "v"]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn plain_test_runs_are_graded() {

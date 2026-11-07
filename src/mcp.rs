@@ -1057,7 +1057,7 @@ fn tool_schemas() -> Value {
         },
         {
             "name": "void",
-            "description": "Annul a question that stopped making sense before you knew the answer. It keeps its place in the history but is excluded from every score. A resolved claim cannot be voided. Voids made after a claim's due date are counted, and when they exceed one in ten of the claims that came due the verdict is withheld, so resolve a claim when it answers rather than voiding it.",
+            "description": "Annul a question that stopped making sense before you knew the answer. It keeps its place in the history but is excluded from every score. A resolved claim cannot be voided. Every void is counted, whenever it is made, and past one in ten of the settled claims the verdict is withheld, so resolve a claim when it answers rather than voiding it.",
             "inputSchema": { "$schema": "https://json-schema.org/draft/2020-12/schema", "type": "object", "properties": {
                 "id": { "type": "string", "description": "claim id (any unique prefix)" },
                 "reason": { "type": "string", "description": "why this question cannot fairly be graded" }

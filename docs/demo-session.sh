@@ -10,8 +10,8 @@ set -euo pipefail
 # carry the first command rather than an empty terminal.
 prompt() { printf '\033[1;32m$\033[0m %s\n' "$*"; sleep 0.7; }
 
-prompt 'ana add "the flaky test is a race in the connection pool" --prob 0.7 --by 2026-10-01'
-out="$(ana add "the flaky test is a race in the connection pool" --prob 0.7 --by 2026-10-01)"
+prompt 'ana add "the flaky test is a race in the connection pool" --prob 0.7'
+out="$(ana add "the flaky test is a race in the connection pool" --prob 0.7)"
 echo "$out"
 id="$(sed -n 's/^added \[\([^]]*\)\].*/\1/p' <<<"$out")"
 echo

@@ -70,6 +70,25 @@ pub fn line(s: &str, max: usize) -> String {
     out
 }
 
+/// `s` for a person's terminal: the words as written, but nothing in them can drive it.
+///
+/// `ana list` and `ana show` printed statements raw, so an imported CSV could colour the
+/// screen, move the cursor, set the window title through an OSC sequence, or forge a row
+/// with an embedded newline (found by the external review). Control characters, the C1
+/// range included, become `�`; a line break shows as `⏎`; invisible and direction-changing
+/// characters are dropped. Nothing is cut: this is for a person, who asked to see it all.
+pub fn printable(s: &str) -> String {
+    s.chars()
+        .filter(|c| !is_invisible(*c))
+        .map(|c| match c {
+            '\n' | '\r' => '⏎',
+            '\t' => ' ',
+            c if c.is_control() => '\u{FFFD}',
+            c => c,
+        })
+        .collect()
+}
+
 /// A tag, id or slug: the same treatment, a shorter bound.
 pub fn tag(s: &str) -> String {
     line(s, MAX_TAG)

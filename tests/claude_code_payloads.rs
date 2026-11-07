@@ -109,7 +109,10 @@ fn a_passing_test_run_is_graded_true_from_the_payload_claude_code_really_sends()
             "{name}: graded by an observed fact, not by the agent"
         );
         assert!(note.contains("exited 0"), "{name}: {note}");
-        assert!(out.contains("not self-reported"), "{name}: {out}");
+        assert!(
+            out.contains("graded by the exit status, not by you"),
+            "{name}: {out}"
+        );
         let _ = fs::remove_dir_all(&s.dir);
     }
 }

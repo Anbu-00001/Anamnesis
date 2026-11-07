@@ -237,7 +237,7 @@ fn hindsight_updates_do_not_improve_the_headline() {
                 "--prob",
                 "0.5",
                 "--by",
-                "2020-01-01",
+                &chrono::Utc::now().date_naive().to_string(),
             ],
         );
         assert!(ok);
@@ -1080,7 +1080,7 @@ fn export_removes_every_free_text_field() {
             "--prob",
             "0.7",
             "--by",
-            "2020-01-01",
+            &chrono::Utc::now().date_naive().to_string(),
             "--tags",
             "kind:estimate,who:me,private:very",
             "--because",
@@ -2381,12 +2381,12 @@ fn write_void_ledger(path: &Path, early: usize, late: usize) {
 }
 
 /// Voiding before resolving was silent everywhere: 20 graded calls plus 20 voided ones
-/// read "100% graded (20 of 20)", with no voided count in the report. A void made
-/// while the answer was unknown is honest and is shown. One made after the claim came
-/// due may have been made with the answer in hand; past one in ten of the claims that
-/// came due, no verdict is read, on any surface.
+/// read "100% graded (20 of 20)", with no voided count in the report. Then only voids
+/// made after the due date counted, which left the external review's attack open: answers
+/// known early, misses voided before they came due. Every void counts now. Past one in
+/// ten of the settled claims (and at least three), no verdict is read, on any surface.
 #[test]
-fn late_voids_are_counted_and_past_one_in_ten_the_verdict_is_withheld() {
+fn voids_are_counted_whenever_made_and_past_one_in_ten_the_verdict_is_withheld() {
     let dir = workdir("voidrate");
     let home = dir.join("home");
     fs::create_dir_all(&home).unwrap();
@@ -2396,23 +2396,28 @@ fn late_voids_are_counted_and_past_one_in_ten_the_verdict_is_withheld() {
     let input =
         serde_json::json!({ "session_id": "v", "cwd": cwd.display().to_string() }).to_string();
 
-    // Ten voided before they were due: shown, and not held against anyone.
-    write_void_ledger(&ledger, 10, 0);
+    // 3 voided before they were due, of 33 settled (9.1%): shown, not yet withheld.
+    write_void_ledger(&ledger, 3, 0);
     let j = report_json(&ledger);
-    assert_eq!(j["voids"]["total"], 10);
+    assert_eq!(j["voids"]["total"], 3);
     assert_eq!(j["voids"]["late"], 0);
-    assert_ne!(j["verdict"], "withheld", "honest voids must not withhold");
+    assert_eq!(j["voids"]["settled"], 33);
+    assert_ne!(j["verdict"], "withheld");
     let text = run(&ledger, &["report"]).0;
     assert!(
-        text.contains("Voided: 10 claim(s), 0 of them after"),
+        text.contains("Voided: 3 of 33 settled claim(s) (9%), 0 of them after"),
         "{text}"
     );
 
-    // 3 late of 33 that came due is 9.1%: counted and shown, not yet withheld.
+    // 10 voided early, of 40 settled: early is no excuse any more.
+    write_void_ledger(&ledger, 10, 0);
+    assert_eq!(report_json(&ledger)["verdict"], "withheld");
+
+    // 3 late of 33 is 9.1%: counted and shown, not yet withheld.
     write_void_ledger(&ledger, 0, 3);
     let j = report_json(&ledger);
     assert_eq!(
-        (j["voids"]["late"].as_u64(), j["voids"]["came_due"].as_u64()),
+        (j["voids"]["late"].as_u64(), j["voids"]["settled"].as_u64()),
         (Some(3), Some(33))
     );
     assert_ne!(j["verdict"], "withheld");
@@ -2425,7 +2430,7 @@ fn late_voids_are_counted_and_past_one_in_ten_the_verdict_is_withheld() {
     let rich = run(&ledger, &["report"]).0;
     assert!(rich.contains("WITHHELD"), "{rich}");
     assert!(
-        rich.contains("Voided: 4 claim(s), 4 of them after"),
+        rich.contains("Voided: 4 of 34 settled claim(s) (12%), 4 of them after"),
         "{rich}"
     );
 
@@ -2433,7 +2438,12 @@ fn late_voids_are_counted_and_past_one_in_ten_the_verdict_is_withheld() {
     let plain_raw = run(&ledger, &["report", "--plain"]).0;
     let plain = plain_raw.split_whitespace().collect::<Vec<_>>().join(" ");
     assert!(plain.contains("No verdict"), "{plain_raw}");
-    assert!(plain.contains("You voided 4 call(s)"), "{plain_raw}");
+    assert!(
+        plain.contains("No. 4 of your 34 settled call(s) were voided"),
+        "{plain_raw}"
+    );
+    // No reading under a withheld verdict (invariant 9).
+    assert!(!rich.contains("Brier score"), "{rich}");
     assert!(
         !plain.contains("Yes — you've graded every"),
         "claimed an honest sample:\n{plain_raw}"
@@ -2604,13 +2614,14 @@ fn early_resolved_calls_are_explained_not_silently_missing() {
     let rich = flat(run(&ledger, &["report"]).0);
     assert!(rich.contains("NOT ENOUGH DATA"), "{rich}");
     assert!(
-        rich.contains("30 resolved call(s) are not in the test yet"),
+        rich.contains("30 resolved call(s) join the test on"),
         "{rich}"
     );
-    assert!(rich.contains("however early you resolved it"), "{rich}");
+    assert!(rich.contains("however early it was resolved"), "{rich}");
+    assert!(rich.contains("they do not decide anything"), "{rich}");
     let plain = flat(run(&ledger, &["report", "--plain"]).0);
     assert!(
-        plain.contains("30 resolved call(s) are not in the test yet"),
+        plain.contains("30 resolved call(s) join the test on"),
         "{plain}"
     );
     let _ = fs::remove_dir_all(&dir);
@@ -2667,5 +2678,107 @@ fn a_ledger_with_a_hostile_id_is_refused_at_load() {
         !text.contains("IGNORE PREVIOUS") && !text.contains('⟢'),
         "{text}"
     );
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// The review's input findings, each as it was typed.
+#[test]
+fn the_inputs_a_person_actually_types_are_read_or_refused_plainly() {
+    let dir = workdir("inputs");
+    let ledger = dir.join("l.json");
+    let id = |out: &str| out.split(['[', ']']).nth(1).unwrap().to_string();
+
+    let (o, e, ok) = run(&ledger, &["add", "percent", "--prob", "70%"]);
+    assert!(ok && o.contains("70%"), "{o}{e}");
+    let (o, _, ok) = run(&ledger, &["add", "leading dot", "--prob", ".7"]);
+    assert!(ok && o.contains("70%"), "{o}");
+    let (_, e, ok) = run(&ledger, &["add", "bare percent", "--prob", "70"]);
+    assert!(!ok && e.contains("for 70 percent write 70% or 0.7"), "{e}");
+    let (_, e, ok) = run(&ledger, &["add", "negative", "--prob", "-0.2"]);
+    assert!(!ok && e.contains("between 0 and 1"), "{e}");
+    let (_, e, ok) = run(&ledger, &["add", "certain", "--prob", "1"]);
+    assert!(ok && e.contains("is certainty"), "{e}");
+    let (_, e, ok) = run(
+        &ledger,
+        &["add", "old", "--prob", "0.6", "--by", "2020-01-01"],
+    );
+    assert!(!ok && e.contains("is in the past"), "{e}");
+
+    let (o, _, _) = run(&ledger, &["add", "shouting", "--prob", "0.6"]);
+    let (o, e, ok) = run(&ledger, &["resolve", &id(&o), "YES"]);
+    assert!(ok && o.contains("resolved TRUE"), "{o}{e}");
+    let (o, _, _) = run(&ledger, &["add", "short", "--prob", "0.6"]);
+    let (o, e, ok) = run(&ledger, &["resolve", &id(&o), "n"]);
+    assert!(ok && o.contains("resolved FALSE"), "{o}{e}");
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// `ana import` of someone else's file is how a hostile statement arrives. Human output
+/// must not let it move the cursor, set a title, or forge a row.
+#[test]
+fn a_statement_cannot_drive_the_terminal_or_forge_a_row() {
+    let dir = workdir("escapes");
+    let ledger = dir.join("l.json");
+    let nasty = "ok\u{1b}[2J\u{1b}]0;pwned\u{7}\nzzzzzz  99%  forged row\u{202e}txt.exe\u{9b}31m";
+    fs::write(
+        &ledger,
+        serde_json::json!({"claims": [{
+            "id": "abc123", "statement": nasty, "tags": ["t\u{1b}[31m"], "kind": "binary",
+            "created_at": "2026-09-01T00:00:00Z",
+            "forecasts": [{"at": "2026-09-01T00:00:00Z", "prob": 0.7}]
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    for args in [&["list"][..], &["show", "abc123"][..]] {
+        let (o, e, ok) = run(&ledger, args);
+        assert!(ok, "{e}");
+        for bad in ['\u{1b}', '\u{7}', '\u{202e}', '\u{9b}'] {
+            assert!(!o.contains(bad), "{args:?} printed {bad:?}:\n{o:?}");
+        }
+        assert!(
+            !o.lines().any(|l| l.starts_with("zzzzzz")),
+            "{args:?} let a newline forge a row:\n{o}"
+        );
+    }
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A quiet test must say how loud a real error would have been. The review: 60 calls 30%
+/// too extreme were caught in 0 of 40 runs, under "NO MISCALIBRATION FOUND".
+#[test]
+fn a_quiet_verdict_says_how_often_it_would_catch_a_real_error() {
+    let dir = workdir("sensitivity");
+    let ledger = dir.join("l.json");
+    let claims: Vec<_> = (0..60)
+        .map(|i| {
+            let p = [0.6, 0.7, 0.8, 0.9][i % 4];
+            serde_json::json!({
+                "id": format!("s{i:05}"), "statement": "s", "tags": [], "kind": "binary",
+                "created_at": "2026-09-01T00:00:00Z",
+                "forecasts": [{"at": "2026-09-01T00:00:00Z", "prob": p}],
+                "resolution": {"at": "2026-09-02T00:00:00Z",
+                               // 15 calls per level, true about as often as a
+                               // forecaster 30% too extreme would make them.
+                               "outcome": if i / 4 < [9, 10, 11, 12][i % 4] { "true" } else { "false" }}
+            })
+        })
+        .collect();
+    fs::write(&ledger, serde_json::json!({ "claims": claims }).to_string()).unwrap();
+    let flat = |s: String| s.split_whitespace().collect::<Vec<_>>().join(" ");
+    let rich = flat(run(&ledger, &["report"]).0);
+    if rich.contains("NO MISCALIBRATION FOUND") {
+        assert!(
+            rich.contains("At your 60 calls, this test catches a forecaster 30% too extreme only"),
+            "{rich}"
+        );
+        let json: serde_json::Value =
+            serde_json::from_str(&run(&ledger, &["--json", "report"]).0).unwrap();
+        let s = json["sensitivity"].as_f64().expect("sensitivity in --json");
+        assert!(s < 0.5, "60 calls should not catch a 30% error often: {s}");
+    } else {
+        panic!("this ledger was built to be quiet:\n{rich}");
+    }
+    assert!(!rich.contains("+0.000 (toward"), "{rich}");
     let _ = fs::remove_dir_all(&dir);
 }

@@ -51,6 +51,7 @@ ANAMNESIS — the shape of your judgement
     Your ungraded calls are more CAUTIOUS than your graded ones (boldness 0.62 vs 0.76, ASMD 0.79) — your graded sample leans bold relative to what you actually predicted.
 
   VERDICT          NO MISCALIBRATION FOUND
+                   At your 35 calls, this test catches a forecaster 30% too extreme only 0% of the time, so this silence says little.
 
   Brier score      0.272   (0 = perfect · 0.25 = always 50/50 · lower better)
                    scored on your FIRST forecast — the belief you recorded before the answer was known
@@ -122,10 +123,24 @@ Does not:
 - Claim to make you, or an agent, measurably better at anything. That is
   unmeasured.
 
-Known limits: the evidence test is strong against sharp miscalibration and weak
-against a gentle drift toward 50/50; several claims about one underlying event
-are correlated and can mislead it. Both are quantified in
-[docs/METHODS.md](docs/METHODS.md).
+Known limits:
+
+- **The evidence test is weak against a gentle drift toward 50/50.** At 60 calls it
+  catches a forecaster 30% too extreme only a few percent of the time. So the report
+  now says, beside "no miscalibration found", how often it would have caught an error
+  that size at your record. Several claims about one underlying event are correlated
+  and can mislead it too. Both are quantified in [docs/METHODS.md](docs/METHODS.md).
+- **A claim counts in the test only once it is due**, 7 days after it is logged unless
+  `--by` says otherwise. Thirty calls logged and resolved in an afternoon get "not
+  enough data" for a week, and the report says on what date they join.
+- **Voiding can hide a miss.** Every void is counted, whenever it is made, and past one
+  in ten of your settled calls no verdict is given.
+- **An exit status grades a claim; it does not choose the command.** `--check true` is
+  refused, but a test suite too narrow to fail still passes.
+- **Whether using the tool makes anyone better is unmeasured.** One part of it is now
+  an experiment: the mid-session checkpoint is shown on a random one prompt in seven,
+  and [docs/MEASUREMENT.md](docs/MEASUREMENT.md), addendum 3, fixes how that will be
+  read.
 
 ## For agents
 

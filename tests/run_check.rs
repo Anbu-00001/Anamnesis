@@ -119,8 +119,8 @@ fn a_claim_logged_without_a_check_has_no_check_field_at_all() {
 fn run_grades_true_from_a_zero_exit_and_passes_it_through() {
     let dir = workdir("true");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "the check passes", "true");
-    let o = ana(&ledger, &["run", &id, "--", "true"]);
+    let id = add_pinned(&ledger, "the check passes", "sh -c 'exit 0'");
+    let o = ana(&ledger, &["run", &id, "--", "sh", "-c", "exit 0"]);
     let (out, err) = text(&o);
     assert_eq!(o.status.code(), Some(0), "{out}{err}");
     assert_eq!(outcome(&ledger, &id).as_deref(), Some("true"), "{out}{err}");
@@ -157,8 +157,11 @@ fn run_grades_false_from_a_nonzero_exit_and_passes_the_code_through() {
 fn the_commands_own_output_still_reaches_the_caller() {
     let dir = workdir("tee");
     let ledger = dir.join("l.json");
-    let id = add_pinned(&ledger, "it prints", "echo hello-from-the-check");
-    let o = ana(&ledger, &["run", &id, "--", "echo", "hello-from-the-check"]);
+    let id = add_pinned(&ledger, "it prints", "sh -c 'echo hello-from-the-check'");
+    let o = ana(
+        &ledger,
+        &["run", &id, "--", "sh", "-c", "echo hello-from-the-check"],
+    );
     let (out, _) = text(&o);
     assert!(
         out.contains("hello-from-the-check"),
@@ -174,12 +177,12 @@ fn a_different_command_is_refused_and_never_run() {
     let dir = workdir("mismatch");
     let ledger = dir.join("l.json");
     let marker = dir.join("MARKER");
-    let id = add_pinned(&ledger, "the full suite passes", "false");
+    let id = add_pinned(&ledger, "the full suite passes", "sh -c 'exit 1'");
     let touch = format!("touch {}", marker.display());
     let o = ana(&ledger, &["run", &id, "--", "sh", "-c", &touch]);
     let (_, err) = text(&o);
     assert!(!o.status.success());
-    assert!(err.contains("pinned to `false`"), "{err}");
+    assert!(err.contains("pinned to `sh -c 'exit 1'`"), "{err}");
     assert!(
         !marker.exists(),
         "a command that did not match the pin was executed"
@@ -198,26 +201,28 @@ fn run_needs_an_open_claim_that_has_a_check() {
         let (out, _) = text(&ana(&ledger, &["add", "no check here", "--prob", "0.6"]));
         out.split(['[', ']']).nth(1).unwrap().to_string()
     };
-    let o = ana(&ledger, &["run", &plain, "--", "true"]);
+    let o = ana(&ledger, &["run", &plain, "--", "sh", "-c", "exit 0"]);
     assert!(!o.status.success());
     assert!(text(&o).1.contains("no check pinned"), "{}", text(&o).1);
 
     // Already resolved.
-    let done = add_pinned(&ledger, "resolve me first", "true");
-    assert!(ana(&ledger, &["run", &done, "--", "true"]).status.success());
-    let o = ana(&ledger, &["run", &done, "--", "true"]);
+    let done = add_pinned(&ledger, "resolve me first", "sh -c 'exit 0'");
+    assert!(ana(&ledger, &["run", &done, "--", "sh", "-c", "exit 0"])
+        .status
+        .success());
+    let o = ana(&ledger, &["run", &done, "--", "sh", "-c", "exit 0"]);
     assert!(!o.status.success());
     assert!(text(&o).1.contains("already resolved"), "{}", text(&o).1);
 
     // Void.
-    let gone = add_pinned(&ledger, "a question that went away", "true");
+    let gone = add_pinned(&ledger, "a question that went away", "sh -c 'exit 0'");
     assert!(ana(
         &ledger,
         &["void", &gone, "--reason", "no longer answerable"]
     )
     .status
     .success());
-    let o = ana(&ledger, &["run", &gone, "--", "true"]);
+    let o = ana(&ledger, &["run", &gone, "--", "sh", "-c", "exit 0"]);
     assert!(!o.status.success());
     let _ = fs::remove_dir_all(&dir);
 }
@@ -431,5 +436,40 @@ fn mcp_can_pin_a_check_and_refuses_to_resolve_it_by_hand() {
     assert_eq!(r[0]["result"]["isError"], true, "{text}");
     assert!(text.contains(&format!("ana run {id} --")), "{text}");
     assert!(outcome(&ledger, &id).is_none());
+    let _ = fs::remove_dir_all(&dir);
+}
+
+/// A command that exits the same way whatever happened settles nothing, and grading it
+/// "auto" would launder a self-report as an observation. The review pinned `true`.
+#[test]
+fn a_check_that_cannot_fail_is_refused() {
+    let dir = workdir("vacuous");
+    let ledger = dir.join("l.json");
+    for check in [
+        "true",
+        "false",
+        ":",
+        "echo ok",
+        "/bin/true",
+        "FOO=1 true",
+        "exit 0",
+    ] {
+        let o = ana(
+            &ledger,
+            &[
+                "add",
+                "vacuous",
+                "--prob",
+                "0.8",
+                "--tags",
+                "kind:tests-pass",
+                "--check",
+                check,
+            ],
+        );
+        let (_, err) = text(&o);
+        assert!(!o.status.success(), "--check {check} was accepted");
+        assert!(err.contains("settles nothing"), "{check}: {err}");
+    }
     let _ = fs::remove_dir_all(&dir);
 }

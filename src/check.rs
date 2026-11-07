@@ -109,8 +109,24 @@ pub fn pin(raw: &str) -> Result<String, String> {
     if t.chars().count() > MAX_CHECK {
         return Err(format!("a check is at most {MAX_CHECK} characters"));
     }
-    if split_command(t)?.is_empty() {
+    let words = split_command(t)?;
+    if words.is_empty() {
         return Err("a check must name the command that settles the claim".into());
+    }
+    // A command that exits the same way whatever happened settles nothing, and `ana run`
+    // would still label the grade as coming from an exit status.
+    let program = words
+        .iter()
+        .find(|w| !w.contains('='))
+        .map(|w| w.rsplit('/').next().unwrap_or(w).to_string())
+        .unwrap_or_default();
+    if matches!(
+        program.as_str(),
+        "true" | ":" | "false" | "echo" | "printf" | "exit" | "yes"
+    ) {
+        return Err(format!(
+            "--check `{program}` settles nothing: it exits the same way whatever happened. Pin the command that would fail if you were wrong, such as `cargo test`."
+        ));
     }
     Ok(t.to_string())
 }

@@ -424,11 +424,14 @@ fail" after an hour of debugging — peeking 200 times across 80 seeds:
 Voiding edits the sequence after the fact, and the property above holds only if
 what stays in it was chosen without looking at the outcomes.
 
-- **Voided while the answer was unknown** is fine for the guarantee. The claim
-  carries no outcome, so removing it cannot tell the test anything. It is excluded
-  from the sequence.
-- **Voided after the claim came due, or after it resolved** is different. The person
-  may have known the answer, and choosing what to remove by outcome breaks the fixed
+- **Voided before it came due** was described here, until 0.5.0, as fine for the
+  guarantee, on the reasoning that an unresolved claim carries no outcome. That holds
+  only while the answer is unknown, and a due date is not when an answer arrives: it is
+  the latest it can. An outside review logged 40 calls at 90% with a far-off `--by`,
+  resolved the 20 that came true, voided the 20 that had visibly failed, all before any
+  was due, and read Brier 0.010 with "100% graded" and no warning. Every void was "early".
+- **Voided after the claim came due, or after it resolved**, the person may have known
+  the answer too. Either way, choosing what to remove by outcome breaks the fixed
   prefix, in either direction. Self-flattery is the likely direction (void what went
   badly and every score improves), but a ledger could as easily be tidied toward an
   alarm. The tool cannot tell a question that stopped making sense from an answer
@@ -437,13 +440,15 @@ what stays in it was chosen without looking at the outcomes.
 What it does about that:
 
 1. `void` refuses a claim that has already resolved.
-2. Every void is counted, and every surface (the report, the plain report, the card,
-   the badge, `--json`, the hooks and the MCP `calibration` tool) shows how many came
-   after the due date.
+2. Every void is counted, whenever it was made, and every surface (the report, the
+   plain report, the card, the badge, `--json`, the hooks and the MCP `calibration`
+   tool) shows how many there are and how many came after the due date.
 3. A claim voided after it resolved, which only a ledger from before rule 1 can hold,
    **stays in the evidence sequence**, and the report says how many there are.
-4. If more than one in ten of the claims that came due were voided after their due
-   date or after resolving, **the verdict is withheld** (`withheld`). The scores
+4. If more than one in ten of the settled claims (due, resolved or voided) were voided,
+   at whatever time, and there are at least three voids, **the verdict is withheld**
+   (`withheld`), and no reading is printed under it. This outranks "not enough data",
+   so a new ledger cannot be tidied while none of it is due yet. The scores
    still leave voided claims out, since annulling a question is what void is for, and
    that is exactly why no reading is given: they describe a record that may have been
    tidied.
@@ -451,8 +456,10 @@ What it does about that:
 Measured: 40 calls at 90%, half of them wrong, with the 20 misses voided afterwards
 read as Brier 0.010 and "honest sample: yes" on the plain report, the badge and the
 hook, while only the full report warned. The one-in-ten line is chosen, not derived.
-It is where late voids stop looking like a few bad questions noticed late and start
-looking like a pattern. It lives in `evidence::VOID_WITHHOLD_RATE`.
+It is where voids stop looking like a few bad questions and start looking like a
+pattern; the minimum of three keeps one honest void in a ten-claim ledger from
+withholding everything. Both live in `evidence` (`VOID_WITHHOLD_RATE`,
+`VOID_WITHHOLD_MIN`). On the author's own ledger, 38 voids of 2,359 settled claims (2%).
 
 ### 3c. Multiplicity
 

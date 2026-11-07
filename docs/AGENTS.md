@@ -22,19 +22,24 @@ this repo:
   your standing over/under-confidence into *every* project before you plan — e.g.
   *"OVERCONFIDENT +20pts; worst on kind:bug-hypothesis — add slack."* A companion
   `UserPromptSubmit` hook then re-surfaces that calibration as a **self-introspection
-  checkpoint every 7th prompt**, nudging you to re-read the report and adjust
+  checkpoint on about one prompt in 7**, nudging you to re-read the report and adjust
   mid-session — because the session-start banner is easy to forget twenty edits in.
-  The mechanism is a deterministic counter rather than a reminder to try harder;
-  see [DESIGN.md](DESIGN.md) for the reasoning and its sources.
+  Which prompts get it is drawn at random (a hash of the session and the prompt
+  number, so it is reproducible), and every draw is logged to `checkpoints.jsonl`
+  beside the ledger. That makes it an experiment: prompts with and without the
+  checkpoint differ only by chance, so `validation/effect_report.py` can ask whether
+  it changes anything. The rules are fixed in
+  [MEASUREMENT.md](MEASUREMENT.md), addendum 3.
 
   > **Tuning the cadence —** the checkpoint interval is controlled by the
-  > `ANAMNESIS_INTROSPECT_EVERY` environment variable (**default `7`**). Raise it
+  > `ANAMNESIS_INTROSPECT_EVERY` environment variable (**default `7`**, a chance of
+  > 1 in 7 per prompt; `1` means every prompt, which ends the experiment). Raise it
   > (e.g. `15`) for fewer interruptions on long sessions, or lower it (e.g. `3`) to
   > be reminded more often. Set it in your `~/.claude/settings.json` `env` block, or
   > export it in your shell:
   >
   > ```bash
-  > export ANAMNESIS_INTROSPECT_EVERY=10   # checkpoint every 10th prompt
+  > export ANAMNESIS_INTROSPECT_EVERY=10   # a checkpoint on about one prompt in 10
   > ```
 
   Design notes: [docs/agent-plugin-design.md](agent-plugin-design.md).
@@ -51,7 +56,7 @@ flowchart LR
 
     subgraph S["Claude Code session"]
         H1["SessionStart hook<br/>injects standing calibration"]
-        H2["UserPromptSubmit hook<br/>re-injects every 7th prompt"]
+        H2["UserPromptSubmit hook<br/>re-injects on ~1 prompt in 7, at random"]
         T["MCP tools<br/>predict · update · resolve<br/>decide · recalibrate · calibration<br/>void · amend · list"]
         H3["PostToolUse and PostToolUseFailure hooks on Bash<br/>auto-resolve tests-pass claims<br/>from the exit status of a plain test run"]
         H4["Stop hook<br/>tells you once per session how many are overdue"]
@@ -92,7 +97,7 @@ which works — but a real deadline is better, because it is the date you actual
 expect to know, and it keeps a long-horizon prediction from sitting at the front
 of the queue blocking everything behind it.
 
-## Auto-resolution: the part that does not rest on your word
+## Auto-resolution: the part that rests least on your word
 
 When a plain test command settles an open `kind:tests-pass` claim for the current
 project, the hooks grade it **from the command's exit status**, recording
@@ -144,7 +149,7 @@ chooses that run. Log a "the tests pass" call and then run one narrow test, and 
 claim is settled by it. Pinning closes that:
 
 ```bash
-ana add "the suite passes" --prob 0.8 --by 2026-10-20 --tags kind:tests-pass --check "cargo test"
+ana add "the suite passes" --prob 0.8 --by "$(date +%F)" --tags kind:tests-pass --check "cargo test"
 ana run <id> -- cargo test
 ```
 

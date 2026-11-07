@@ -26,10 +26,16 @@ fn ana(data: &str, args: &[&str]) -> (String, String, bool) {
 /// The sequential test orders by resolve-by (fixed at creation) and only counts
 /// claims whose date has passed — a claim with no date has no outcome-independent
 /// place in the sequence and is deliberately excluded.
-const PAST_DUE: &str = "2020-01-01";
+/// Due the day it is written, so it counts at once. A deadline in the past is refused.
+fn due_now() -> String {
+    chrono::Utc::now().date_naive().to_string()
+}
 
 fn add_resolve(data: &str, prob: &str, outcome: &str) {
-    let (o, _, ok) = ana(data, &["add", "canned claim", "-p", prob, "--by", PAST_DUE]);
+    let (o, _, ok) = ana(
+        data,
+        &["add", "canned claim", "-p", prob, "--by", &due_now()],
+    );
     assert!(ok, "add({prob}) failed: {o}");
     let id = extract_id(&o);
     let (o, e, ok) = ana(data, &["resolve", &id, outcome]);
@@ -142,7 +148,10 @@ fn full_lifecycle() {
 
     // report works on a real ledger -------------------------------------
     let (o, _, ok) = ana(data, &["report"]);
-    assert!(ok && o.contains("Brier score") && o.contains("Reliability diagram"));
+    assert!(ok && o.contains("Brier score"), "{o}");
+    // A handful of graded calls: the diagram and the band would describe noise.
+    assert!(o.contains("Below 10, the band"), "{o}");
+    assert!(!o.contains("Reliability diagram"), "{o}");
 
     // input validation ---------------------------------------------------
     let (_, e, ok) = ana(data, &["add", "bad", "-p", "1.5"]);
@@ -364,7 +373,7 @@ fn add_resolve_tagged(data: &str, prob: &str, outcome: &str, tags: &str) {
             "--tags",
             tags,
             "--by",
-            PAST_DUE,
+            &due_now(),
         ],
     );
     assert!(ok, "tagged add({prob}) failed: {o}");
@@ -525,10 +534,21 @@ fn resolution_discipline_end_to_end() {
     for p in ["0.55", "0.6", "0.5"] {
         let (o, _, ok) = ana(
             data,
-            &["add", "cautious & forgotten", "-p", p, "--by", "2020-01-01"],
+            &["add", "cautious & forgotten", "-p", p, "--by", &due_now()],
         );
         assert!(ok, "overdue add failed: {o}");
     }
+    // A past deadline is refused at the door, so make these overdue the way time would.
+    let mut led: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(data).unwrap()).unwrap();
+    for c in led["claims"].as_array_mut().unwrap() {
+        if c["statement"] == "cautious & forgotten" {
+            c["created_at"] = "2020-01-01T00:00:00Z".into();
+            c["forecasts"][0]["at"] = "2020-01-01T00:00:00Z".into();
+            c["resolve_by"] = "2020-01-02".into();
+        }
+    }
+    std::fs::write(data, led.to_string()).unwrap();
 
     let (o, _, ok) = ana(data, &["report"]);
     assert!(ok, "report should succeed:\n{o}");
@@ -558,4 +578,32 @@ fn resolution_discipline_end_to_end() {
     );
 
     std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The external review loaded the documented example and the tool refused it
+/// (`unknown variant 'no'`). The doc is meant to be readable without this program, so its
+/// example is loaded here, verbatim, every run.
+#[test]
+fn the_data_format_example_loads() {
+    let doc = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/DATA_FORMAT.md"))
+        .unwrap();
+    let example = doc
+        .split("```json\n")
+        .nth(1)
+        .and_then(|rest| rest.split("```").next())
+        .expect("a json block");
+    let dir = std::env::temp_dir().join(format!("ana_docfmt_{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let data = dir.join("doc.json");
+    std::fs::write(&data, example).unwrap();
+    let (o, e, ok) = ana(data.to_str().unwrap(), &["list"]);
+    assert!(ok, "the documented example does not load:\n{o}{e}");
+    assert!(o.contains("3ef7f5"), "{o}");
+    // and the looser spellings a person might write by hand
+    for word in ["\"no\"", "\"No\"", "\"YES\"", "false", "true", "0"] {
+        std::fs::write(&data, example.replace("\"false\"", word)).unwrap();
+        let (o, e, ok) = ana(data.to_str().unwrap(), &["list"]);
+        assert!(ok, "outcome {word} was refused:\n{o}{e}");
+    }
+    let _ = std::fs::remove_dir_all(&dir);
 }

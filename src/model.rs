@@ -27,11 +27,45 @@ pub enum ClaimKind {
 }
 
 /// What actually happened for a *binary* claim.
-#[derive(Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+///
+/// Written as `"true"` or `"false"`. Read more loosely: `yes`/`no`, `y`/`n`, any case, a JSON
+/// boolean, or `1`/`0`. The documented format's own example said `"no"` and the reader
+/// refused it, in the one file meant to be readable without this program.
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum Outcome {
     True,
     False,
+}
+
+impl<'de> Deserialize<'de> for Outcome {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct Words;
+        impl serde::de::Visitor<'_> for Words {
+            type Value = Outcome;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an outcome: \"true\" or \"false\" (yes/no and booleans are read too)")
+            }
+            fn visit_bool<E: serde::de::Error>(self, v: bool) -> Result<Outcome, E> {
+                Ok(if v { Outcome::True } else { Outcome::False })
+            }
+            fn visit_u64<E: serde::de::Error>(self, v: u64) -> Result<Outcome, E> {
+                match v {
+                    1 => Ok(Outcome::True),
+                    0 => Ok(Outcome::False),
+                    _ => Err(E::custom(format!("an outcome of {v}: use true or false"))),
+                }
+            }
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Outcome, E> {
+                match v.trim().to_ascii_lowercase().as_str() {
+                    "true" | "yes" | "y" | "1" => Ok(Outcome::True),
+                    "false" | "no" | "n" | "0" => Ok(Outcome::False),
+                    _ => Err(E::custom(format!("an outcome of {v:?}: use true or false"))),
+                }
+            }
+        }
+        d.deserialize_any(Words)
+    }
 }
 
 impl Outcome {

@@ -17,11 +17,15 @@ one tool can read.
         { "at": "2026-01-04T10:00:00Z", "prob": 0.35, "because": "halving tailwind, macro headwind" },
         { "at": "2026-06-01T09:00:00Z", "prob": 0.20, "because": "rally fizzled" }
       ],
-      "resolution": { "at": "2026-12-31T12:00:00Z", "outcome": "no", "note": "anchored on the bull case too long" }
+      "resolution": { "at": "2026-12-31T12:00:00Z", "outcome": "false", "note": "anchored on the bull case too long" }
     }
   ]
 }
 ```
+
+`outcome` is written `"true"` or `"false"`. When reading, `"yes"`/`"no"` in any case, a JSON
+boolean and `1`/`0` are accepted too. The example above is loaded by the test suite
+(`the_data_format_example_loads`), so it cannot drift from what the tool reads again.
 
 A claim is a **palimpsest**: every revision is *appended*, never overwritten. Writes are atomic (temp file + rename), so a crash mid-save never corrupts the record.
 
@@ -36,7 +40,7 @@ That is guarded by `a_v0_3_0_ledger_still_loads_and_reports` in
 | field | meaning |
 |---|---|
 | `check` | The exact command that settles the claim, pinned when it was logged: `cargo test`. Only compared, never executed; `ana run <id> -- <command>` runs the command it is given, and grades the claim only if it matches. Absent unless set. |
-| `void` | `{at, reason}` — the question was annulled. Kept in history, excluded from every score. A resolved claim cannot be voided, and voids made after the due date are counted: past one in ten of the claims that came due, the verdict is withheld. |
+| `void` | `{at, reason}` — the question was annulled. Kept in history, excluded from every score. A resolved claim cannot be voided. Every void counts, whenever it was made: past one in ten of the settled claims (due, resolved or voided), and at least three, the verdict is withheld. |
 | `amendments` | `[{at, old_statement, new_statement, old_tags, new_tags}]` — corrections to wording or tags, pre-resolution only. |
 | `resolution.resolved_by` | `self` (default, not written), `auto` (graded from an observed fact, e.g. a test run's exit status) or `human`. |
 | `stake` | how much the call matters; `1.0` by default and not written when default. |
@@ -77,6 +81,8 @@ on your disk, and if you want to lie to yourself you can always open it in an
 editor. What the tool prevents is lying to yourself *by accident*, which is the
 thing that actually happens.
 
-The one part that does not rest on your word is `resolved_by: auto` — claims graded
-from a command's exit status rather than from anyone's account of what happened.
-The report shows what fraction of your record those make up.
+The part that rests least on your word is `resolved_by: auto`: claims graded from a
+command's exit status rather than from anyone's account of what happened. The grade is
+not yours; the command was. A command that settles nothing (`true`, `echo`) is refused
+by `--check`, but a test suite too narrow to fail still passes. The report shows what
+fraction of your record those make up.

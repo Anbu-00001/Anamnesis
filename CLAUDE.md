@@ -35,7 +35,10 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   opposite" second — an elicitation aid, not a score) and a **conformal interval
   recalibration** (`conformal_width_factor`: the multiplier on your credible-interval
   half-widths that makes them hit nominal coverage — the numeric analogue of the
-  recalibration map, the split-conformal quantile of standardized residuals). This is
+  recalibration map, the split-conformal quantile of standardized residuals) and a
+  **sensitivity simulation** (`detection_rate`: how often the e-process would flag a
+  forecaster `SENSITIVITY_SHRINK` too extreme on these very forecasts — printed beside
+  "no miscalibration found" so a quiet test is not read as a clean bill). This is
   the load-bearing core; everything else is plumbing. Types: `Sample` (binary),
   `NumericSample` (interval). Tier 3 reuses the e-process two more ways: per-`kind:`
   (multicalibration — which prediction *type* is really miscalibrated, anytime-valid
@@ -76,7 +79,11 @@ not the same as knowing how sure to be (calibration).** The report shows both.
   events are registered, and `test_run` refuses anything a pipe, `||`, `;` or `&` could
   make lie. Tested against real captured payloads (`tests/fixtures/`), never against
   payloads this repo wrote for itself: the old hook read a field Claude Code never
-  sent, and graded nothing for a release cycle. Every hook's first line names the engine that
+  sent, and graded nothing for a release cycle. The user-prompt checkpoint is a
+  **micro-randomized trial**: `checkpoint_drawn` hashes (session, prompt number) to a
+  1-in-N draw and `checkpoints.jsonl` logs every draw (never the prompt), so
+  `validation/effect_report.py` can test whether it changes anything (`docs/MEASUREMENT.md`,
+  addendum 3). Don't turn it back into a fixed period: that removes the only comparison. Every hook's first line names the engine that
   wrote it (`(ana X.Y.Z)`), and both launchers (`plugin/hooks/_run.sh`,
   `plugin/mcp-server.sh`) run the newest engine available rather than the first on
   `PATH` — an older `ana` earlier on `PATH` once made every hook on a machine run
@@ -192,9 +199,12 @@ not the same as knowing how sure to be (calibration).** The report shows both.
    a ledger with a −0.520 Brier skill had a gap of −1e-15 and was announced as
    `[DIALED IN] · well calibrated`. Never derive a pass/fail from the gap. The
    verdict is also **withheld** (`Verdict::Withheld`) when more than one in ten of the
-   claims that came due were voided late (`evidence::VoidAccount`): every score
-   drops voided claims, so past that line they describe a tidied record. Every
-   surface reads that too, and none may print a reading under it.
+   settled claims were voided, at whatever time, with at least three voids
+   (`evidence::VoidAccount`): every score drops voided claims, so past that line they
+   describe a tidied record. **Count every void, not only late ones**: a due date is
+   the latest an answer can arrive, not when it does, and voiding the visible misses
+   early read Brier 0.010 with no warning until 0.5.0. Withheld outranks "not enough
+   data". Every surface reads that too, and none may print a reading under it.
 10. **Every mutating command holds the lock** across load and save
    (`Cmd::mutates()`, `store::lock`). Without it, 40 parallel `ana add` calls left
    7–19 claims of 40, almost silently. The one exception is `ana run`: a test run can
@@ -252,8 +262,9 @@ it is the point.
   behind — prefer the agent ledger.) The SessionStart hook reads it to greet every
   session with your standing over/under-confidence; a `UserPromptSubmit` hook
   (`plugin/hooks/user-prompt.sh`, mirrored live at `~/.anamnesis/hooks/user-prompt.sh`)
-  then re-injects it as a **self-introspection checkpoint every 7th prompt**
-  (`ANAMNESIS_INTROSPECT_EVERY`) — a mechanical counter, because you will not
+  then re-injects it as a **self-introspection checkpoint on about one prompt in 7**, drawn at random and logged
+  (`ANAMNESIS_INTROSPECT_EVERY`; `checkpoints.jsonl`, so `validation/effect_report.py` can
+  measure whether it helps) — mechanical, because you will not
   remember to self-audit on your own. When that checkpoint fires, actually run
   `ana report --tag who:claude` and adjust; don't just acknowledge it.
 - **Protocol**: at the start of a non-trivial task, log honest predictions *before*

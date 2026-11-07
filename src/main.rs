@@ -18,6 +18,7 @@ use anamnesis::model::{
     Outcome, Resolution,
 };
 use anamnesis::scoring::{self, NumericSample};
+use anamnesis::untrusted::printable;
 use anamnesis::{mcp, report, store};
 
 #[derive(Parser)]
@@ -48,8 +49,8 @@ enum Cmd {
     Add {
         /// The falsifiable statement
         statement: String,
-        /// BINARY: probability it is true, 0..1 (e.g. 0.7)
-        #[arg(short, long)]
+        /// BINARY: probability it is true: 0.7, .7 or 70%
+        #[arg(short, long, value_parser = prob_arg, allow_negative_numbers = true)]
         prob: Option<f64>,
         /// NUMERIC: credible interval "LOW..HIGH" (e.g. 120..180)
         #[arg(long, value_name = "LOW..HIGH")]
@@ -73,7 +74,7 @@ enum Cmd {
         /// BINARY: a SECOND, deliberately-opposite estimate ("consider the
         /// opposite"); the logged probability is the average of the two
         /// (dialectical bootstrapping — the wisdom of your own crowd)
-        #[arg(long)]
+        #[arg(long, value_parser = prob_arg, allow_negative_numbers = true)]
         second_prob: Option<f64>,
         /// The OUTSIDE VIEW: a reference class of similar past cases and its base
         /// rate, recorded with the forecast
@@ -96,8 +97,8 @@ enum Cmd {
     /// Revise a belief (history is preserved). Match the claim's kind.
     Update {
         id: String,
-        /// BINARY: new probability, 0..1
-        #[arg(short, long)]
+        /// BINARY: new probability: 0.7, .7 or 70%
+        #[arg(short, long, value_parser = prob_arg, allow_negative_numbers = true)]
         prob: Option<f64>,
         /// NUMERIC: new interval "LOW..HIGH"
         #[arg(long, value_name = "LOW..HIGH")]
@@ -111,8 +112,8 @@ enum Cmd {
     /// Resolve a belief. BINARY: yes/no. NUMERIC: --value N.
     Resolve {
         id: String,
-        /// BINARY outcome: yes/true or no/false
-        #[arg(value_enum)]
+        /// BINARY outcome: yes/true/y or no/false/n, in any case
+        #[arg(value_enum, ignore_case = true)]
         outcome: Option<OutcomeArg>,
         /// NUMERIC outcome: the value that occurred
         #[arg(long)]
@@ -157,8 +158,8 @@ enum Cmd {
     /// Should you act on it? Corrects a stated probability through your earned
     /// recalibration map, then applies a stake-aware threshold: PROCEED / VERIFY / ABSTAIN.
     Decide {
-        /// Your stated success probability, 0..1
-        #[arg(long, short = 'p')]
+        /// Your stated success probability: 0.7, .7 or 70%
+        #[arg(long, short = 'p', value_parser = prob_arg, allow_negative_numbers = true)]
         prob: f64,
         /// Cost of a wrong action relative to one verification (1 = ordinary; raise it
         /// for consequential or irreversible calls — the bar to proceed climbs with it)
@@ -284,9 +285,9 @@ impl From<HookEvent> for anamnesis::hook::Event {
 
 #[derive(Clone, Copy, ValueEnum)]
 enum OutcomeArg {
-    #[value(alias = "true")]
+    #[value(alias = "true", alias = "y")]
     Yes,
-    #[value(alias = "false")]
+    #[value(alias = "false", alias = "n")]
     No,
 }
 
@@ -429,7 +430,7 @@ fn cmd_run(cli: &Cli, id: &str, command: &[String]) -> Result<ExitCode, String> 
             brier
         );
         println!(
-            "  graded from `{}` exiting {code}, not by you.",
+            "  graded from `{}` exiting {code}, the command you pinned before the outcome. Grading is not up to you; choosing that command was.",
             line(&cmdline, MAX_LINE)
         );
     }
@@ -935,6 +936,49 @@ fn split_csv(line: &str) -> Vec<String> {
     out
 }
 
+/// A probability as people write one: `0.7`, `.7` or `70%`.
+///
+/// A bare `70` is refused with the fix, not read as 70%: it is as likely to be a slip for
+/// `0.70` as for `0.07`, and guessing would put a wrong number in a record that cannot be
+/// edited. A negative number reaches here too (`allow_negative_numbers`), so it gets this
+/// message instead of clap's "unexpected argument '-0'".
+fn prob_arg(s: &str) -> Result<f64, String> {
+    let t = s.trim();
+    let (num, percent) = match t.strip_suffix('%') {
+        Some(n) => (n.trim(), true),
+        None => (t, false),
+    };
+    let v: f64 = num
+        .parse()
+        .map_err(|_| format!("'{s}' is not a probability; write it as 0.7 or 70%"))?;
+    if !percent && v > 1.0 && v <= 100.0 {
+        return Err(format!(
+            "probability must be between 0 and 1, got {v}; for {v} percent write {v}% or {}",
+            v / 100.0
+        ));
+    }
+    let p = if percent { v / 100.0 } else { v };
+    if !p.is_finite() || !(0.0..=1.0).contains(&p) {
+        return Err(format!("probability must be between 0 and 1, got {s}"));
+    }
+    Ok(p)
+}
+
+/// Words for a deadline that is already behind us. A claim logged with one is due the
+/// moment it is written, its answer often already known, and it is not a prediction.
+///
+/// `today` is the UTC date, and a person west of Greenwich can be a day behind it: at 8pm
+/// in California it is already tomorrow in UTC, and the local date they type, which the
+/// standing rule tells an agent to type, must not be refused. So one day of slack.
+fn check_deadline(by: NaiveDate, today: NaiveDate) -> Result<(), String> {
+    if by < today - chrono::Duration::days(1) {
+        return Err(format!(
+            "--by {by} is in the past: a claim must be logged before its answer can be known. Use today ({today}) or later; to record past forecasts, use `ana import`."
+        ));
+    }
+    Ok(())
+}
+
 fn check_prob(p: f64) -> Result<(), String> {
     if (0.0..=1.0).contains(&p) {
         Ok(())
@@ -1052,6 +1096,15 @@ fn run(cli: Cli) -> Result<(), String> {
             }
             let resolve_by = by.as_deref().map(parse_date).transpose()?;
             let now = Utc::now();
+            if let Some(d) = resolve_by {
+                check_deadline(d, now.date_naive())?;
+            }
+            if let Some(p) = prob.filter(|p| *p == 0.0 || *p == 1.0) {
+                eprintln!(
+                    "note: {} is certainty. If it turns out wrong, its log score is the worst there is (clamped to 13.8); say 0.99 or 0.01 if any doubt is left.",
+                    pct(p)
+                );
+            }
 
             let (kind, forecast) = match (prob, interval) {
                 (Some(_), Some(_)) => {
@@ -1149,15 +1202,20 @@ fn run(cli: Cli) -> Result<(), String> {
             } else {
                 match kind {
                     ClaimKind::Binary => {
-                        println!("added [{id}]  {}  \"{statement}\"", pct(disp_prob.unwrap()))
+                        println!(
+                            "added [{id}]  {}  \"{}\"",
+                            pct(disp_prob.unwrap()),
+                            printable(&statement)
+                        )
                     }
                     ClaimKind::Numeric => {
                         let iv = disp_iv.unwrap();
                         println!(
-                            "added [{id}]  {:.0}% interval [{}, {}]  \"{statement}\"",
+                            "added [{id}]  {:.0}% interval [{}, {}]  \"{}\"",
                             iv.level * 100.0,
                             iv.low,
-                            iv.high
+                            iv.high,
+                            printable(&statement)
                         )
                     }
                 }
@@ -1441,7 +1499,7 @@ fn run(cli: Cli) -> Result<(), String> {
             if cli.json {
                 out_json(json!({"id": cid, "statement": statement, "tags": tags}));
             } else {
-                println!("[{cid}] amended — \"{statement}\"");
+                println!("[{cid}] amended — \"{}\"", printable(&statement));
                 if !tags.is_empty() {
                     println!("  tags: {}", tags.join(", "));
                 }
@@ -1531,14 +1589,14 @@ fn run(cli: Cli) -> Result<(), String> {
                 let tags = if c.tags.is_empty() {
                     String::new()
                 } else {
-                    format!(" [{}]", c.tags.join(","))
+                    format!(" [{}]", printable(&c.tags.join(",")))
                 };
                 println!(
                     "{:<6}  {:>9}  {:<11}  {}{tags}",
                     c.id,
                     belief,
                     status,
-                    truncate(&c.statement, 52)
+                    truncate(&printable(&c.statement), 52)
                 );
             }
             if shown == 0 {
@@ -1553,7 +1611,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 out_json(serde_json::to_value(c).map_err(|e| e.to_string())?);
                 return Ok(());
             }
-            println!("[{}]  {}", c.id, c.statement);
+            println!("[{}]  {}", c.id, printable(&c.statement));
             println!(
                 "  kind: {}",
                 match c.kind {
@@ -1566,7 +1624,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 println!("  resolve by {d}");
             }
             if !c.tags.is_empty() {
-                println!("  tags: {}", c.tags.join(", "));
+                println!("  tags: {}", printable(&c.tags.join(", ")));
             }
             if let Some(check) = &c.check {
                 let shown = anamnesis::untrusted::line(check, anamnesis::untrusted::MAX_LINE);
@@ -1580,18 +1638,23 @@ fn run(cli: Cli) -> Result<(), String> {
                     "  VOID since {} — excluded from every score",
                     v.at.date_naive()
                 );
-                println!("    reason: {}", v.reason);
+                println!("    reason: {}", printable(&v.reason));
             }
             for a in &c.amendments {
                 if let (Some(o), Some(n)) = (&a.old_statement, &a.new_statement) {
-                    println!("  amended {}: \"{o}\" → \"{n}\"", a.at.date_naive());
+                    println!(
+                        "  amended {}: \"{}\" → \"{}\"",
+                        a.at.date_naive(),
+                        printable(o),
+                        printable(n)
+                    );
                 }
                 if let (Some(o), Some(n)) = (&a.old_tags, &a.new_tags) {
                     println!(
                         "  amended {}: tags [{}] → [{}]",
                         a.at.date_naive(),
-                        o.join(", "),
-                        n.join(", ")
+                        printable(&o.join(", ")),
+                        printable(&n.join(", "))
                     );
                 }
             }
@@ -1611,7 +1674,7 @@ fn run(cli: Cli) -> Result<(), String> {
                 };
                 println!("    {marker} {}  {}", f.at.date_naive(), belief);
                 if let Some(b) = &f.because {
-                    println!("        because: {b}");
+                    println!("        because: {}", printable(b));
                 }
             }
             match &c.resolution {
@@ -1625,7 +1688,7 @@ fn run(cli: Cli) -> Result<(), String> {
                             };
                             let how = match r.resolved_by {
                                 Some(anamnesis::model::ResolvedBy::Auto) => {
-                                    "  (graded automatically, not self-reported)"
+                                    "  (graded from the exit status of the command pinned when it was logged)"
                                 }
                                 Some(anamnesis::model::ResolvedBy::Human) => {
                                     "  (graded by a human)"
@@ -1665,7 +1728,7 @@ fn run(cli: Cli) -> Result<(), String> {
                         }
                     }
                     if let Some(n) = &r.note {
-                        println!("    post-mortem: {n}");
+                        println!("    post-mortem: {}", printable(n));
                     }
                 }
                 None => println!("  (open — reality has not yet spoken)"),
@@ -1797,5 +1860,38 @@ fn truncate(s: &str, max: usize) -> String {
         let mut t: String = s.chars().take(max.saturating_sub(1)).collect();
         t.push('…');
         t
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_deadline_is_refused_only_when_it_is_past_everywhere() {
+        let today = NaiveDate::from_ymd_opt(2026, 11, 8).unwrap();
+        assert!(check_deadline(today, today).is_ok());
+        // A local date west of UTC.
+        assert!(check_deadline(NaiveDate::from_ymd_opt(2026, 11, 7).unwrap(), today).is_ok());
+        let e = check_deadline(NaiveDate::from_ymd_opt(2026, 11, 6).unwrap(), today).unwrap_err();
+        assert!(e.contains("is in the past"), "{e}");
+    }
+
+    #[test]
+    fn probabilities_are_read_as_people_write_them() {
+        for (s, want) in [
+            ("0.7", 0.7),
+            (".7", 0.7),
+            ("70%", 0.7),
+            ("0%", 0.0),
+            ("100%", 1.0),
+            ("1", 1.0),
+        ] {
+            assert!((prob_arg(s).unwrap() - want).abs() < 1e-12, "{s}");
+        }
+        assert!(prob_arg("70").unwrap_err().contains("write 70% or 0.7"));
+        for bad in ["-0.2", "1.5", "150%", "nan", "inf", "seventy"] {
+            assert!(prob_arg(bad).is_err(), "{bad} was accepted");
+        }
     }
 }

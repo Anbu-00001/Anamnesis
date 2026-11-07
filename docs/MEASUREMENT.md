@@ -191,11 +191,70 @@ are not what holds the figure down.
    describe these sessions and nothing else.
 4. A week may simply not reach rule 3. That is a result, and the next release does not wait for it.
 
+## Addendum 3, 2026-11-07: an experiment on the checkpoint, before any data
+
+Written before a single draw was logged. Everything above asks whether the protocol runs and
+is followed. None of it can say whether the tool makes anyone better, because nothing is ever
+withheld: there is no comparison. This adds one, for the one part that can be withheld
+without losing anything that matters.
+
+**The design.** From 0.5.0, the mid-session checkpoint (`ana hook user-prompt`) is no longer
+shown on every 7th prompt. Each prompt gets it with probability 1/7, drawn from a hash of the
+session id and the prompt number, and every draw is logged to `checkpoints.jsonl` beside the
+ledger: time, session, prompt number, the probability, whether it was drawn. Never the prompt.
+This is a micro-randomized trial (Klasnja et al. 2015; Boruvka et al. 2018): within a session,
+prompts that got the checkpoint and prompts that did not differ only by the draw. A claim
+logged inside Claude Code carries `origin.session`, and is assigned to the latest prompt of
+that session at or before its creation time.
+
+**The question.** Do the calls made right after the standing calibration is shown score
+better than calls made without it?
+
+**Rules**, implemented by `validation/effect_report.py`, which does not get to pick them:
+
+1. **Primary outcome:** the mean Brier score (first forecast) of the graded binary claims
+   logged under a prompt, one value per prompt. Lower is better. Two-sided randomization test
+   of the sharp null "the checkpoint changes nothing", at α = 0.05: the logged assignments are
+   re-drawn from their logged probabilities, 10,000 times, outcomes held fixed.
+2. **One confirmatory reading**, when 40 drawn prompts have a graded claim, or on 2026-12-19
+   (six weeks), whichever comes first. Every reading before or after is exploratory, and is
+   labelled so. No arm with fewer than 10 prompts gets a comparison.
+3. **Secondary outcomes, all exploratory:** the confidence gap per prompt, the share of
+   exit-graded `kind:tests-pass` claims that passed, claims logged per prompt (every prompt
+   counts, zero included), and the share of test runs through `ana run` (protocol log v3).
+4. **Nothing is dropped.** Prompts without a claim count where the outcome allows it (claims
+   logged per prompt), and a claim graded late counts at the prompt it was logged under.
+5. **The probability stays 1/7** until the confirmatory reading. A session that sets
+   `ANAMNESIS_INTROSPECT_EVERY` logs its own probability, and the test uses what was logged.
+
+**Why the test is valid, and where it is weak.**
+
+- The p-value rests on the draw alone: no model of sessions, no assumption that they are
+  alike or many, which is what limits every figure above (addendum 2, rule 2). An exact
+  randomization test stays exact when an effect carries over to later prompts, as long as a
+  draw cannot depend on what happens after it (Bojinov & Shephard 2019). Ours cannot: it is a
+  hash of the session id and the prompt number.
+- **Carryover dilutes.** A checkpoint at prompt 9 may still shape prompt 10, which is in the
+  "not drawn" arm. That pulls the two arms together, so a real effect is under-read, never
+  invented.
+- **The primary outcome exists only where a claim was graded.** If the checkpoint changes
+  whether a claim gets logged, the two arms' claims are no longer comparable sets. The test of
+  the sharp null stays valid, since under it nothing changes, but the size of a difference
+  then mixes "better calls" with "different calls". Claims logged per prompt is the check.
+- **Power is likely low.** About one prompt in seven is drawn, and most prompts log no graded
+  claim. A null at the confirmatory reading is the expected result unless the effect is large,
+  and it is reported as a null, not as proof of none.
+
+**What it can show:** whether seeing the standing calibration mid-session changes the calls
+made right after it. **What it cannot:** the effect of the tool as a whole, which is always on,
+or of the session-start line, which every session gets. Those stay unmeasured.
+
 ## Running it
 
 ```bash
 python3 validation/protocol_report.py                 # everything
 python3 validation/protocol_report.py --since 2026-10-20   # Q2: the fixed logger (addendum 1)
+python3 validation/effect_report.py                   # the checkpoint experiment (addendum 3)
 ```
 
 ## Switching it off

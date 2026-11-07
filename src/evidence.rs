@@ -174,7 +174,10 @@ fn horizon_days() -> i64 {
 /// written before horizons were recorded. All of these are fixed before the
 /// outcome, which is the only property the guarantee needs.
 fn due_key(c: &Claim) -> NaiveDate {
-    c.resolve_by.unwrap_or_else(|| {
+    // Never before the claim was written. A deadline already past would put a new claim
+    // into the middle of the sequence already read, and the order must only grow at its end.
+    let written = c.created_at.date_naive();
+    c.resolve_by.map(|d| d.max(written)).unwrap_or_else(|| {
         let days = c.horizon_days.unwrap_or_else(horizon_days);
         c.created_at.date_naive() + chrono::Duration::days(days)
     })
@@ -197,26 +200,35 @@ pub struct VoidAccount {
     pub total: usize,
     /// Of those, the ones made after the claim came due or after it resolved.
     pub late: usize,
-    /// Claims in scope that have come due, or were voided late: the denominator
-    /// `late` is a share of. Voided claims are in it; they came due too.
-    pub came_due: usize,
+    /// Claims in scope that came due, resolved or were voided: what `total` is a share of.
+    pub settled: usize,
 }
 
-/// More than this share of the claims that came due voided late, and the verdict is
-/// withheld. One late void in ten is the line: a handful is a bad question noticed
-/// late, and a tenth of the record is a pattern.
+/// More than this share of the settled claims voided, and the verdict is withheld.
+///
+/// It used to count only voids made after the due date, on the reasoning that before it
+/// the answer is unknown. That is false whenever the answer arrives early, which for an
+/// agent is the normal case: a test claim is answered in seconds. Log forty claims at
+/// 90% with a far deadline, resolve the twenty that came true, void the twenty that did
+/// not, and the report said Brier 0.010 and "100% graded". Every void now counts, early or
+/// late, because the tool cannot tell a question that stopped making sense from an answer
+/// disowned. A typo is what `ana amend` is for.
 pub const VOID_WITHHOLD_RATE: f64 = 0.10;
 
+/// Below this many voids the verdict is never withheld for them: one deleted duplicate in
+/// a five-claim first session is not a pattern, and a tenth of a large record is.
+pub const VOID_WITHHOLD_MIN: usize = 3;
+
 impl VoidAccount {
-    /// The share of due claims that were voided late, or `None` when there is none
-    /// to speak of.
-    pub fn late_rate(&self) -> Option<f64> {
-        (self.late > 0 && self.came_due > 0).then(|| self.late as f64 / self.came_due as f64)
+    /// The share of settled claims that were voided, or `None` when there is none to
+    /// speak of.
+    pub fn void_rate(&self) -> Option<f64> {
+        (self.total > 0 && self.settled > 0).then(|| self.total as f64 / self.settled as f64)
     }
 
-    /// Whether the late voids are numerous enough that no verdict should be read.
+    /// Whether the voids are numerous enough that no verdict should be read.
     pub fn withholds_verdict(&self) -> bool {
-        self.late_rate().is_some_and(|r| r > VOID_WITHHOLD_RATE)
+        self.total >= VOID_WITHHOLD_MIN && self.void_rate().is_some_and(|r| r > VOID_WITHHOLD_RATE)
     }
 }
 
@@ -237,15 +249,14 @@ pub fn void_account(claims: &[Claim], today: NaiveDate, tag: Option<&str>) -> Vo
                 continue;
             }
         }
-        let late = voided_late(c);
         if c.is_void() {
             acct.total += 1;
         }
-        if late {
+        if voided_late(c) {
             acct.late += 1;
         }
-        if late || due_key(c) <= today {
-            acct.came_due += 1;
+        if c.is_void() || c.resolution.is_some() || due_key(c) <= today {
+            acct.settled += 1;
         }
     }
     acct
@@ -334,6 +345,31 @@ pub fn evidence_sequence(
         voided_after_resolution,
         ungraded_due,
     }
+}
+
+/// Resolved claims the test has not reached yet, because their due date is still ahead:
+/// how many, and the first and last date they join it. `None` when there are none.
+///
+/// This is what a new ledger shows on day one: thirty calls logged and resolved in an
+/// afternoon are all graded and none is in the test, which reads as a broken report unless
+/// it says when they arrive.
+pub fn pending_due(
+    claims: &[Claim],
+    today: NaiveDate,
+    tag: Option<&str>,
+) -> Option<(usize, NaiveDate, NaiveDate)> {
+    let keys: Vec<NaiveDate> = claims
+        .iter()
+        .filter(|c| {
+            c.kind == crate::model::ClaimKind::Binary
+                && tag.is_none_or(|t| c.tags.iter().any(|x| x == t))
+                && !c.is_void()
+                && c.evidence_sample().is_some()
+        })
+        .map(due_key)
+        .filter(|&d| d > today)
+        .collect();
+    Some((keys.len(), *keys.iter().min()?, *keys.iter().max()?))
 }
 
 /// Which claims are in scope for the binary evidence sequence, before the
@@ -716,25 +752,33 @@ mod tests {
             acct.late, 2,
             "b came due, c had resolved; a was before both"
         );
-        assert_eq!(acct.came_due, 4, "a, b, c and d came due; e has not");
-        assert_eq!(acct.late_rate(), Some(0.5));
+        assert_eq!(
+            acct.settled, 4,
+            "a, b, c and d are settled; e is open and not due"
+        );
+        assert_eq!(acct.void_rate(), Some(0.75));
         assert!(acct.withholds_verdict());
     }
 
     #[test]
     fn the_withholding_line_is_strictly_more_than_one_in_ten() {
-        let acct = |late, came_due| VoidAccount {
-            total: late,
-            late,
-            came_due,
+        let acct = |total, settled| VoidAccount {
+            total,
+            late: 0,
+            settled,
         };
-        assert!(!acct(0, 20).withholds_verdict());
-        assert!(!acct(1, 20).withholds_verdict());
+        assert!(!acct(0, 30).withholds_verdict());
+        assert!(!acct(2, 30).withholds_verdict());
         assert!(
-            !acct(2, 20).withholds_verdict(),
+            !acct(3, 30).withholds_verdict(),
             "exactly 10% is not more than 10%"
         );
-        assert!(acct(3, 20).withholds_verdict());
+        assert!(acct(4, 30).withholds_verdict());
+        assert!(
+            !acct(2, 5).withholds_verdict(),
+            "two voids are never a pattern, whatever the share"
+        );
+        assert!(acct(3, 5).withholds_verdict());
         assert!(!VoidAccount::default().withholds_verdict());
     }
 
@@ -745,6 +789,30 @@ mod tests {
         mine.tags = vec!["who:claude".into()];
         let theirs = void_at(claim("t", 2, 0.7, None, 0), 2025, 3, 1);
         let acct = void_account(&[mine, theirs], today, Some("who:claude"));
-        assert_eq!((acct.total, acct.late, acct.came_due), (1, 1, 1));
+        assert_eq!((acct.total, acct.late, acct.settled), (1, 1, 1));
+    }
+
+    /// The external review's attack: answers known early, losers voided before they came due.
+    #[test]
+    fn voiding_the_misses_before_they_come_due_withholds_the_verdict() {
+        let today = NaiveDate::from_ymd_opt(2025, 1, 15).unwrap();
+        let mut claims = Vec::new();
+        for i in 0..20 {
+            claims.push(claim(&format!("w{i}"), 300, 0.9, Some(Outcome::True), 1));
+        }
+        for i in 0..20 {
+            claims.push(void_at(
+                claim(&format!("l{i}"), 300, 0.9, None, 0),
+                2025,
+                1,
+                12,
+            ));
+        }
+        let acct = void_account(&claims, today, None);
+        assert_eq!((acct.total, acct.late, acct.settled), (20, 0, 40));
+        assert!(
+            acct.withholds_verdict(),
+            "none was late, and it is still half the record"
+        );
     }
 }
