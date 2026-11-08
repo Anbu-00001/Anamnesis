@@ -96,7 +96,7 @@ echo "✓ sha256 verified"
 # build attestation tying it to this repository's release workflow. With the GitHub CLI
 # signed in, it is checked and a failure stops the install; without it, the command to
 # check it by hand is printed.
-ATTEST_FROM_MINOR=5   # 0.5.0
+ATTEST_FROM_MINOR=6   # 0.6.0, the first release built with the attestation step
 older_than_attestations() {
   case "$ver" in latest) return 1 ;; esac
   v="${ver#v}"
@@ -107,7 +107,7 @@ older_than_attestations() {
 if [ -n "${ANAMNESIS_RELEASE_BASE:-}" ] || [ "${ANAMNESIS_SKIP_ATTESTATION:-}" = 1 ]; then
   :
 elif older_than_attestations; then
-  echo "  (releases before 0.5.0 carry no build attestation)"
+  echo "  (releases before 0.6.0 carry no build attestation)"
 elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
   if gh attestation verify "$tmp/ana" --repo "$REPO" >/dev/null 2>&1; then
     echo "✓ build provenance verified (GitHub attestation from $REPO)"

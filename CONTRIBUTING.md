@@ -65,6 +65,24 @@ above `88% graded (44 of 50)` until an audit caught it. `regen-demo.sh` needs
 `asciinema` and `agg`; it builds a throwaway fictional ledger and refuses to
 commit a recording containing a real path or tag.
 
+## Reproducing the measurements
+
+Every measurement in the docs has a script that reproduces it, except the few figures
+taken from the maintainer's own agent ledger, which is private and labelled as such:
+
+```bash
+cargo test --all             # the suite, including the hostile-review scenarios
+./validation/repro.sh        # the original defects, against a built binary
+python3 validation/sims.py   # e-process power, CORP noise floor
+python3 validation/ratio.py  # the two instruments, and the ratio threshold
+```
+
+`sims.py` needs numpy. `ratio.py` also uses the Python binding, so build it first with
+`cd bindings/python && maturin develop --release`; see [docs/PYTHON.md](docs/PYTHON.md).
+The trial scripts (`effect_report.py`, `crossover_report.py`, `pool_evalues.py`,
+`outcome_coverage.py`) read the logs beside the agent ledger, and all but the first carry
+a `--selftest`.
+
 ## Changing the scoring core
 
 `src/scoring.rs` is pure `std`: no I/O, no serde, no clap. It is the part that has

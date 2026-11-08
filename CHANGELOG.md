@@ -6,7 +6,8 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 ## [0.6.0] — 2026-11-08
 
 The rest of the 0.5.0 audit, an experiment on the whole tool built before any of its data,
-and a way for a person to bet on their agent.
+and a way for a person to bet on their agent. 0.5.0 was never published as a release, so
+this is the first since 0.4.2, and its notes below are part of what 0.6.0 ships.
 
 ### Upgrading
 
@@ -79,7 +80,7 @@ and a way for a person to bet on their agent.
 - **Release binaries carry a build attestation** (`actions/attest-build-provenance`).
   `install-ana.sh` verifies it with `gh attestation verify` when `gh` is installed and signed
   in, and aborts if verification fails. Otherwise it prints the command to run. Releases
-  before 0.5.0 have none, and the installer says so.
+  before 0.6.0 have none, and the installer says so.
 - **Windows.** `install-ana.sh` installs `ana.exe` under Git Bash (MINGW, MSYS, Cygwin on
   x86_64). The launchers look for `~/.anamnesis/bin/ana.exe`, and the release smoke test runs
   the installer and a session-start hook under Git Bash on Windows.
