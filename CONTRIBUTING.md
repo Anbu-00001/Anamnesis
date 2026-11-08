@@ -1,5 +1,7 @@
 # Contributing
 
+By taking part you agree to the [code of conduct](CODE_OF_CONDUCT.md).
+
 ## Build and test
 
 ```bash

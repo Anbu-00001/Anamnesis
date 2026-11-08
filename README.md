@@ -216,5 +216,7 @@ before, and `validation/repro.sh` replays them against the current build.
 ## Contributing, security, license
 
 Issues and pull requests are welcome; [CONTRIBUTING.md](CONTRIBUTING.md) says how to build
-and test, and what CI checks. Report a vulnerability as [SECURITY.md](SECURITY.md)
+and test, and what CI checks. [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) covers how people
+treat each other here, and what the project asks of forks: cite it, say what you changed,
+and make your version your own. Report a vulnerability as [SECURITY.md](SECURITY.md)
 describes, not in a public issue. MIT, see [LICENSE](LICENSE).
