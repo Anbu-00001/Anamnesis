@@ -1,0 +1,335 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Anamnesis tour</title>
+<!--
+  The README animation. Every line of `ana` output in it is real: scripts/regen-tour.sh
+  captures it from the built binary on a throwaway fictional ledger and hands it to
+  setData(). render(t) draws the frame at time t, so the recording is deterministic and
+  docs/tour/render.mjs can step through it frame by frame. Open this file in a browser
+  to watch it with placeholder text.
+-->
+<style>
+  :root {
+    --paper: #0f1012; --card: #16181b; --card2: #1c1e22; --hair: #2a2c30;
+    --ink: #eae6dd; --soft: #c4c0b6; --muted: #8f8b81; --faint: #6a665e;
+    --coral: #e07068; --sage: #93bf8c; --amber: #d9a55b;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Liberation Serif", Georgia, serif;
+    --sans: "Ubuntu Sans", "Inter", "Segoe UI", system-ui, sans-serif;
+    --mono: "JetBrains Mono", "DejaVu Sans Mono", "Liberation Mono", Menlo, monospace;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html, body { width: 1280px; height: 720px; overflow: hidden; background: var(--paper); color: var(--ink); font-family: var(--sans); }
+  #stage { position: relative; width: 1280px; height: 720px; overflow: hidden;
+    background: radial-gradient(1100px 620px at 50% -12%, #1b1d22 0%, var(--paper) 62%); }
+  .scene { position: absolute; inset: 0; opacity: 0; will-change: opacity, transform; }
+
+  /* captions */
+  .cap { position: absolute; left: 140px; top: 52px; width: 1000px; display: flex; align-items: baseline; gap: 18px; }
+  .cap .n { font-family: var(--mono); font-size: 15px; color: var(--coral); letter-spacing: .08em; }
+  .cap .t { font-family: var(--serif); font-size: 31px; color: var(--ink); }
+  .cap .t em { font-style: normal; color: var(--coral); }
+  .new { font-family: var(--mono); font-size: 12px; letter-spacing: .12em; color: var(--paper); background: var(--coral);
+    padding: 3px 8px 2px; border-radius: 3px; position: relative; top: -5px; }
+
+  /* title + end */
+  .bar { position: absolute; left: 0; top: 0; height: 4px; background: var(--coral); }
+  .kicker { font-family: var(--sans); font-size: 15px; letter-spacing: .32em; color: var(--muted); text-transform: uppercase; }
+  .brand { font-family: var(--serif); font-size: 30px; color: var(--ink); }
+  .brand i { font-style: normal; color: var(--coral); }
+  .big { font-family: var(--serif); font-weight: 700; font-size: 70px; line-height: 1.08; letter-spacing: -.01em; }
+  .big .w { display: inline-block; }
+  .sub { font-family: var(--serif); font-size: 27px; color: var(--soft); line-height: 1.45; }
+
+  /* windows */
+  .win { position: absolute; left: 140px; top: 124px; width: 1000px; height: 540px; background: var(--card);
+    border: 1px solid var(--hair); border-radius: 10px; overflow: hidden;
+    box-shadow: 0 30px 80px rgba(0,0,0,.45), 0 0 0 1px rgba(255,255,255,.02) inset; }
+  .win .top { height: 36px; border-bottom: 1px solid var(--hair); display: flex; align-items: center; padding: 0 14px; gap: 8px; background: var(--card2); }
+  .win .dot { width: 11px; height: 11px; border-radius: 50%; background: #2f3237; }
+  .win .name { margin-left: 12px; font-family: var(--mono); font-size: 12.5px; color: var(--faint); }
+  .body { position: absolute; left: 0; right: 0; top: 36px; bottom: 0; padding: 20px 24px; overflow: hidden; }
+  .term { font-family: var(--mono); font-size: 15px; line-height: 1.62; color: var(--soft); white-space: pre; }
+  .term .ps { color: var(--sage); }
+  .term .cmd { color: var(--ink); }
+  .cur { display: inline-block; width: .6em; height: 1.1em; background: var(--ink); vertical-align: -.18em; margin-left: 1px; }
+  .hl { color: var(--ink); font-weight: 700; }
+  .yes { color: var(--sage); } .no { color: var(--coral); } .warn { color: var(--coral); }
+  .dim { color: var(--faint); }
+  .row { position: relative; display: block; }
+  .sweep { position: absolute; left: -10px; top: 0; bottom: 0; background: rgba(224,112,104,.13); border-left: 2px solid var(--coral); }
+
+  /* agent panel */
+  .chat { font-family: var(--sans); font-size: 16px; color: var(--soft); }
+  .input { position: absolute; left: 24px; right: 24px; bottom: 22px; height: 52px; border: 1px solid var(--hair);
+    border-radius: 8px; display: flex; align-items: center; padding: 0 16px; font-family: var(--mono); font-size: 17px; color: var(--ink); background: #131518; }
+  .input .gt { color: var(--muted); margin-right: 12px; }
+  .note { position: absolute; left: 24px; right: 24px; border-radius: 8px; padding: 14px 18px 15px; font-family: var(--mono);
+    font-size: 14px; line-height: 1.6; white-space: pre-wrap; color: var(--soft); background: #131518; border: 1px solid var(--hair); }
+  .note .lab { display: block; font-family: var(--sans); font-size: 12px; letter-spacing: .16em; text-transform: uppercase; margin-bottom: 6px; }
+  .chips { position: absolute; left: 24px; right: 24px; display: flex; align-items: center; }
+  .chip { font-family: var(--sans); font-size: 15px; color: var(--ink); border: 1px solid var(--hair); background: var(--card2);
+    border-radius: 999px; padding: 8px 15px; white-space: nowrap; }
+  .chip b { font-family: var(--mono); font-weight: 400; color: var(--coral); }
+  .link { flex: 1; height: 1px; background: var(--hair); margin: 0 10px; position: relative; }
+  .link i { position: absolute; left: 0; top: 0; height: 1px; background: var(--muted); }
+
+  .progress { position: absolute; left: 0; bottom: 0; height: 3px; background: var(--coral); opacity: .75; }
+  .mono { font-family: var(--mono); }
+</style>
+</head>
+<body>
+<div id="stage">
+
+  <!-- 1 · title -->
+  <div class="scene" id="s-title">
+    <div class="bar" id="title-bar"></div>
+    <div style="position:absolute;left:140px;top:120px;right:140px;display:flex;justify-content:space-between;align-items:baseline">
+      <div class="brand">Anamnesis<i>.</i></div>
+      <div class="kicker" id="title-ver">release</div>
+    </div>
+    <div class="big" style="position:absolute;left:140px;top:250px;width:1000px" id="title-words"></div>
+    <div class="sub" style="position:absolute;left:140px;top:470px;width:960px" id="title-sub">
+      A local CLI that keeps the number you wrote down before the answer came in, and scores it.
+    </div>
+  </div>
+
+  <!-- 2 · terminal -->
+  <div class="scene" id="s-term">
+    <div class="cap" id="cap-a"><span class="n">01</span><span class="t">Log how sure you are, <em>before</em> you know.</span></div>
+    <div class="cap" id="cap-b"><span class="n">02</span><span class="t">Resolve it the moment reality answers.</span></div>
+    <div class="cap" id="cap-c"><span class="n">03</span><span class="new">NEW</span><span class="t">Under 20 calls: no verdict, just what you got right and wrong.</span></div>
+    <div class="win" id="term-win">
+      <div class="top"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">~/work</span></div>
+      <div class="body"><div class="term" id="term"></div></div>
+    </div>
+  </div>
+
+  <!-- 3 · the bet -->
+  <div class="scene" id="s-bet">
+    <div class="cap"><span class="n">04</span><span class="new">NEW</span><span class="t">Bet on your coding agent. <em>It never sees the bet.</em></span></div>
+    <div class="win" id="bet-win">
+      <div class="top"><span class="dot"></span><span class="dot"></span><span class="dot"></span><span class="name">Claude Code · anamnesis plugin</span></div>
+      <div class="body chat">
+        <div class="note" id="bet-note" style="top:22px"><span class="lab" style="color:var(--muted)">hook → you · the prompt is not sent</span><span id="bet-text"></span></div>
+        <div class="chips" id="chips" style="top:212px"></div>
+        <div class="note" id="grade-note" style="top:292px;border-color:rgba(147,191,140,.55)"><span class="lab" style="color:var(--sage)">later · graded by the exit status</span><span id="grade-text"></span></div>
+        <div class="input"><span class="gt">&gt;</span><span id="bet-input"></span><span class="cur" id="bet-cur"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 4 · end -->
+  <div class="scene" id="s-end">
+    <div class="bar" id="end-bar"></div>
+    <div style="position:absolute;left:140px;top:150px;width:1000px">
+      <div class="brand" style="font-size:64px;font-weight:700">Anamnesis<i>.</i> <span class="mono" id="end-ver" style="font-size:22px;font-weight:400;color:var(--muted);letter-spacing:.04em"></span></div>
+      <div class="sub" style="margin-top:22px" id="end-sub">The one version of your belief that hindsight can't edit.</div>
+      <div class="kicker" style="margin-top:44px;letter-spacing:.22em" id="end-tags">local · offline · no model · MIT</div>
+      <div class="note" style="position:relative;left:0;right:0;margin-top:40px;font-size:16px;width:900px" id="end-install"></div>
+      <div class="mono" style="margin-top:26px;font-size:18px;color:var(--coral)" id="end-url">github.com/Anbu-00001/Anamnesis</div>
+    </div>
+  </div>
+
+  <div class="progress" id="progress"></div>
+</div>
+
+<script>
+// ---------- data (replaced by setData from the regen script) ----------
+let D = {
+  version: "0.0.0",
+  add_cmd: 'ana add "the flaky test is a race in the connection pool" --prob 0.7 --by 2026-11-15',
+  add_out: 'added [abc123]  70%  "the flaky test is a race in the connection pool"',
+  resolve_cmd: "ana resolve abc123 yes",
+  resolve_out: "[abc123] resolved TRUE.  you said 70%  →  Brier 0.090 on this one",
+  report: ["(placeholder report)"],
+  bet_reason: "(placeholder bet message)",
+  grade_msg: "(placeholder grade message)",
+  install: "cargo install --git https://github.com/Anbu-00001/Anamnesis --locked",
+};
+function setData(d) { D = Object.assign({}, D, d); }
+
+// ---------- timing ----------
+const T = {
+  titleIn: 0.0, titleOut: 3.0,
+  termIn: 3.0, add: 3.6, addOut: 5.7, resolve: 6.9, resolveOut: 7.9,
+  report: 9.2, reportOut: 9.9, termOut: 17.2,
+  betIn: 17.2, betType: 18.0, betEnter: 18.7, chips: 20.4, grade: 23.4, betOut: 26.6,
+  endIn: 26.6, end: 31.5,
+};
+const DURATION = T.end;
+
+// ---------- helpers ----------
+const clamp = (x, a = 0, b = 1) => Math.max(a, Math.min(b, x));
+const easeOut = x => 1 - Math.pow(1 - x, 3);
+const easeInOut = x => x < .5 ? 4 * x * x * x : 1 - Math.pow(-2 * x + 2, 3) / 2;
+const seg = (t, a, b, e = easeOut) => e(clamp((t - a) / (b - a)));
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+function show(el, o, dy = 0, sc = 1) {
+  el.style.opacity = o;
+  el.style.transform = `translateY(${dy}px) scale(${sc})`;
+  el.style.visibility = o <= 0.001 ? "hidden" : "visible";
+}
+// fade in over [a,a+d], out over [b-d2,b]
+function window2(t, a, b, d = .55, d2 = .45) { return Math.min(seg(t, a, a + d), 1 - seg(t, b - d2, b, easeInOut)); }
+const typed = (s, t, a, cps = 52) => s.slice(0, Math.max(0, Math.floor((t - a) * cps)));
+const blink = t => (Math.floor(t * 2.2) % 2 === 0);
+
+function colour(line) {
+  let h = esc(line);
+  h = h.replace(/(VERDICT)(\s+)([A-Z][A-Z ]+[A-Z])/, '<span class="dim">$1</span>$2<span class="hl">$3</span>');
+  h = h.replace(/came true/g, '<span class="yes">came true</span>');
+  h = h.replace(/did not happen/g, '<span class="no">did not happen</span>');
+  h = h.replace(/(← .*)$/, '<span class="warn">$1</span>');
+  h = h.replace(/(resolved TRUE)/, '<span class="yes">$1</span>');
+  h = h.replace(/^(added \[[^\]]+\])/, '<span class="hl">$1</span>');
+  return h;
+}
+
+// ---------- scenes ----------
+function renderTitle(t) {
+  const o = window2(t, T.titleIn, T.titleOut + .01, .4, .5);
+  show($("s-title"), o, -12 * seg(t, T.titleOut - .5, T.titleOut, easeInOut));
+  $("title-bar").style.width = (1280 * seg(t, 0.05, 1.2, easeInOut)) + "px";
+  $("title-ver").textContent = "release " + D.version;
+  const words = ["Write", "down", "how", "sure", "you", "are", "|", "before", "you", "find", "out."];
+  let html = "", i = 0;
+  for (const w of words) {
+    if (w === "|") { html += "<br>"; continue; }
+    const p = seg(t, 0.25 + i * 0.075, 0.85 + i * 0.075);
+    const coral = i >= 6;
+    html += `<span class="w" style="opacity:${p};transform:translateY(${(1 - p) * 26}px);color:${coral ? "var(--coral)" : "var(--ink)"}">${w}</span> `;
+    i++;
+  }
+  $("title-words").innerHTML = html;
+  const ps = seg(t, 1.3, 2.0);
+  show($("title-sub"), ps, (1 - ps) * 14);
+}
+
+function renderTerm(t) {
+  const o = window2(t, T.termIn, T.termOut, .6, .5);
+  show($("s-term"), o);
+  const w = seg(t, T.termIn, T.termIn + .8);
+  show($("term-win"), 1, (1 - w) * 40, .98 + .02 * w);
+
+  const capA = window2(t, T.termIn + .2, T.resolve - .1, .5, .35);
+  const capB = window2(t, T.resolve - .1, T.report + .2, .4, .35);
+  const capC = window2(t, T.report + .2, T.termOut + 1, .5, .1);
+  show($("cap-a"), capA, (1 - capA) * 10);
+  show($("cap-b"), capB, (1 - capB) * 10);
+  show($("cap-c"), capC, (1 - capC) * 10);
+
+  // phase 1: add + resolve
+  const lines = [];
+  const ps = '<span class="ps">$</span> ';
+  const cur = c => c ? '<span class="cur"></span>' : "";
+  const tAddDone = T.add + D.add_cmd.length / 52;
+  if (t >= T.add - .4) {
+    const s = typed(D.add_cmd, t, T.add);
+    lines.push(ps + `<span class="cmd">${esc(s)}</span>` + cur(t < T.addOut && (t < tAddDone || blink(t))));
+  }
+  if (t >= T.addOut) { lines.push(colour(D.add_out)); lines.push(""); }
+  if (t >= T.resolve - .3) {
+    const s = typed(D.resolve_cmd, t, T.resolve);
+    lines.push(ps + `<span class="cmd">${esc(s)}</span>` + cur(t < T.resolveOut));
+  }
+  if (t >= T.resolveOut) { lines.push(colour(D.resolve_out)); lines.push(""); }
+  if (t >= T.report - .3) {
+    const s = typed("ana report", t, T.report);
+    lines.push(ps + `<span class="cmd">${esc(s)}</span>` + cur(t < T.reportOut));
+  }
+  // scroll the earlier commands away as the report arrives
+  const lift = seg(t, T.reportOut, T.reportOut + .7, easeInOut);
+  let html = `<div style="transform:translateY(${-lift * 146}px);opacity:${1 - .5 * lift}">` + lines.join("\n") + "</div>";
+
+  if (t >= T.reportOut) {
+    const rows = D.report;
+    let r = `<div style="position:absolute;left:24px;right:24px;top:${20 + 7 * 24.3 - lift * 146}px">`;
+    rows.forEach((line, i) => {
+      const a = T.reportOut + .25 + i * .11;
+      const p = seg(t, a, a + .35);
+      let inner = colour(line);
+      let sweep = "";
+      if (/←/.test(line)) {
+        const s = seg(t, T.reportOut + 2.6, T.reportOut + 3.4, easeInOut);
+        sweep = `<span class="sweep" style="width:${s * 940}px"></span>`;
+      }
+      r += `<span class="row" style="opacity:${p};transform:translateX(${(1 - p) * -12}px)">${sweep}<span style="position:relative">${inner || " "}</span></span>`;
+    });
+    r += "</div>";
+    html += r;
+  }
+  $("term").innerHTML = html;
+}
+
+function renderBet(t) {
+  const o = window2(t, T.betIn, T.betOut, .6, .5);
+  show($("s-bet"), o);
+  const w = seg(t, T.betIn, T.betIn + .8);
+  show($("bet-win"), 1, (1 - w) * 40, .98 + .02 * w);
+
+  // typing ?70 into the prompt, then enter
+  const entered = t >= T.betEnter;
+  $("bet-input").textContent = entered ? "" : typed("?70", t, T.betType, 6);
+  $("bet-cur").style.visibility = (blink(t) || (t > T.betType && t < T.betEnter)) ? "visible" : "hidden";
+
+  const n = seg(t, T.betEnter + .15, T.betEnter + .7);
+  show($("bet-note"), n, (1 - n) * 16);
+  $("bet-text").textContent = D.bet_reason;
+
+  const steps = [
+    ["you", "type <b>?70</b>"],
+    ["", "the agent's next turn"],
+    ["", "it edits, then runs <b>cargo test</b>"],
+    ["", "exit 0"],
+  ];
+  let ch = "";
+  steps.forEach((s, i) => {
+    const a = T.chips + i * .62;
+    const p = seg(t, a, a + .4);
+    if (i > 0) {
+      const l = seg(t, a - .35, a + .05, easeInOut);
+      ch += `<span class="link" style="opacity:${seg(t, a - .45, a - .25)}"><i style="width:${l * 100}%"></i></span>`;
+    }
+    ch += `<span class="chip" style="opacity:${p};transform:translateY(${(1 - p) * 10}px)">${s[1]}</span>`;
+  });
+  $("chips").innerHTML = ch;
+
+  const g = seg(t, T.grade, T.grade + .6);
+  show($("grade-note"), g, (1 - g) * 16);
+  $("grade-text").textContent = D.grade_msg;
+}
+
+function renderEnd(t) {
+  const o = seg(t, T.endIn, T.endIn + .7);
+  show($("s-end"), o);
+  $("end-bar").style.width = (1280 * seg(t, T.endIn + .1, T.endIn + 1.3, easeInOut)) + "px";
+  $("end-ver").textContent = D.version;
+  $("end-install").textContent = "$ " + D.install;
+  [["end-sub", .4], ["end-tags", .7], ["end-install", 1.0], ["end-url", 1.3]].forEach(([id, d]) => {
+    const p = seg(t, T.endIn + d, T.endIn + d + .5);
+    show($(id), p, (1 - p) * 12);
+  });
+}
+
+function render(t) {
+  renderTitle(t);
+  renderTerm(t);
+  renderBet(t);
+  renderEnd(t);
+  $("progress").style.width = (1280 * clamp(t / DURATION)) + "px";
+}
+
+// Live preview when opened directly; the renderer sets window.__capture first.
+if (!window.__capture) {
+  const t0 = performance.now();
+  const loop = () => { render(((performance.now() - t0) / 1000) % (DURATION + 1)); requestAnimationFrame(loop); };
+  requestAnimationFrame(loop);
+} else {
+  render(0);
+}
+</script>
+</body>
+</html>

@@ -67,6 +67,18 @@ above `88% graded (44 of 50)` until an audit caught it. `regen-demo.sh` needs
 `asciinema` and `agg`; it builds a throwaway fictional ledger and refuses to
 commit a recording containing a real path or tag.
 
+The animation at the top of the README is generated the same way, but CI does not
+rebuild it, since it needs a browser:
+
+```bash
+./scripts/regen-tour.sh       # docs/assets/tour.gif and tour.mp4, from docs/tour/tour.html
+```
+
+It needs Node 22 or newer, Google Chrome (or `$CHROME`), ffmpeg and python3. Every line of
+`ana` output in it is captured from the built binary on a throwaway fictional ledger,
+the bet included, which goes through the real `ana hook`. `docs/tour/tour.html` is only
+the motion design. Run the script again whenever that output changes.
+
 ## Reproducing the measurements
 
 Every measurement in the docs has a script that reproduces it, except the few figures

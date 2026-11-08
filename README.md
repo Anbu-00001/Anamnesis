@@ -8,6 +8,11 @@ It works the same for a person and for a coding agent.
 [![Release](https://img.shields.io/github/v/release/Anbu-00001/Anamnesis)](https://github.com/Anbu-00001/Anamnesis/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
+![A 30-second tour of Anamnesis 0.6.0: logging a prediction at 70%, resolving it, the report listing the calls graded so far with a 90% miss marked as the costliest, and a bet of 70% on a coding agent's next test run, which the agent never sees and which is graded by the run's exit status.](docs/assets/tour.gif)
+
+<sub>Every line of output in it is real, captured from the binary on a fictional ledger
+([video](docs/assets/tour.mp4), [how it is made](scripts/regen-tour.sh)).</sub>
+
 ```bash
 ana add "the flaky test is a race in the connection pool" --prob 0.7 --by 2027-01-15
 ana resolve <id> yes
