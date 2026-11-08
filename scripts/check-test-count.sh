@@ -16,7 +16,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-MIN=258
+MIN=259
 
 out="$(cargo test --all --no-fail-fast 2>&1)"
 echo "$out"

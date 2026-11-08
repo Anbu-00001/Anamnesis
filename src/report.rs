@@ -694,6 +694,20 @@ pub struct SelectiveData {
     pub aurcc: f64,
 }
 
+/// One graded call, listed while there are too few for a verdict: a new user's first
+/// result. The id, never the statement: this data also reaches a model through the MCP
+/// `calibration` tool, and ledger text goes out only through `untrusted::line`.
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct GradedCall {
+    pub id: String,
+    pub prob: f64,
+    pub came_true: bool,
+    pub brier: f64,
+}
+
+/// How many graded calls the day-one list shows.
+pub const SO_FAR_MAX: usize = 8;
+
 /// The whole report as data — serialisable, and the single input to both views.
 #[derive(Serialize, Clone, Debug)]
 pub struct ReportData {
@@ -845,6 +859,9 @@ pub struct ReportData {
     /// when at least [`CONTESTED_MIN_N`] remain. A record padded with sure things scores
     /// well and says little: 40 trivially true calls at 0.97 drew "100/100".
     pub easy_calls: usize,
+    /// The latest graded binary calls, newest first, while there are fewer than
+    /// `VERDICT_MIN_N`; empty after that, when the verdict speaks for them.
+    pub so_far: Vec<GradedCall>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub brier_contested: Option<f64>,
 }
@@ -888,6 +905,25 @@ impl ReportData {
             .filter(matches_tag)
             .collect();
         let samples: Vec<Sample> = resolved_claims.iter().filter_map(|c| c.sample()).collect();
+        let so_far: Vec<GradedCall> = if samples.len() < VERDICT_MIN_N {
+            let mut graded: Vec<(&crate::model::Claim, Sample)> = resolved_claims
+                .iter()
+                .filter_map(|c| c.sample().map(|s| (*c, s)))
+                .collect();
+            graded.sort_by_key(|(c, _)| std::cmp::Reverse(c.resolution.as_ref().map(|r| r.at)));
+            graded
+                .into_iter()
+                .take(SO_FAR_MAX)
+                .map(|(c, s)| GradedCall {
+                    id: c.id.clone(),
+                    prob: s.prob,
+                    came_true: s.outcome > 0.5,
+                    brier: (s.prob - s.outcome).powi(2),
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let is_easy = |s: &Sample| s.prob >= EASY_P || s.prob <= 1.0 - EASY_P;
         let easy_calls = samples.iter().filter(|s| is_easy(s)).count();
         let contested: Vec<Sample> = samples.iter().filter(|s| !is_easy(s)).cloned().collect();
@@ -1368,6 +1404,7 @@ impl ReportData {
             verdict,
             sensitivity,
             easy_calls,
+            so_far,
             brier_contested,
         }
     }
@@ -1696,6 +1733,31 @@ pub fn render(ledger: &Ledger, tag_filter: Option<&str>, bins: usize, today: Nai
                 "\n  ({} graded call(s). Below {DETAIL_MIN_N}, the band, the decomposition, the confidence gap and the diagram would describe noise, so they are left out.)",
                 d.resolved_binary
             );
+            }
+            if !d.so_far.is_empty() && d.verdict != Verdict::Withheld {
+                let _ = writeln!(
+                    out,
+                    "\n  Graded so far    (newest first; `ana show <id>` for the claim)"
+                );
+                for g in &d.so_far {
+                    let _ = writeln!(
+                        out,
+                        "    [{}]  said {:>3.0}%  →  {:<16} Brier {:.3}{}",
+                        g.id,
+                        g.prob * 100.0,
+                        if g.came_true {
+                            "came true"
+                        } else {
+                            "did not happen"
+                        },
+                        g.brier,
+                        if g.brier >= 0.64 {
+                            "   ← a sure call that missed costs the most"
+                        } else {
+                            ""
+                        }
+                    );
+                }
             }
             if let (Some(mcb), Some(dsc), Some(unc), true) = (d.mcb, d.dsc, d.unc, detail) {
                 let _ = writeln!(
@@ -2860,6 +2922,25 @@ pub fn render_plain(
         "Based on {} resolved prediction(s).",
         d.resolved_binary
     );
+    if !d.so_far.is_empty() && d.verdict != Verdict::Withheld {
+        let calls: Vec<String> = d
+            .so_far
+            .iter()
+            .map(|g| {
+                format!(
+                    "[{}] {:.0}%, {}",
+                    g.id,
+                    g.prob * 100.0,
+                    if g.came_true { "came true" } else { "didn't" }
+                )
+            })
+            .collect();
+        let _ = writeln!(
+            out,
+            "Your graded calls so far, newest first: {}.",
+            calls.join("; ")
+        );
+    }
     for ins in &s.insights {
         let _ = writeln!(out, "\n{}", ins.label);
         let _ = writeln!(out, "{}", wrap(&ins.answer, 74, "  "));
@@ -3600,6 +3681,43 @@ mod tests {
         assert!(svg.contains("#c62828")); // → red accent
         assert!(!svg.contains("{{")); // every placeholder filled
         assert!(render_badge_svg(&Ledger::default(), None, 10, td()).contains("Not enough data"));
+    }
+
+    /// Before there is a verdict, a new user still sees their calls: ids, chances, what
+    /// happened. Never the statements (the JSON reaches a model through MCP).
+    #[test]
+    fn a_new_ledger_lists_its_graded_calls_and_a_full_one_does_not() {
+        let few = Ledger {
+            claims: vec![
+                binary("aa1", 0.9, false, &[]),
+                binary("bb2", 0.6, true, &[]),
+            ],
+            ..Default::default()
+        };
+        let d = ReportData::compute(&few, None, 10, td());
+        assert_eq!(d.so_far.len(), 2);
+        let miss = d.so_far.iter().find(|g| g.id == "aa1").unwrap();
+        assert!(!miss.came_true && (miss.brier - 0.81).abs() < 1e-12);
+        let text = render(&few, None, 10, td());
+        assert!(
+            text.contains("Graded so far")
+                && text.contains("[aa1]")
+                && text.contains("costs the most"),
+            "{text}"
+        );
+        assert!(render_plain(&few, None, 10, td()).contains("Your graded calls so far"));
+        assert!(
+            !render_json(&few, None, 10, td()).contains("claim aa1"),
+            "a statement leaked"
+        );
+
+        let many = Ledger {
+            claims: (0..30)
+                .map(|i| binary(&format!("m{i}"), 0.7, i % 10 < 7, &[]))
+                .collect(),
+            ..Default::default()
+        };
+        assert!(ReportData::compute(&many, None, 10, td()).so_far.is_empty());
     }
 
     /// A quiet test that would miss most 30% errors does not get the green badge.

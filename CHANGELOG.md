@@ -3,9 +3,10 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.6.0] — 2026-11-08
 
-The rest of the 0.5.0 audit, and the first piece of a weekly trial of the whole tool.
+The rest of the 0.5.0 audit, an experiment on the whole tool built before any of its data,
+and a way for a person to bet on their agent.
 
 ### Upgrading
 
@@ -27,6 +28,13 @@ The rest of the 0.5.0 audit, and the first piece of a weekly trial of the whole 
   the prompt. It prints nothing. It is the outcome a trial of the whole tool needs
   (`docs/MEASUREMENT.md`, addendum 4, which sets that trial's rules before any data and says
   what is still to build before it can start, not before 2027-01-04).
+- **Day one shows your calls.** Below the 20 graded calls a verdict needs, the report lists
+  the latest graded calls (id, the chance you gave, what happened, its Brier score), newest
+  first, and marks a sure call that missed. Ids only, never statements: the JSON also reaches
+  a model through MCP. `so_far` in `--json`.
+- **Is the outcome log seeing the runs?** `validation/outcome_coverage.py` matches each run
+  the pre-tool hook let go ahead with its outcome line. The rule set before the trial: 95% or
+  more over 14 days, or the logger is fixed first.
 - **An owner's protocol, given at session start.** A `protocol.md` beside the agent ledger is
   passed to the model by the session-start hook, labelled as the owner's, cut at 6000 bytes,
   and withheld in an OFF week. Putting standing instructions there instead of in the agent's
