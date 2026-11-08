@@ -264,6 +264,17 @@ or in addendum 4. Audit sampling (`ANAMNESIS_AUDIT_RATE`) refuses runs, so it st
 this machine until the confirmatory reading above. Any later reading of it gets its own
 addendum, written first.
 
+**Note, 2026-11-08: full enforcement from 2026-12-20.** The owner decided today that from
+2026-12-20 (UTC), the day after this addendum's six-week window closes, this machine sets
+`ANAMNESIS_AUDIT_RATE=1`: every bare test run after an edit, in every folder, is refused
+until it goes through `ana add` and `ana run`. Before that the once-per-session pin reminder
+let about a quarter of logged runs through ungraded (298 `allowed_after_nudge` of 1,108
+protocol lines). A one-shot script run by the session-start hook makes the change, so
+nothing here depends on someone remembering it. Rate 1 is enforcement, not sampling: it
+draws every turn, so no audit reading comes from it. It does not touch this addendum's
+window. For addendum 4 it means the ON weeks include full enforcement from the trial's first
+week; the OFF weeks are unchanged, since the pre-tool refusals are already silent there.
+
 ## Addendum 4, 2026-11-07: the whole tool, a week at a time, before any data
 
 Written before the outcome log below had recorded a single run. Addendum 3 asks about one
