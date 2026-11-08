@@ -1,0 +1,136 @@
+{
+ "_doc": "Counts of test definitions, assertions and skips. Expected values are Python re.findall counts of the patterns in validation/test_integrity_replay.py; src/pin.rs test_surface must agree (pin.rs test).",
+ "patterns": {
+  "tests": "#\\[test\\]|#\\[tokio::test|\\bdef test\\w*\\s*\\(|\\bfunc Test\\w*\\s*\\(|\\b(?:it|test)\\s*\\(\\s*[\\'\"`]|@Test\\b|\\[Fact\\]|\\[TestMethod\\]",
+  "asserts": "\\bassert\\w*!?|\\bexpect\\s*\\(|\\bt\\.(?:Error|Fatal|Fail)\\w*\\(|\\bshould\\b",
+  "skips": "#\\[ignore|@pytest\\.mark\\.(?:skip|xfail)|pytest\\.skip\\(|@unittest\\.skip|\\.skip\\s*\\(|\\bx(?:it|describe|test)\\s*\\(|\\.todo\\s*\\(|t\\.Skip\\w*\\(|@Disabled|@Ignore\\b|\\[Ignore\\]"
+ },
+ "cases": [
+  {
+   "text": "#[test]\nfn adds() { assert_eq!(add(1, 2), 3); }",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "#[test]\n#[ignore]\nfn adds() { assert_eq!(add(1, 2), 3); }",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 1
+  },
+  {
+   "text": "#[tokio::test]\nasync fn runs() { assert!(ok().await); }",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "def test_add():\n    assert add(1, 2) == 3\n",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "@pytest.mark.skip(reason='flaky')\ndef test_add():\n    assert add(1, 2) == 3\n",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 1
+  },
+  {
+   "text": "def test_add():\n    pytest.skip('later')\n",
+   "tests": 1,
+   "asserts": 0,
+   "skips": 1
+  },
+  {
+   "text": "class T(unittest.TestCase):\n    @unittest.skip('x')\n    def test_a(self):\n        self.assertEqual(f(), 1)\n",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 1
+  },
+  {
+   "text": "it('adds', () => { expect(add(1, 2)).toBe(3); });",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "it.skip('adds', () => { expect(add(1, 2)).toBe(3); });",
+   "tests": 0,
+   "asserts": 1,
+   "skips": 1
+  },
+  {
+   "text": "xit('adds', () => {}); test.todo('later'); describe.skip('group', () => {})",
+   "tests": 0,
+   "asserts": 0,
+   "skips": 3
+  },
+  {
+   "text": "test(\"works\", () => { expect(x).toEqual(1) })",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "func TestAdd(t *testing.T) {\n\tif add(1, 2) != 3 { t.Errorf(\"bad\") }\n}",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "func TestAdd(t *testing.T) {\n\tt.Skip(\"later\")\n}",
+   "tests": 1,
+   "asserts": 0,
+   "skips": 1
+  },
+  {
+   "text": "@Test\nvoid adds() { assertEquals(3, add(1, 2)); }",
+   "tests": 1,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "@Disabled\n@Test\nvoid adds() {}",
+   "tests": 1,
+   "asserts": 0,
+   "skips": 1
+  },
+  {
+   "text": "[Fact]\npublic void Adds() { Assert.Equal(3, Add(1, 2)); }",
+   "tests": 1,
+   "asserts": 0,
+   "skips": 0
+  },
+  {
+   "text": "[TestMethod]\n[Ignore]\npublic void Adds() {}",
+   "tests": 1,
+   "asserts": 0,
+   "skips": 1
+  },
+  {
+   "text": "submit('form'); item(\"x\"); latest(1); @Testing; reassert; shouldnt; it.should be fine",
+   "tests": 0,
+   "asserts": 1,
+   "skips": 0
+  },
+  {
+   "text": "assert x, 'msg'\nassertTrue(y)\nexpect (z)\n",
+   "tests": 0,
+   "asserts": 3,
+   "skips": 0
+  },
+  {
+   "text": "",
+   "tests": 0,
+   "asserts": 0,
+   "skips": 0
+  },
+  {
+   "text": "fn main() { println!(\"no tests here\"); }",
+   "tests": 0,
+   "asserts": 0,
+   "skips": 0
+  }
+ ]
+}

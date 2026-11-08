@@ -613,6 +613,19 @@ impl RunFacts {
     }
 }
 
+/// How many tests a run's output says passed: cargo's `test result: ok. N passed` lines
+/// summed over test binaries, else the last `N passed` any runner printed (pytest, jest,
+/// vitest). `None` when the output names no number, as go's `ok  pkg` does.
+pub(crate) fn passed_count(text: &str) -> Option<u64> {
+    let f = RunFacts::of(text);
+    if f.cargo_passed > 0 {
+        return Some(f.cargo_passed);
+    }
+    text.lines()
+        .rev()
+        .find_map(|l| counts_before(&l.to_ascii_lowercase(), "passed").last())
+}
+
 /// Every `N` that is directly followed by a word starting with `word`, in `text`:
 /// `1 failed, 3 passed` gives 1 for "failed" and 3 for "passed".
 fn counts_before<'a>(text: &'a str, word: &'a str) -> impl Iterator<Item = u64> + 'a {
@@ -1127,6 +1140,19 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 .pointer("/tool_input/command")
                 .and_then(Value::as_str)
                 .unwrap_or("");
+            // A file changed through the shell: one silent line of its own kind, so the
+            // weekly trial's edit-turns stay as registered (MEASUREMENT.md, addendum 5).
+            if event == Event::PostTool && crate::pin::edits_by_shell(cmd) {
+                crate::pin::log_shell_edit(
+                    &input,
+                    ledger_path,
+                    cmd,
+                    input
+                        .get("session_id")
+                        .and_then(Value::as_str)
+                        .and_then(current_prompt),
+                );
+            }
             // The exit status is the fact. Grading a "the tests will pass"
             // prediction from the agent's own account of what happened is the
             // weakest link in a self-graded ledger; this removes it.
@@ -1413,6 +1439,19 @@ fn auto_resolve(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn passed_count_reads_each_runners_own_number() {
+        let cargo = "test result: ok. 3 passed; 0 failed\ntest result: ok. 2 passed; 0 failed";
+        assert_eq!(passed_count(cargo), Some(5));
+        assert_eq!(
+            passed_count("===== 1 failed, 12 passed in 0.31s ====="),
+            Some(12)
+        );
+        assert_eq!(passed_count("Tests:       4 passed, 4 total"), Some(4));
+        assert_eq!(passed_count("ok  \texample.com/pkg\t0.01s"), None);
+        assert_eq!(passed_count(""), None);
+    }
 
     #[test]
     fn the_checkpoint_draw_has_the_logged_chance_and_every_one_always_draws() {

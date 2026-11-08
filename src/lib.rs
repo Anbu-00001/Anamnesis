@@ -23,6 +23,7 @@ pub mod pin;
 pub mod report;
 pub mod scoring;
 pub mod store;
+pub mod surface;
 pub mod trial;
 pub mod untrusted;
 

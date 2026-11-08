@@ -71,14 +71,31 @@ def arm_of(trial, day):
     return ("on" if on else "off"), week
 
 
-def edit_turns(events):
+def weakening(edit):
+    """An edit line (v2, addendum 5) to an existing test or test-config file whose counts
+    fell: fewer test definitions or assertions, or more skips. A candidate, never a verdict."""
+    d = edit.get("delta")
+    return (
+        edit.get("created") is not True  # a new file can only add tests
+        and edit.get("class") in ("test", "test-config")
+        and isinstance(d, list)
+        and len(d) == 3
+        and (d[0] < 0 or d[1] < 0 or d[2] > 0)
+    )
+
+
+def edit_turns(events, kinds=("edit",)):
     """One record per (session, prompt, repo) that edited a file: its last edit, and what
-    the graded runs after that edit said."""
-    edits = [e for e in events if e.get("kind") == "edit"]
+    the graded runs after that edit said. Addendum 4 counts tool edits only; addendum 5's
+    sensitivity reading adds `shell_edit` lines."""
+    edits = [e for e in events if e.get("kind") in kinds]
     runs = sorted(
         (e for e in events if e.get("kind") == "run" and e.get("graded") in ("pass", "fail")),
         key=lambda e: e["_t"],
     )
+    weak = {(e.get("session"), e.get("prompt"), e.get("repo")) for e in edits if weakening(e)}
+    tested = {(e.get("session"), e.get("prompt"), e.get("repo")) for e in edits
+              if e.get("class") in ("test", "test-config")}
     last = {}
     for e in edits:
         key = (e.get("session"), e.get("prompt"), e.get("repo"))
@@ -91,11 +108,16 @@ def edit_turns(events):
         in_turn = [r for r in after if r.get("prompt") == prompt]
         green = next((r for r in after if r["graded"] == "pass"), None)
         turns.append({
+            "session": session,
+            "prompt": prompt,
+            "repo": repo,
             "at": t,
             "failed": None if first is None else first["graded"] == "fail",
             "ended_green": bool(in_turn) and in_turn[-1]["graded"] == "pass",
             "runs_in_turn": len(in_turn),
             "minutes_to_green": None if green is None else (green["_t"] - t).total_seconds() / 60,
+            "weakened": (session, prompt, repo) in weak,
+            "test_edit": (session, prompt, repo) in tested,
         })
     return turns
 
@@ -140,6 +162,11 @@ def analyse(trial, events, today):
             continue
         w = weeks.setdefault(a[1], {"arm": a[0], "turns": []})
         w["turns"].append(t)
+    shell_rate = {}
+    for t in edit_turns(events, kinds=("edit", "shell_edit")):
+        a = arm_of(trial, t["at"].date())
+        if a is not None and t["failed"] is not None:
+            shell_rate.setdefault(a[1], []).append(t["failed"])
     runs_by_week = {}
     for e in events:
         if e.get("kind") == "run" and e.get("graded") in ("pass", "fail"):
@@ -170,6 +197,12 @@ def analyse(trial, events, today):
             "median_minutes_to_green": statistics.median(mins) if mins else None,
             "adherent": (carried / len(runs) >= ADHERENCE) if runs else None,
             "ana_runs": ana_runs,
+            # Addendum 5, exploratory: test-surface edits and the rate without them.
+            "test_edit_share": (sum(t["test_edit"] for t in turns) / len(turns)) if turns else None,
+            "weakened_share": (sum(t["weakened"] for t in turns) / len(turns)) if turns else None,
+            "rate_unweakened": (lambda g: (sum(t["failed"] for t in g) / len(g)) if g else None)(
+                [t for t in graded if not t["weakened"]]),
+            "rate_with_shell": (lambda g: sum(g) / len(g) if g else None)(shell_rate.get(i, [])),
         })
     ds, dropped = [], []
     for p in range(len(trial["on_first"])):
@@ -199,6 +232,12 @@ def report(trial, events, today, out=sys.stdout):
         p(f" {r['week']:>4}  {r['arm']:<3}  {r['edit_turns']:>10}  {r['no_later_run']:>12}  "
           f"{fmt(r['rate']):>9}  {fmt(r['ended_green']):>11}  {fmt(r['runs_per_turn'], '{:.2f}'):>9}  "
           f"{fmt(r['median_minutes_to_green'], '{:.1f}'):>12}  {fmt(r['adherent'], '{}'):>8}  {r['ana_runs']:>8}")
+    p("")
+    p("Test surface (addendum 5, exploratory; edit lines from v2 on):")
+    p(" week  arm  test-edit-turns  weakened-turns  fail-rate-without-weakened  fail-rate-with-shell-edits")
+    for r in rows:
+        p(f" {r['week']:>4}  {r['arm']:<3}  {fmt(r['test_edit_share']):>15}  {fmt(r['weakened_share']):>14}  "
+          f"{fmt(r['rate_unweakened']):>26}  {fmt(r['rate_with_shell']):>26}")
     p("")
     off_adh = sum(1 for r in rows if r["adherent"] is False)
     p(f"Weeks not in their arm (rule 4): {off_adh}. They are analysed as assigned.")
@@ -289,6 +328,20 @@ def selftest():
     assert ds == [1.0, 1.0] and not dropped and complete, (ds, dropped, complete)
     assert [r["arm"] for r in rows] == ["on", "off", "off", "on"]
     assert all(r["adherent"] for r in rows)
+    assert all(r["weakened_share"] == 0 for r in rows)
+    weak = events + [{"kind": "edit", "at": "2027-01-05T10:00:10Z", "session": "s0", "prompt": 0,
+                      "repo": "r", "class": "test", "delta": [0, -1, 0]}]
+    rows_w, _, _, _ = analyse(trial, weak, dt.date(2027, 2, 1))
+    assert abs(rows_w[0]["weakened_share"] - 1 / 3) < 1e-12, rows_w[0]
+    assert rows_w[0]["rate_unweakened"] == 0.0
+    new_file = events + [{"kind": "edit", "at": "2027-01-05T10:00:10Z", "session": "s0", "prompt": 0,
+                          "repo": "r", "class": "test", "created": True, "delta": [1, 1, 1]}]
+    assert analyse(trial, new_file, dt.date(2027, 2, 1))[0][0]["weakened_share"] == 0
+    shell = events + [{"kind": "shell_edit", "at": "2027-01-12T11:00:00Z", "session": "x", "prompt": 9, "repo": "r"},
+                      {"kind": "run", "at": "2027-01-12T11:00:30Z", "session": "x", "prompt": 9, "repo": "r",
+                       "graded": "pass", "arm": "off", "via": "bare"}]
+    rows_s = analyse(trial, shell, dt.date(2027, 2, 1))[0]
+    assert rows_s[1]["rate"] == 1.0 and rows_s[1]["rate_with_shell"] == 0.75, rows_s[1]
     with tempfile.TemporaryFile("w+") as f:
         report(trial, events, dt.date(2027, 2, 1), out=f)
         f.seek(0)

@@ -759,6 +759,12 @@ fn every_test_run_leaves_one_outcome_line_and_nothing_else_does() {
     assert_eq!(field(0, "exit"), 0);
     assert_eq!(field(0, "via"), "bare");
     assert_eq!(field(0, "runner"), "cargo");
+    assert_eq!(field(0, "passed"), 1, "cargo's own count of passing tests");
+    assert_eq!(
+        field(0, "claim"),
+        serde_json::Value::Null,
+        "a bare run settles no claim"
+    );
     assert_eq!(field(1, "graded"), "fail");
     assert_eq!(field(1, "exit"), 101);
     assert_eq!(field(2, "graded"), "untrusted");
@@ -847,6 +853,67 @@ fn an_edit_leaves_a_line_without_the_file_or_its_content() {
         fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap(),
         log
     );
+}
+
+/// An edit to a test file says so, and how many tests, assertions and skips it removed or
+/// added: one word and three numbers, never the file's name (MEASUREMENT.md, addendum 5).
+#[test]
+fn a_test_edit_carries_its_class_and_counts_but_not_its_name() {
+    let s = setup("test_edits");
+    let payload = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Edit",
+        "cwd": "/work/project",
+        "tool_input": {"file_path": "/work/project/tests/test_secret_name.py",
+                       "old_string": "def test_a():\n    assert f() == 1\n",
+                       "new_string": "@pytest.mark.skip\ndef test_a():\n    pass\n"},
+        "tool_response": {"filePath": "/work/project/tests/test_secret_name.py"}
+    })
+    .to_string();
+    assert_eq!(hook(&s, "post-tool", &payload), "");
+    let code = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Write",
+        "cwd": "/work/project",
+        "tool_input": {"file_path": "/work/project/src/new_mod.rs", "content": "fn x() {}"},
+        "tool_response": {"filePath": "/work/project/src/new_mod.rs", "type": "create"}
+    })
+    .to_string();
+    assert_eq!(hook(&s, "post-tool", &code), "");
+    let log = fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap();
+    let lines: Vec<serde_json::Value> = log
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    assert_eq!(lines[0]["v"], 2);
+    assert_eq!(lines[0]["class"], "test");
+    assert_eq!(lines[0]["created"], false);
+    assert_eq!(lines[0]["delta"], serde_json::json!([0, -1, 1]));
+    assert_eq!(lines[1]["class"], "code");
+    assert_eq!(lines[1]["created"], true);
+    assert_eq!(lines[1]["delta"], serde_json::json!([0, 0, 0]));
+    assert!(
+        !log.contains("secret_name") && !log.contains("new_mod") && !log.contains("assert"),
+        "{log}"
+    );
+}
+
+/// A shell command that edits files leaves a `shell_edit` line with the class words of
+/// what it names, never the command, and is not counted as a tool edit.
+#[test]
+fn a_shell_edit_leaves_its_own_line_with_classes_but_not_the_command() {
+    let s = setup("shell_edits");
+    let payload = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+        "cwd": "/work/project",
+        "tool_input": {"command": "sed -i 's/== 3/== 4/' tests/test_secret.py src/secret_mod.rs 2>/dev/null"},
+        "tool_response": {"stdout": "", "stderr": ""}
+    })
+    .to_string();
+    hook(&s, "post-tool", &payload);
+    let log = fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap();
+    let line: serde_json::Value = serde_json::from_str(log.trim()).unwrap();
+    assert_eq!(line["kind"], "shell_edit");
+    assert_eq!(line["classes"], serde_json::json!(["code", "test"]));
+    assert!(!log.contains("secret") && !log.contains("sed"), "{log}");
 }
 
 /// `?70` is a bet the person makes on the agent. The prompt is blocked, so the model never

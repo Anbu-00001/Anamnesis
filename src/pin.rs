@@ -320,6 +320,33 @@ fn ana_run_in(cmd: &str) -> Option<&'static str> {
     })
 }
 
+/// The claim id `cmd` hands to `ana run`, when it is written out: `ana run ab12cd -- ...`.
+/// A shell variable (`ana run "$ID"`) or anything that is not a valid id gives `None`.
+fn ana_run_claim(cmd: &str) -> Option<String> {
+    segments(&flat(cmd)).iter().find_map(|seg| {
+        if let Some(body) = shell_body(seg) {
+            return ana_run_claim(&body);
+        }
+        let all = words(seg);
+        let toks = command_in(&all);
+        if !is_ana_run(&toks.join(" ")) {
+            return None;
+        }
+        let at = toks.iter().position(|t| *t == "run")?;
+        let id = toks[at + 1..]
+            .iter()
+            .take_while(|t| **t != "--")
+            .find(|t| !t.starts_with('-'))?
+            .trim_matches(|c| c == '"' || c == '\'');
+        (!id.is_empty()
+            && id.len() <= 64
+            && id
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '_' | '-')))
+        .then(|| id.to_string())
+    })
+}
+
 /// The test run in `cmd`, if there is one: its runner label and the plain command to pin.
 ///
 /// Redirections and everything after them are not part of what gets pinned: an agent that
@@ -453,8 +480,17 @@ pub(crate) fn log_outcome(
             input.get("tool_use_id").and_then(Value::as_str),
         )
     });
+    // v2 (addendum 5): the claim an `ana run` settles, and how many tests the runner said
+    // passed, so a run narrowed to fewer tests can be told from the whole suite.
+    let out = ["/tool_response/stdout", "/tool_response/stderr", "/error"]
+        .iter()
+        .filter_map(|p| input.pointer(p).and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("\n");
     let rec = json!({
-        "v": 1,
+        "v": 2,
+        "claim": (via == "ana_run").then(|| ana_run_claim(cmd)).flatten(),
+        "passed": crate::hook::passed_count(&out),
         "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "session": untrusted::tag(session),
         "prompt": prompt,
@@ -491,6 +527,58 @@ pub(crate) fn is_edit(input: &Value) -> bool {
         .is_some_and(|t| EDIT_TOOLS.contains(&t))
 }
 
+/// One line per shell command that plainly changes files (`edits_by_shell`), its own kind so
+/// that addendum 4's edit-turns stay as registered. A replay of real transcripts found a
+/// quarter of edit-turns edited only through the shell, invisible to the edit lines
+/// (MEASUREMENT.md, addendum 5). `classes` are the class words of the path-like words on the
+/// command's first line; never a name, never the command.
+pub(crate) fn log_shell_edit(input: &Value, ledger_path: &Path, cmd: &str, prompt: Option<u64>) {
+    let session = input
+        .get("session_id")
+        .and_then(Value::as_str)
+        .unwrap_or("default");
+    let cwd = input.get("cwd").and_then(Value::as_str);
+    let mut classes: Vec<&str> = cmd
+        .lines()
+        .next()
+        .unwrap_or("")
+        .split_whitespace()
+        .map(|t| t.trim_matches(|c| matches!(c, '"' | '\'' | ';' | '(' | ')')))
+        .map(|t| t.trim_start_matches(">>").trim_start_matches('>'))
+        .filter(|t| {
+            !t.is_empty()
+                && !t.starts_with('-')
+                && !t.contains(['$', '=', '*', '&', '|'])
+                && (t.contains('/')
+                    || t.rsplit_once('.')
+                        .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty()))
+                && !t.starts_with("/dev/")
+        })
+        .map(crate::surface::class_of)
+        .collect();
+    classes.sort_unstable();
+    classes.dedup();
+    let rec = json!({
+        "v": 2,
+        "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+        "kind": "shell_edit",
+        "session": untrusted::tag(session),
+        "prompt": prompt,
+        "project": untrusted::tag(&project_slug(cwd)),
+        "repo": cwd
+            .and_then(|d| repo_of(&run_dir(cmd, Path::new(d))))
+            .as_deref()
+            .map(untrusted::tag),
+        "subagent": input.get("agent_id").is_some(),
+        "arm": crate::trial::arm_today(ledger_path).map(crate::trial::Arm::label),
+        "classes": classes,
+    });
+    let _ = store::append_private(
+        &ledger_path.with_file_name("outcomes.jsonl"),
+        &rec.to_string(),
+    );
+}
+
 /// One line per file edit in `outcomes.jsonl`: when, which session and prompt, which
 /// repo. Never the file's name or anything of its content. The weekly trial's primary
 /// outcome is whether the first test run after a turn's last edit failed, and needs it.
@@ -514,8 +602,10 @@ pub(crate) fn log_edit(input: &Value, ledger_path: &Path, prompt: Option<u64>) {
             dir.parent().and_then(repo_of)
         })
         .or_else(|| cwd.and_then(|d| repo_of(Path::new(d))));
+    // v2 (addendum 5): what the edit did to the test surface, as a class word and three
+    // counts. Still never the file's name or its content.
     let rec = json!({
-        "v": 1,
+        "v": 2,
         "at": Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
         "kind": "edit",
         "session": untrusted::tag(session),
@@ -524,6 +614,9 @@ pub(crate) fn log_edit(input: &Value, ledger_path: &Path, prompt: Option<u64>) {
         "repo": repo.as_deref().map(untrusted::tag),
         "subagent": input.get("agent_id").is_some(),
         "arm": crate::trial::arm_today(ledger_path).map(crate::trial::Arm::label),
+        "class": file.map(crate::surface::class_of),
+        "created": crate::surface::created(input),
+        "delta": crate::surface::delta(input),
     });
     let _ = store::append_private(
         &ledger_path.with_file_name("outcomes.jsonl"),
@@ -655,7 +748,7 @@ fn model_of(tail: &str) -> Option<String> {
 
 /// Whether a shell command plainly changes files. A floor, not a census: a script can do it
 /// any way it likes, so `after_edit: false` means no edit was seen.
-fn edits_by_shell(cmd: &str) -> bool {
+pub(crate) fn edits_by_shell(cmd: &str) -> bool {
     [
         "sed -i",
         "perl -i",
@@ -891,6 +984,43 @@ pub fn pre_tool(input: &Value, ledger: &Ledger, ledger_path: &Path) -> Option<Va
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_audit_draw_matches_its_python_port_bit_for_bit() {
+        // validation/audit_report.py re-derives every edit-turn's draw (addendum 5). The
+        // same 64 draws are asserted there; if either side changes, both tests fail.
+        let bits: String = (0..64u64)
+            .map(|i| {
+                if audit_drawn(&format!("s{}", i % 5), i, 0.5) {
+                    '1'
+                } else {
+                    '0'
+                }
+            })
+            .collect();
+        assert_eq!(
+            bits,
+            "0100000011100001010011101001011000010110100011011110111110000110"
+        );
+    }
+
+    #[test]
+    fn the_claim_an_ana_run_settles_is_read_only_when_written_out() {
+        assert_eq!(
+            ana_run_claim("ana run ab12cd -- cargo test").as_deref(),
+            Some("ab12cd")
+        );
+        assert_eq!(
+            ana_run_claim("cd /r && nice -n 19 ana run 'x_1.y' -- pytest -q").as_deref(),
+            Some("x_1.y")
+        );
+        assert_eq!(
+            ana_run_claim(r#"ID=$(ana add "a" --prob 0.9) && ana run "$ID" -- cargo test"#),
+            None
+        );
+        assert_eq!(ana_run_claim("ana run -- cargo test"), None);
+        assert_eq!(ana_run_claim("cargo test"), None);
+    }
 
     #[test]
     fn the_audit_draw_has_the_chance_it_says_and_is_fixed_per_turn() {

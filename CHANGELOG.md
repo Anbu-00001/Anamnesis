@@ -5,6 +5,29 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Added
+
+- **What an edit did to the tests** (MEASUREMENT.md, addendum 5). Each edit line in
+  `outcomes.jsonl` (now `v: 2`) carries a class word for the file (`test`, `test-config`,
+  `build`, `doc`, `code`, from each runner's documented default patterns), whether the edit
+  made the file, and how many test definitions, assertions and skips it added or removed.
+  Never the file's name or its content. Claude models cheating on impossible tasks did it
+  mostly by editing tests, and the weekly trial counted a pass after an edit as a success
+  whatever happened to the tests. `src/surface.rs`, pure, shares its fixture with the
+  offline replay so the two cannot drift.
+- A shell command that plainly edits files leaves a `shell_edit` line in `outcomes.jsonl`
+  with the class words of what it names, never the command. A replay found a quarter of
+  edit-turns edited only through the shell, which the edit lines never saw.
+- Each run line carries the claim an `ana run` settles and how many tests the runner said
+  passed, so a narrowed run can be told from the whole suite.
+- `validation/audit_report.py`: the audit refusal at rate 0.5 as a micro-randomized
+  experiment of its own, pre-registered before any data. Its port of the audit draw is
+  asserted bit for bit against the engine's.
+- `validation/test_integrity_replay.py`: the transcript replay, how often a pinned pass
+  came after its tests were edited, with a private, hand-labelled hits file.
+- `crossover_report.py` reports the test-surface measures per week, exploratory only;
+  addendum 4's rules and its text (and so its hash) are unchanged.
+
 ### Fixed
 
 - `install-ana.sh` refused to install 0.6.0 for anyone signed in to an older GitHub CLI,
