@@ -3,6 +3,17 @@
 All notable changes to this project are documented here.
 This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- `install-ana.sh` refused to install 0.6.0 for anyone signed in to an older GitHub CLI,
+  such as Ubuntu's own `gh` 2.45, which has no `attestation` command. It read "unknown
+  command" as a failed verification and reported that the release was not built by its
+  own workflow, which was false. It now checks that `gh` has the command, and otherwise
+  prints how to verify by hand. The README's install line fetches the installer from
+  `main`, so the fix applies without a new release.
+
 ## [0.6.0] — 2026-11-08
 
 The rest of the 0.5.0 audit, an experiment on the whole tool built before any of its data,

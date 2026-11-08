@@ -108,7 +108,10 @@ if [ -n "${ANAMNESIS_RELEASE_BASE:-}" ] || [ "${ANAMNESIS_SKIP_ATTESTATION:-}" =
   :
 elif older_than_attestations; then
   echo "  (releases before 0.6.0 carry no build attestation)"
-elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
+elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1 \
+     && gh attestation verify --help >/dev/null 2>&1; then
+  # The last test matters: an older gh (Ubuntu's own package is 2.45) has no `attestation`
+  # command, and treating "unknown command" as a failed verification blocked the install.
   if gh attestation verify "$tmp/ana" --repo "$REPO" >/dev/null 2>&1; then
     echo "✓ build provenance verified (GitHub attestation from $REPO)"
   else
@@ -117,7 +120,8 @@ elif command -v gh >/dev/null 2>&1 && gh auth status >/dev/null 2>&1; then
     exit 1
   fi
 else
-  echo "  provenance not checked (needs the GitHub CLI, signed in). To check it yourself:"
+  echo "  provenance not checked (needs a GitHub CLI with the attestation command, signed in)."
+  echo "  To check it yourself, with a current gh:"
   echo "    gh attestation verify ~/.anamnesis/bin/$bin --repo $REPO"
 fi
 
