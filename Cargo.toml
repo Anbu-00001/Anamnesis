@@ -1,5 +1,7 @@
 [package]
-name = "anamnesis"
+# crates.io has an unrelated `anamnesis`, so the package is `anamnesis-diary`. The library
+# keeps the name `anamnesis` ([lib] below) and the binary stays `ana`.
+name = "anamnesis-diary"
 version = "0.6.1"
 edition = "2021"
 # File::lock (src/store.rs) is std as of 1.89.
@@ -23,6 +25,9 @@ include = [
     "/LICENSE",
     "/CHANGELOG.md",
     "/SECURITY.md",
+    # src/surface.rs's unit test reads it at compile time; without it `cargo test` on the
+    # published crate does not build.
+    "/tests/fixtures/test_surface_cases.json",
 ]
 
 # cargo-binstall: the release assets are bare executables named ana-<target>[.exe] under

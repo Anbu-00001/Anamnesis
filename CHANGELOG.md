@@ -5,6 +5,12 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+## [0.6.1] — 2026-11-21
+
+The first release on crates.io, as `anamnesis-diary` (`cargo install anamnesis-diary
+--locked`). The name `anamnesis` there belongs to an unrelated crate. The command is still
+`ana`, the library is still `anamnesis`, and nothing under `~/.anamnesis/` moves.
+
 ### Added
 
 - **What an edit did to the tests** (MEASUREMENT.md, addendum 5). Each edit line in

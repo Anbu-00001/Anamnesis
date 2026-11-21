@@ -31,7 +31,10 @@ model and no network.
 ## Install
 
 ```bash
-# from source (Rust 1.89 or newer)
+# from crates.io (Rust 1.89 or newer); the package is anamnesis-diary, the command is ana
+cargo install anamnesis-diary --locked
+
+# or from source
 cargo install --git https://github.com/Anbu-00001/Anamnesis --locked
 
 # or a prebuilt binary for Linux, macOS, or Windows under Git Bash
