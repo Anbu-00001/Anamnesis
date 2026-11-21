@@ -168,7 +168,7 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
 
-      - name: From source, as the README's first install line does
+      - name: From source, as the README's from-source install line does
         shell: bash
         run: |
           cargo install --git "https://github.com/${{ github.repository }}" --tag "$TAG" --locked

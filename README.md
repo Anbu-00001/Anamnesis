@@ -5,7 +5,7 @@ are before you find out, then checks whether your "80% sure" comes true 80% of t
 It works the same for a person and for a coding agent.
 
 [![CI](https://github.com/Anbu-00001/Anamnesis/actions/workflows/ci.yml/badge.svg)](https://github.com/Anbu-00001/Anamnesis/actions/workflows/ci.yml)
-[![Release](https://img.shields.io/github/v/release/Anbu-00001/Anamnesis)](https://github.com/Anbu-00001/Anamnesis/releases)
+[![crates.io](https://img.shields.io/crates/v/anamnesis-diary)](https://crates.io/crates/anamnesis-diary)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
 
 ![A 30-second tour of Anamnesis 0.6.0: logging a prediction at 70%, resolving it, the report listing the calls graded so far with a 90% miss marked as the costliest, and a bet of 70% on a coding agent's next test run, which the agent never sees and which is graded by the run's exit status.](docs/assets/tour.gif)
@@ -194,7 +194,9 @@ Jordan, PNAS 2021). Whether a miscalibration is real is answered by an anytime-v
 e-process, which stays valid however often you look (Arnold, Henzi and Ziegel, Annals of
 Applied Statistics 2023). `ana decide` applies Chow's reject rule to the recalibrated
 probability. Every number, and the measurement behind it, is in
-[docs/METHODS.md](docs/METHODS.md); the scoring core is also a Python library
+[docs/METHODS.md](docs/METHODS.md). The scoring core is also a Rust library
+(`anamnesis-diary` on crates.io, imported as `anamnesis`, API on
+[docs.rs](https://docs.rs/anamnesis-diary)) and a Python library
 ([docs/PYTHON.md](docs/PYTHON.md)). GitHub's "Cite this repository" link reads
 [CITATION.cff](CITATION.cff).
 

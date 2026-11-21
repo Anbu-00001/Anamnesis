@@ -252,7 +252,13 @@ cargo run --example seed -- seed.json && ./target/release/ana --data seed.json r
 ./scripts/check-versions.sh      # Cargo.toml == plugin.json == marketplace.json
 ./validation/repro.sh            # the measured defects, against the built binary
 cd bindings/python && maturin develop --release && pytest -q
+cargo package --list             # what a publish ships: the `include` allowlist in Cargo.toml
 ```
+
+On crates.io the package is **`anamnesis-diary`** (`anamnesis` there is an unrelated crate);
+the library is still `anamnesis` (`[lib] name`) and the binary `ana`, so code and docs say
+`anamnesis::`. A publish is permanent. A file a unit test reads at compile time
+(`include_str!`) must be in `include`, or `cargo test` on the published crate cannot build.
 
 No dependency may be added without a real reason; current deps are clap, serde,
 serde_json, chrono only, and `scoring` touches none of them.

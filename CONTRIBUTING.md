@@ -118,6 +118,19 @@ one needs `accTitle` and `accDescr`, a paragraph before it carrying the same
 content in prose, and the name of the implementing function so drift is visible
 at review time.
 
+## Releasing
+
+The crates.io package is `anamnesis-diary`; the library inside it is `anamnesis` and the
+command is `ana`. In order:
+
+1. Bump the version everywhere and check: `./scripts/check-versions.sh`.
+2. Date the version's heading in `CHANGELOG.md` and its line in `CITATION.cff`.
+3. `cargo package --list`: only what the `include` allowlist in `Cargo.toml` names ships,
+   for good. Unpack the `.crate` and run `cargo test --lib` in it.
+4. Commit, tag `vX.Y.Z` and push the tag; the release workflow builds the binaries,
+   checksums and attestations, and smoke-tests the install lines.
+5. `cargo publish`. A version can be yanked but never replaced or deleted.
+
 ## Reporting a problem
 
 Two issue templates: an ordinary bug, and "the verdict looks wrong", which asks

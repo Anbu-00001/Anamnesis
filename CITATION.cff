@@ -12,8 +12,8 @@ type: software
 authors:
   - alias: Anbu-00001
     given-names: Anbu
-version: 0.6.0
-date-released: "2026-11-08"
+version: 0.6.1
+date-released: "2026-11-21"
 license: MIT
 repository-code: "https://github.com/Anbu-00001/Anamnesis"
 keywords:

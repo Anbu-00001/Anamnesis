@@ -97,6 +97,13 @@ Each has a script; none is from memory.
 
 ## Package names — RE-CHECK BEFORE PUBLISHING
 
+**Update, 2026-11-21: the crates.io package is `anamnesis-diary`**, published at 0.6.1
+(https://crates.io/crates/anamnesis-diary). Only `[package] name` changed: `[lib] name`
+stays `anamnesis`, the binary stays `ana`, and the Python binding's path dependency reads
+`anamnesis = { package = "anamnesis-diary", path = "../.." }`. PyPI is still open: the
+manifest says `anamnesis`, which is taken there, and the import-name collision below still
+applies. The notes below are from before the choice.
+
 **Both manifests currently declare a name that is taken on both registries.**
 `Cargo.toml` and `bindings/python/pyproject.toml` both say `name = "anamnesis"`,
 so a publish of either cannot succeed as they stand. This has to be decided and
