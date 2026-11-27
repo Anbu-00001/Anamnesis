@@ -5,6 +5,16 @@ This project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [Unreleased]
 
+### Fixed
+
+- The `shell_edit` line in `outcomes.jsonl` fired on a substring floor that counted every
+  read-only `python3 - <<EOF` and every write to `/tmp`: 1,581 shell edits beside 300 tool
+  edits on one machine. It now fires on the files a command writes (`surface::shell_writes`,
+  ported from the transcript replay and checked against it on 39,981 real commands), or on a
+  script that calls a write and quotes a kept path or none (`surface::script_writes`, logged
+  as `script`). Lines gain `hows`; `classes` now come from the written paths. Logging only:
+  nothing the model sees changes (MEASUREMENT.md, addendum 5, note of 2026-11-27).
+
 ## [0.6.1] — 2026-11-21
 
 The first release on crates.io, as `anamnesis-diary` (`cargo install anamnesis-diary

@@ -493,6 +493,25 @@ and 124 of 485 edit-turns (25.6%) edited only through the shell, which is why th
 4 edits outside a graded window were labelled weakenings (a deleted oracle test, an added
 conditional skip among them); they count toward no threshold.
 
+**Dated note, 2026-11-27, before any trial data (the trial starts 2027-01-04; addendum 4's
+text is unchanged).** The `shell_edit` line over-counted. It fired on the engine's substring
+floor, which reads every `python3 - <<EOF` as an edit and every write to `/tmp` as a kept one:
+by 2026-11-27 the log held 1,581 `shell_edit` lines beside 300 tool `edit` lines. From this
+date the line fires on what the command writes. `surface::shell_writes` is the replay's own
+detector, ported to the engine and checked against it on a shared fixture and on all 39,981
+Bash commands in this machine's transcripts (0 disagreements). Where it finds nothing,
+`surface::script_writes` catches a script that calls a write (`open(p, 'w')`,
+`.write_text(`) unless every path it quotes is scratch, logged with `hows: ["script"]`
+because its targets are guessed from quoted words. On those 39,981 commands the old floor
+fired on 12,241 and the new rule on 11,410. 2,183 were dropped: read-only scripts, scratch
+writes, `git commit -F - <<`. 1,352 were gained: `rm`, `>>`, plain redirects and
+`git checkout --`. 5,463 of the 11,410 are `script` guesses. A line now carries `hows`
+(`redirect`, `append`, `in-place`, `tee`, `delete`, `git-restore`, `patch`, `python-write`,
+`script`) and classes from the written paths, not from words on the first line. The pin and
+audit reminders' `after_edit` keeps the old floor, deliberately generous, until the trial
+clears. Lines before this date keep the old meaning: a reading of shell-only edit-turns uses
+lines from 2026-11-27 on, or says it mixes the two.
+
 ## Running it
 
 ```bash

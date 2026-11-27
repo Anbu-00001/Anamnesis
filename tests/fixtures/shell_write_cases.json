@@ -1,0 +1,209 @@
+{
+ "_doc": "Files a shell command writes, as validation/test_integrity_replay.py shell_writes() returns them; src/surface.rs shell_writes must agree (surface.rs test).",
+ "cases": [
+  {
+   "cmd": "sed -i 's/a/b/' tests/test_x.py",
+   "writes": [
+    [
+     "tests/test_x.py",
+     "sed-i"
+    ]
+   ]
+  },
+  {
+   "cmd": "sed -i.bak -e 's/a/b/' -e 's/c/d/' src/a.rs src/b.rs",
+   "writes": [
+    [
+     "src/a.rs",
+     "sed-i"
+    ],
+    [
+     "src/b.rs",
+     "sed-i"
+    ]
+   ]
+  },
+  {
+   "cmd": "sed -n 1,20p src/main.rs",
+   "writes": []
+  },
+  {
+   "cmd": "echo hi > out.txt 2>/dev/null",
+   "writes": [
+    [
+     "out.txt",
+     "redirect"
+    ]
+   ]
+  },
+  {
+   "cmd": "cargo test 2>&1 | tail -5",
+   "writes": []
+  },
+  {
+   "cmd": "cargo test > /tmp/log.txt",
+   "writes": []
+  },
+  {
+   "cmd": "echo x >> notes.md && cat notes.md",
+   "writes": [
+    [
+     "notes.md",
+     "append"
+    ]
+   ]
+  },
+  {
+   "cmd": "cat > tests/new_test.py <<'EOF'\ndef test_a():\n    assert 1 > 0\nEOF",
+   "writes": [
+    [
+     "tests/new_test.py",
+     "redirect"
+    ]
+   ]
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nimport json\nprint(json.load(open('a.json'))['x'] > 1)\nEOF",
+   "writes": []
+  },
+  {
+   "cmd": "python3 - <<'EOF'\nopen('src/gen.py', 'w').write('x = 1')\nEOF",
+   "writes": [
+    [
+     "src/gen.py",
+     "python-write"
+    ]
+   ]
+  },
+  {
+   "cmd": "python3 -c \"open('/tmp/x', 'w').write('1')\"",
+   "writes": []
+  },
+  {
+   "cmd": "echo 'a > b' | grep '>'",
+   "writes": []
+  },
+  {
+   "cmd": "git checkout -- src/a.rs tests/b.rs",
+   "writes": [
+    [
+     "src/a.rs",
+     "git-restore"
+    ],
+    [
+     "tests/b.rs",
+     "git-restore"
+    ]
+   ]
+  },
+  {
+   "cmd": "git restore --staged -- README.md",
+   "writes": [
+    [
+     "README.md",
+     "git-restore"
+    ]
+   ]
+  },
+  {
+   "cmd": "git rm -r --cached old_dir tests/old_test.py",
+   "writes": [
+    [
+     "old_dir",
+     "delete"
+    ],
+    [
+     "tests/old_test.py",
+     "delete"
+    ]
+   ]
+  },
+  {
+   "cmd": "rm -rf target tests/test_flaky.py",
+   "writes": [
+    [
+     "target",
+     "delete"
+    ],
+    [
+     "tests/test_flaky.py",
+     "delete"
+    ]
+   ]
+  },
+  {
+   "cmd": "ls | tee listing.txt",
+   "writes": [
+    [
+     "listing.txt",
+     "tee"
+    ]
+   ]
+  },
+  {
+   "cmd": "cargo build 2>&1 | tee -a build.log",
+   "writes": [
+    [
+     "build.log",
+     "append"
+    ]
+   ]
+  },
+  {
+   "cmd": "FOO=1 sudo tee /etc/hosts < hosts.new",
+   "writes": [
+    [
+     "/etc/hosts",
+     "tee"
+    ]
+   ]
+  },
+  {
+   "cmd": "git apply <<'EOF'\n--- a/src/x.rs\n+++ b/src/x.rs\n@@ -1 +1 @@\n-a\n+b\nEOF",
+   "writes": [
+    [
+     "src/x.rs",
+     "patch"
+    ]
+   ]
+  },
+  {
+   "cmd": "cat file > $OUT",
+   "writes": []
+  },
+  {
+   "cmd": "echo \"unclosed",
+   "writes": []
+  },
+  {
+   "cmd": "printf '%s\\n' x > \"my file.txt\"",
+   "writes": [
+    [
+     "my file.txt",
+     "redirect"
+    ]
+   ]
+  },
+  {
+   "cmd": "cd /repo && nice -n 19 sed -i 's/x/y/' tests/a_test.go",
+   "writes": []
+  },
+  {
+   "cmd": "node -e \"const a = b > c ? 1 : 2\" | grep 'sed -i x y' && echo ok 2>&1 >/dev/null",
+   "writes": []
+  },
+  {
+   "cmd": "echo done > /home/anbu/scratchpad/x.txt",
+   "writes": []
+  },
+  {
+   "cmd": "cmd 1> stdout.log",
+   "writes": [
+    [
+     "stdout.log",
+     "redirect"
+    ]
+   ]
+  }
+ ]
+}

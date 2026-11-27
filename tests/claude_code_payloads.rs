@@ -916,6 +916,59 @@ fn a_shell_edit_leaves_its_own_line_with_classes_but_not_the_command() {
     assert!(!log.contains("secret") && !log.contains("sed"), "{log}");
 }
 
+/// A command that only reads, or writes nowhere that is kept, is not a shell edit. The old
+/// substring rule logged both, five shell edits to every tool edit on a real machine.
+#[test]
+fn a_read_only_heredoc_or_a_scratch_write_is_not_a_shell_edit() {
+    let s = setup("shell_reads");
+    for cmd in [
+        "python3 - <<'EOF'\nimport json\nprint(json.load(open('a.json'))['x'] > 1)\nEOF",
+        "cat > /tmp/notes.txt <<'EOF'\nhello\nEOF",
+        "cargo test 2>&1 | tee /tmp/log.txt",
+        "echo 'a > b' | grep '>'",
+    ] {
+        let payload = serde_json::json!({
+            "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+            "cwd": "/work/project", "tool_input": {"command": cmd},
+            "tool_response": {"stdout": "", "stderr": ""}
+        })
+        .to_string();
+        hook(&s, "post-tool", &payload);
+        let log = fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap_or_default();
+        assert!(!log.contains("shell_edit"), "{cmd:?} -> {log}");
+    }
+    // A heredoc that writes a kept file is one.
+    let payload = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+        "cwd": "/work/project",
+        "tool_input": {"command": "cat > tests/test_new.py <<'EOF'\ndef test_a():\n    assert 1 > 0\nEOF"},
+        "tool_response": {"stdout": "", "stderr": ""}
+    })
+    .to_string();
+    hook(&s, "post-tool", &payload);
+    let log = fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap();
+    // The `cargo test` above left its own test-run line; the edit is the last one.
+    let line: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(line["kind"], "shell_edit");
+    assert_eq!(line["classes"], serde_json::json!(["test"]));
+    assert_eq!(line["hows"], serde_json::json!(["redirect"]));
+    // A script that edits through a variable is one too, logged as a guess.
+    let payload = serde_json::json!({
+        "session_id": "s1", "hook_event_name": "PostToolUse", "tool_name": "Bash",
+        "cwd": "/work/project",
+        "tool_input": {"command": "python3 - <<'EOF'\np = 'tests/test_b.py'; s = open(p).read()\nopen(p, 'w').write(s)\nEOF"},
+        "tool_response": {"stdout": "", "stderr": ""}
+    })
+    .to_string();
+    hook(&s, "post-tool", &payload);
+    let log = fs::read_to_string(s.dir.join("outcomes.jsonl")).unwrap();
+    let line: serde_json::Value = serde_json::from_str(log.lines().last().unwrap()).unwrap();
+    assert_eq!(line["kind"], "shell_edit");
+    assert_eq!(line["classes"], serde_json::json!(["test"]));
+    assert_eq!(line["hows"], serde_json::json!(["script"]));
+    assert!(!log.contains("test_b"), "{log}");
+}
+
 /// `?70` is a bet the person makes on the agent. The prompt is blocked, so the model never
 /// sees it, the prompt counter does not move, and the bet is graded by the first test run
 /// after an edit from the agent's next turn on, told to the person only.

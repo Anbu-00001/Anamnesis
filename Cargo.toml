@@ -25,9 +25,10 @@ include = [
     "/LICENSE",
     "/CHANGELOG.md",
     "/SECURITY.md",
-    # src/surface.rs's unit test reads it at compile time; without it `cargo test` on the
+    # src/surface.rs's unit tests read these at compile time; without it `cargo test` on the
     # published crate does not build.
     "/tests/fixtures/test_surface_cases.json",
+    "/tests/fixtures/shell_write_cases.json",
 ]
 
 # cargo-binstall: the release assets are bare executables named ana-<target>[.exe] under

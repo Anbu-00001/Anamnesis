@@ -527,35 +527,47 @@ pub(crate) fn is_edit(input: &Value) -> bool {
         .is_some_and(|t| EDIT_TOOLS.contains(&t))
 }
 
-/// One line per shell command that plainly changes files (`edits_by_shell`), its own kind so
-/// that addendum 4's edit-turns stay as registered. A replay of real transcripts found a
-/// quarter of edit-turns edited only through the shell, invisible to the edit lines
-/// (MEASUREMENT.md, addendum 5). `classes` are the class words of the path-like words on the
-/// command's first line; never a name, never the command.
-pub(crate) fn log_shell_edit(input: &Value, ledger_path: &Path, cmd: &str, prompt: Option<u64>) {
+/// One line per shell command that writes or deletes files, its own kind so that addendum
+/// 4's edit-turns stay as registered. A replay of real transcripts found a quarter of
+/// edit-turns edited only through the shell, invisible to the edit lines (MEASUREMENT.md,
+/// addendum 5). `writes` is `surface::shell_writes`, the replay's own detector, else
+/// `surface::script_writes` as `script` (an empty path when the script names none); never
+/// empty here: the substring floor this used to share with `after_edit` counted every read-only
+/// `python3 - <<EOF` and every write to `/tmp`, five shell edits to each tool edit. `classes`
+/// and `hows` are class and kind words of the written files; never a name, never the command.
+pub(crate) fn log_shell_edit(
+    input: &Value,
+    ledger_path: &Path,
+    cmd: &str,
+    writes: &[(String, &'static str)],
+    prompt: Option<u64>,
+) {
     let session = input
         .get("session_id")
         .and_then(Value::as_str)
         .unwrap_or("default");
     let cwd = input.get("cwd").and_then(Value::as_str);
-    let mut classes: Vec<&str> = cmd
-        .lines()
-        .next()
-        .unwrap_or("")
-        .split_whitespace()
-        .map(|t| t.trim_matches(|c| matches!(c, '"' | '\'' | ';' | '(' | ')')))
-        .map(|t| t.trim_start_matches(">>").trim_start_matches('>'))
-        .filter(|t| {
-            !t.is_empty()
-                && !t.starts_with('-')
-                && !t.contains(['$', '=', '*', '&', '|'])
-                && (t.contains('/')
-                    || t.rsplit_once('.')
-                        .is_some_and(|(a, b)| !a.is_empty() && !b.is_empty()))
-                && !t.starts_with("/dev/")
-        })
-        .map(crate::surface::class_of)
+    let dir = cwd.map(|d| run_dir(cmd, Path::new(d)));
+    // A script whose target could not be read is logged with no class (an empty path).
+    let mut classes: Vec<&str> = writes
+        .iter()
+        .filter(|(p, _)| !p.is_empty())
+        .map(|(p, _)| crate::surface::class_of(p))
         .collect();
+    // `sed-i` is the replay's word; the log says what happened, not which tool did it.
+    let mut hows: Vec<&str> = writes
+        .iter()
+        .map(|(_, h)| if *h == "sed-i" { "in-place" } else { *h })
+        .collect();
+    hows.sort_unstable();
+    hows.dedup();
+    let repo = dir.as_deref().and_then(|d| {
+        writes
+            .iter()
+            .filter(|(p, _)| !p.is_empty())
+            .find_map(|(p, _)| d.join(p).parent().and_then(repo_of))
+            .or_else(|| repo_of(d))
+    });
     classes.sort_unstable();
     classes.dedup();
     let rec = json!({
@@ -565,13 +577,11 @@ pub(crate) fn log_shell_edit(input: &Value, ledger_path: &Path, cmd: &str, promp
         "session": untrusted::tag(session),
         "prompt": prompt,
         "project": untrusted::tag(&project_slug(cwd)),
-        "repo": cwd
-            .and_then(|d| repo_of(&run_dir(cmd, Path::new(d))))
-            .as_deref()
-            .map(untrusted::tag),
+        "repo": repo.as_deref().map(untrusted::tag),
         "subagent": input.get("agent_id").is_some(),
         "arm": crate::trial::arm_today(ledger_path).map(crate::trial::Arm::label),
         "classes": classes,
+        "hows": hows,
     });
     let _ = store::append_private(
         &ledger_path.with_file_name("outcomes.jsonl"),
@@ -746,8 +756,11 @@ fn model_of(tail: &str) -> Option<String> {
         })
 }
 
-/// Whether a shell command plainly changes files. A floor, not a census: a script can do it
-/// any way it likes, so `after_edit: false` means no edit was seen.
+/// Whether a shell command may change files, for `after_edit`. A generous floor, not a
+/// census: a script can write any way it likes, so `after_edit: false` means no edit was
+/// seen. It reads a read-only `python3 - <<EOF` as an edit too, which is why the logged
+/// `shell_edit` lines use `surface::shell_writes` instead; this one decides what the pin and
+/// audit reminders treat as after an edit, and is left as it was until the trial clears.
 pub(crate) fn edits_by_shell(cmd: &str) -> bool {
     [
         "sed -i",

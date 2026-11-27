@@ -126,7 +126,10 @@ command is `ana`. In order:
 1. Bump the version everywhere and check: `./scripts/check-versions.sh`.
 2. Date the version's heading in `CHANGELOG.md` and its line in `CITATION.cff`.
 3. `cargo package --list`: only what the `include` allowlist in `Cargo.toml` names ships,
-   for good. Unpack the `.crate` and run `cargo test --lib` in it.
+   for good. Unpack the `.crate` and run `cargo test --lib` in it, with `CARGO_TARGET_DIR`
+   set to a scratch folder. After the 0.6.1 check, the repo's own debug build was found
+   tracking the unpacked copy's sources, and `cargo build` called edited code fresh until
+   `cargo clean -p anamnesis-diary`. If a change seems to do nothing, check that first.
 4. Commit, tag `vX.Y.Z` and push the tag; the release workflow builds the binaries,
    checksums and attestations, and smoke-tests the install lines.
 5. `cargo publish`. A version can be yanked but never replaced or deleted.

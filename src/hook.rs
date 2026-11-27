@@ -1142,11 +1142,25 @@ pub fn run(event: Event, ledger_path: &std::path::Path) -> Result<(), String> {
                 .unwrap_or("");
             // A file changed through the shell: one silent line of its own kind, so the
             // weekly trial's edit-turns stay as registered (MEASUREMENT.md, addendum 5).
-            if event == Event::PostTool && crate::pin::edits_by_shell(cmd) {
+            // What it writes, read from the command, else a script's guess (`script`).
+            let mut writes = Vec::new();
+            if event == Event::PostTool {
+                writes = crate::surface::shell_writes(cmd);
+                if writes.is_empty() {
+                    if let Some(paths) = crate::surface::script_writes(cmd) {
+                        writes = paths.into_iter().map(|p| (p, "script")).collect();
+                        if writes.is_empty() {
+                            writes.push((String::new(), "script"));
+                        }
+                    }
+                }
+            }
+            if !writes.is_empty() {
                 crate::pin::log_shell_edit(
                     &input,
                     ledger_path,
                     cmd,
+                    &writes,
                     input
                         .get("session_id")
                         .and_then(Value::as_str)

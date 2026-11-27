@@ -310,6 +310,454 @@ pub fn created(input: &Value) -> Option<bool> {
     }
 }
 
+// ---- shell writes ---------------------------------------------------------------------
+//
+// A port of `shell_writes` in validation/test_integrity_replay.py, checked against the same
+// cases (`tests/fixtures/shell_write_cases.json`). It replaced a substring floor
+// (`sed -i`, `cat >`, `tee `, ` - <<`, ...) that counted every `python3 - <<EOF` analysis
+// script and every scratch file as an edit: 1,563 shell-edit lines against 300 tool edits in
+// the first 20 days of the v2 log (MEASUREMENT.md, addendum 5).
+
+/// The line's heredoc marker: `<<EOF`, `<<-'EOF'`, `<< "END"` (Python: `<<-?\s*['"]?(\w+)['"]?`,
+/// an identifier that starts with a letter or `_`).
+fn heredoc_marker(line: &str) -> Option<String> {
+    let c: Vec<char> = line.chars().collect();
+    (0..c.len().saturating_sub(1)).find_map(|i| {
+        if c[i] != '<' || c[i + 1] != '<' {
+            return None;
+        }
+        let mut j = i + 2;
+        if c.get(j) == Some(&'-') {
+            j += 1;
+        }
+        while c.get(j).is_some_and(|x| x.is_whitespace()) {
+            j += 1;
+        }
+        if matches!(c.get(j), Some('\'' | '"')) {
+            j += 1;
+        }
+        if !c.get(j).is_some_and(|x| x.is_alphabetic() || *x == '_') {
+            return None;
+        }
+        let start = j;
+        while c.get(j).is_some_and(|x| x.is_alphanumeric() || *x == '_') {
+            j += 1;
+        }
+        Some(c[start..j].iter().collect())
+    })
+}
+
+/// The command with heredoc bodies dropped (the line that opens one is kept).
+fn strip_heredocs(cmd: &str) -> String {
+    let lines: Vec<&str> = cmd.split('\n').collect();
+    let (mut out, mut i) = (Vec::new(), 0);
+    while i < lines.len() {
+        out.push(lines[i]);
+        let marker = heredoc_marker(lines[i]);
+        i += 1;
+        if let Some(m) = marker {
+            while i < lines.len() && lines[i].trim() != m {
+                i += 1;
+            }
+            i += 1;
+        }
+    }
+    out.join("\n")
+}
+
+/// Shell words, quotes respected and runs of `();<>|&` and newlines split out as operator
+/// tokens, as Python's `shlex.shlex(posix=True, punctuation_chars="();<>|&\n")` with
+/// `whitespace_split`. `None` for an unclosed quote.
+fn shell_tokens(cmd: &str) -> Option<Vec<String>> {
+    const PUNCT: &str = "();<>|&\n";
+    let c: Vec<char> = cmd.chars().collect();
+    let (mut out, mut word, mut in_word, mut i) = (Vec::new(), String::new(), false, 0);
+    let flush = |out: &mut Vec<String>, word: &mut String, in_word: &mut bool| {
+        if *in_word {
+            out.push(std::mem::take(word));
+            *in_word = false;
+        }
+    };
+    while i < c.len() {
+        let ch = c[i];
+        if ch == '\'' {
+            let end = c[i + 1..].iter().position(|x| *x == '\'')? + i + 1;
+            word.extend(&c[i + 1..end]);
+            in_word = true;
+            i = end + 1;
+        } else if ch == '"' {
+            in_word = true;
+            i += 1;
+            loop {
+                match *c.get(i)? {
+                    '"' => break,
+                    '\\' if matches!(c.get(i + 1), Some('"' | '\\')) => {
+                        word.push(c[i + 1]);
+                        i += 2;
+                    }
+                    x => {
+                        word.push(x);
+                        i += 1;
+                    }
+                }
+            }
+            i += 1;
+        } else if matches!(ch, ' ' | '\t' | '\r') {
+            flush(&mut out, &mut word, &mut in_word);
+            i += 1;
+        } else if PUNCT.contains(ch) {
+            flush(&mut out, &mut word, &mut in_word);
+            let start = i;
+            while c.get(i).is_some_and(|x| PUNCT.contains(*x)) {
+                i += 1;
+            }
+            out.push(c[start..i].iter().collect());
+        } else if ch == '\\' {
+            word.push(*c.get(i + 1)?); // a trailing backslash is an error to shlex too
+            in_word = true;
+            i += 2;
+        } else {
+            word.push(ch);
+            in_word = true;
+            i += 1;
+        }
+    }
+    flush(&mut out, &mut word, &mut in_word);
+    Some(out)
+}
+
+/// A file in a working tree: not a scratch file, a device or an unexpanded variable.
+fn real_target(p: &str) -> bool {
+    !p.is_empty()
+        && !["/tmp/", "/dev/", "/proc/", "&"]
+            .iter()
+            .any(|x| p.starts_with(x))
+        && !p.contains(['$', '*', '`'])
+        && !p.contains("/scratchpad/")
+        && p != "-"
+        && p != "."
+}
+
+/// `open('path', 'w')` or `'a'` with a literal path, anywhere in the text (Python:
+/// `open\(\s*['"]([^'"]+)['"]\s*,\s*['"][wa]`).
+fn python_opens(cmd: &str) -> Vec<String> {
+    let c: Vec<char> = cmd.chars().collect();
+    let skip_ws = |mut j: usize| {
+        while c.get(j).is_some_and(|x| x.is_whitespace()) {
+            j += 1;
+        }
+        j
+    };
+    let mut found = Vec::new();
+    let mut i = 0;
+    while i + 5 <= c.len() {
+        if c[i..i + 5].iter().collect::<String>() != "open(" {
+            i += 1;
+            continue;
+        }
+        let try_at = || -> Option<(String, usize)> {
+            let mut j = skip_ws(i + 5);
+            if !matches!(c.get(j), Some('\'' | '"')) {
+                return None;
+            }
+            j += 1;
+            let start = j;
+            while c.get(j).is_some_and(|x| !matches!(x, '\'' | '"')) {
+                j += 1;
+            }
+            if j == start || !matches!(c.get(j), Some('\'' | '"')) {
+                return None;
+            }
+            let path: String = c[start..j].iter().collect();
+            j = skip_ws(j + 1);
+            if c.get(j) != Some(&',') {
+                return None;
+            }
+            j = skip_ws(j + 1);
+            if !matches!(c.get(j), Some('\'' | '"')) || !matches!(c.get(j + 1), Some('w' | 'a')) {
+                return None;
+            }
+            Some((path, j + 2))
+        };
+        match try_at() {
+            Some((p, end)) => {
+                found.push(p);
+                i = end;
+            }
+            None => i += 1,
+        }
+    }
+    found
+}
+
+/// Each file a shell command plainly writes or deletes, with how: `redirect`, `append`,
+/// `sed-i`, `tee`, `delete`, `git-restore`, `patch` (a `+++ b/path` line), `python-write`.
+/// Quote-aware, so a `>` or a `sed` inside a quoted script is neither. Heredoc bodies are
+/// dropped before the words are read; an inline patch or a literal `open(path, 'w')` is read
+/// from the whole text.
+pub fn shell_writes(cmd: &str) -> Vec<(String, &'static str)> {
+    let mut found: Vec<(String, &'static str)> = Vec::new();
+    for line in cmd.split('\n') {
+        if let Some(rest) = line.strip_prefix("+++ ") {
+            let p: String = rest.chars().take_while(|c| !c.is_whitespace()).collect();
+            let p = match p.strip_prefix("b/") {
+                Some(q) if !q.is_empty() => q.to_string(),
+                _ => p,
+            };
+            if !p.is_empty() {
+                found.push((p, "patch"));
+            }
+        }
+    }
+    found.extend(python_opens(cmd).into_iter().map(|p| (p, "python-write")));
+    let Some(toks) = shell_tokens(&strip_heredocs(cmd)) else {
+        found.retain(|(p, _)| real_target(p));
+        return found;
+    };
+    const OPS: [&str; 10] = ["&&", "||", ";", "|", "\n", "&", "(", ")", ";;", "|&"];
+    let (mut segs, mut cur): (Vec<Vec<String>>, Vec<String>) = (Vec::new(), Vec::new());
+    let mut i = 0;
+    while i < toks.len() {
+        let t = toks[i].as_str();
+        if matches!(t, ">" | ">>" | ">|" | "&>" | "&>>") && i + 1 < toks.len() {
+            let prev = if i > 0 { toks[i - 1].as_str() } else { "" };
+            let digit = !prev.is_empty() && prev.chars().all(|c| c.is_ascii_digit());
+            if !digit || prev == "1" {
+                let how = if matches!(t, ">>" | "&>>") {
+                    "append"
+                } else {
+                    "redirect"
+                };
+                found.push((toks[i + 1].clone(), how));
+            }
+            i += 2;
+            continue;
+        }
+        if t.starts_with(">&") || matches!(t, "<" | "<<" | "<<<" | "<&") {
+            i += if matches!(t, "<" | "<<" | "<<<") {
+                2
+            } else {
+                1
+            };
+            continue;
+        }
+        if OPS.contains(&t) {
+            if !cur.is_empty() {
+                segs.push(std::mem::take(&mut cur));
+            }
+        } else {
+            cur.push(toks[i].clone());
+        }
+        i += 1;
+    }
+    if !cur.is_empty() {
+        segs.push(cur);
+    }
+    for seg in &segs {
+        let mut s: &[String] = seg;
+        while s
+            .first()
+            .is_some_and(|w| w.contains('=') && !w.starts_with('-'))
+        {
+            s = &s[1..];
+        }
+        while s
+            .first()
+            .is_some_and(|w| matches!(w.as_str(), "sudo" | "command" | "env" | "nice" | "time"))
+        {
+            s = &s[1..];
+        }
+        let Some((first, args)) = s.split_first() else {
+            continue;
+        };
+        let head = first.rsplit('/').next().unwrap_or("");
+        let flag = |a: &String| a.starts_with('-');
+        match head {
+            "sed"
+                if args
+                    .iter()
+                    .any(|a| a.starts_with("-i") || a == "--in-place") =>
+            {
+                let has_e = args
+                    .iter()
+                    .any(|a| matches!(a.as_str(), "-e" | "--expression" | "-f"));
+                let (mut skipped, mut j) = (false, 0);
+                while j < args.len() {
+                    let a = &args[j];
+                    if matches!(a.as_str(), "-e" | "--expression" | "-f") {
+                        j += 2;
+                        continue;
+                    }
+                    if !flag(a) {
+                        if !has_e && !skipped {
+                            skipped = true;
+                        } else {
+                            found.push((a.clone(), "sed-i"));
+                        }
+                    }
+                    j += 1;
+                }
+            }
+            "tee" => {
+                let how = if args.iter().any(|a| a == "-a" || a == "--append") {
+                    "append"
+                } else {
+                    "tee"
+                };
+                found.extend(args.iter().filter(|a| !flag(a)).map(|a| (a.clone(), how)));
+            }
+            "rm" => found.extend(
+                args.iter()
+                    .filter(|a| !flag(a))
+                    .map(|a| (a.clone(), "delete")),
+            ),
+            "git" if args.first().is_some_and(|a| a == "rm") => {
+                found.extend(
+                    args[1..]
+                        .iter()
+                        .filter(|a| !flag(a))
+                        .map(|a| (a.clone(), "delete")),
+                );
+            }
+            "git"
+                if args
+                    .first()
+                    .is_some_and(|a| a == "checkout" || a == "restore") =>
+            {
+                if let Some(k) = args.iter().position(|a| a == "--") {
+                    found.extend(args[k + 1..].iter().map(|a| (a.clone(), "git-restore")));
+                }
+            }
+            _ => {}
+        }
+    }
+    found.retain(|(p, _)| real_target(p));
+    found
+}
+
+/// Calls in a script that write a file. `.write(` counts unless it is `stdout`/`stderr`'s.
+const SCRIPT_WRITES: [&str; 14] = [
+    ".write_text(",
+    ".write_bytes(",
+    "json.dump(",
+    "os.replace(",
+    "os.rename(",
+    "os.remove(",
+    ".unlink(",
+    "shutil.copy",
+    "shutil.move",
+    "shutil.rmtree",
+    "writeFileSync",
+    "fs.writeFile",
+    ".to_csv(",
+    "savefig(",
+];
+
+fn script_writes_something(c: &[char]) -> bool {
+    let text: String = c.iter().collect();
+    if SCRIPT_WRITES.iter().any(|w| text.contains(w)) {
+        return true;
+    }
+    let at = |i: usize, pat: &str| {
+        pat.chars()
+            .enumerate()
+            .all(|(k, p)| c.get(i + k) == Some(&p))
+    };
+    let mut i = 0;
+    while i < c.len() {
+        if at(i, ".write(") {
+            let before: String = c[..i].iter().collect();
+            if !before.ends_with("stdout") && !before.ends_with("stderr") {
+                return true;
+            }
+        }
+        if at(i, "open(") {
+            // The call's arguments, to its closing paren or the end of the line.
+            let (j, mut k, mut depth) = (i + 5, i + 5, 1);
+            while k < c.len() && c[k] != '\n' && depth > 0 {
+                match c[k] {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                k += 1;
+            }
+            let args = &c[j..k];
+            let q = |x: Option<&char>| matches!(x, Some('\'' | '"'));
+            let mode = (0..args.len()).any(|a| {
+                if !q(args.get(a)) || !matches!(args.get(a + 1), Some('w' | 'a' | 'x')) {
+                    return false;
+                }
+                let mut b = a + 2;
+                if args.get(b) == Some(&'b') {
+                    b += 1;
+                }
+                if args.get(b) == Some(&'+') {
+                    b += 1;
+                }
+                q(args.get(b))
+            });
+            let flat: String = args.iter().filter(|ch| **ch != ' ').collect();
+            if mode || flat.contains("mode=") {
+                return true;
+            }
+            i = k;
+            continue;
+        }
+        i += 1;
+    }
+    false
+}
+
+/// Quoted words that look like paths: no whitespace, at most 200 characters, with a `/` or a
+/// short extension, not a URL or a flag.
+fn quoted_paths(c: &[char]) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < c.len() {
+        let q = c[i];
+        if q == '\'' || q == '"' {
+            let mut j = i + 1;
+            while j < c.len() && c[j] != q && !c[j].is_whitespace() && j - i <= 200 {
+                j += 1;
+            }
+            if j < c.len() && c[j] == q && j > i + 1 && j - i <= 201 {
+                let w: String = c[i + 1..j].iter().collect();
+                let ext = w.rsplit_once('.').is_some_and(|(_, e)| {
+                    (1..=6).contains(&e.len()) && e.chars().all(|x| x.is_ascii_alphanumeric())
+                });
+                if (w.contains('/') || ext) && !w.starts_with("http") && !w.starts_with('-') {
+                    out.push(w);
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        i += 1;
+    }
+    out
+}
+
+/// A script run from the shell (`python3 - <<EOF`, `python -c`, `node -e`) that writes a file
+/// through a call `shell_writes` cannot read: `p = "src/a.py"; open(p, "w")`. `None` when it
+/// has no write call, or when every path it quotes is scratch (`/tmp`, a scratchpad, a
+/// `{placeholder}`); otherwise the kept paths it quotes, which may be none. A guess at the
+/// targets, unlike `shell_writes`, so the log calls it `script`. Measured on 39,981 real
+/// commands (MEASUREMENT.md, addendum 5, dated note of 2026-11-27).
+pub fn script_writes(cmd: &str) -> Option<Vec<String>> {
+    let c: Vec<char> = cmd.chars().collect();
+    if !script_writes_something(&c) {
+        return None;
+    }
+    let all = quoted_paths(&c);
+    let real: Vec<String> = all
+        .iter()
+        .filter(|p| !p.contains(['{', '%']) && real_target(p))
+        .cloned()
+        .collect();
+    (all.is_empty() || !real.is_empty()).then_some(real)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -386,5 +834,46 @@ mod tests {
         assert_eq!(created(&blind), Some(false));
         let nb = json!({"tool_name": "NotebookEdit", "tool_input": {"new_source": "x"}});
         assert_eq!((delta(&nb), created(&nb)), (None, None));
+    }
+
+    #[test]
+    fn a_script_that_writes_through_a_variable_is_seen_and_one_that_only_reads_is_not() {
+        let edit = "python3 - <<'EOF'\np = 'tests/test_a.py'; s = open(p).read()\nopen(p, 'w').write(s.replace('3', '4'))\nEOF";
+        assert_eq!(
+            script_writes(edit),
+            Some(vec!["tests/test_a.py".to_string()])
+        );
+        let pathlib = "python3 - <<'PY'\nimport pathlib\np = pathlib.Path('src/x.rs')\np.write_text(p.read_text())\nPY";
+        assert_eq!(script_writes(pathlib), Some(vec!["src/x.rs".to_string()]));
+        let read = "python3 - <<'EOF'\nimport json\nprint(json.load(open('a.json'))['x'])\nEOF";
+        assert_eq!(script_writes(read), None);
+        let printing = "python3 -c \"import sys; sys.stdout.write(open('a.txt').read())\"";
+        assert_eq!(script_writes(printing), None);
+        let scratch = "python3 - <<'EOF'\nopen('/tmp/out.json', 'w').write('{}')\nEOF";
+        assert_eq!(script_writes(scratch), None);
+        let unnamed = "python3 - <<'EOF'\nimport sys\nopen(sys.argv[1], 'w').write('x')\nEOF";
+        assert_eq!(script_writes(unnamed), Some(vec![]));
+        let mode = "python3 -c \"f = open(p, mode='a')\"";
+        assert_eq!(script_writes(mode), Some(vec![]));
+    }
+
+    #[test]
+    fn shell_writes_agree_with_the_python_replay_on_every_shared_case() {
+        let fx: Value =
+            serde_json::from_str(include_str!("../tests/fixtures/shell_write_cases.json")).unwrap();
+        for c in fx["cases"].as_array().unwrap() {
+            let cmd = c["cmd"].as_str().unwrap();
+            let want: Vec<(String, String)> = c["writes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|w| (w[0].as_str().unwrap().into(), w[1].as_str().unwrap().into()))
+                .collect();
+            let got: Vec<(String, String)> = shell_writes(cmd)
+                .into_iter()
+                .map(|(p, h)| (p, h.to_string()))
+                .collect();
+            assert_eq!(got, want, "case {cmd:?}");
+        }
     }
 }
